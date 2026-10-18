@@ -41,7 +41,7 @@ class MainActivity : Activity() {
         }
 
         container.addView(label("[sel_] // PLAIN-TEXT PALETTE", 16f, "#F0F0F0"))
-        container.addView(label("v1.0 · vertical TUI overlay", 11.5f, "#666666"))
+        container.addView(label("v1.1 · vertical TUI overlay", 11.5f, "#666666"))
 
         container.addView(label("\n01 // PERMISSION", 12f, "#888888"))
         container.addView(label("[ ENABLE IN ACCESSIBILITY SETTINGS ↗ ]", 13.5f, "#00FF66").apply {

@@ -17,6 +17,21 @@
             </intent-filter>
         </activity>
 
+        <!-- Hooks into Android's native Copy/Share selection menu for all browsers, WebViews & apps -->
+        <activity
+            android:name=".ProcessTextActivity"
+            android:exported="true"
+            android:label="[sel]"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".SelAccessibilityService"
             android:exported="false"
