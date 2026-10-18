@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Needed for in-popup Define Word dictionary lookup & built-in Incognito Search -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -16,6 +19,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Ephemeral Zero-History Incognito Browser for Search & Links -->
+        <activity
+            android:name=".IncognitoActivity"
+            android:exported="false"
+            android:label="[sel] Incognito"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 
         <!-- Hooks into Android's native Copy/Share selection menu for all browsers, WebViews & apps -->
         <activity

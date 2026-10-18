@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.selclip"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     buildTypes {
@@ -34,5 +34,6 @@ android {
 }
 
 dependencies {
-    // Intentionally empty: 100% pure Android SDK + Kotlin stdlib for an ultra-lightweight APK
+    // Pure Java QR matrix generator (~15KB after R8 minification, zero AndroidX dependencies)
+    implementation("com.google.zxing:core:3.5.3")
 }
