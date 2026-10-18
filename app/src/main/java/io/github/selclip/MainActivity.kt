@@ -702,8 +702,8 @@ class MainActivity : Activity() {
                     ToolPrefs.importBackupJson(this, json)
                 }.getOrDefault(false)
                 if (ok) {
-                    rulesView.setText(ToolPrefs.ensureRulesFile(this)
-        FaviconManager.prefetchAllForTools(this).readText())
+                    rulesView.setText(ToolPrefs.ensureRulesFile(this).readText())
+                    FaviconManager.prefetchAllForTools(this)
                     refreshAllTabs()
                     Toast.makeText(this, "✓ Restored settings & custom commands", Toast.LENGTH_SHORT).show()
                 } else {
