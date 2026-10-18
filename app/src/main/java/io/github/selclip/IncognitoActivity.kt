@@ -58,7 +58,11 @@ class IncognitoActivity : Activity() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             setTextColor(Color.parseColor("#888888"))
             isSingleLine = true
-            this.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            )
         }
 
         val extBtn = TextView(this).apply {
@@ -130,7 +134,6 @@ class IncognitoActivity : Activity() {
         val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("sel_incognito", url))
 
-        // Try dedicated privacy browsers first if installed, otherwise standard ACTION_VIEW
         val privatePackages = listOf(
             "org.mozilla.focus",
             "com.duckduckgo.mobile.android",

@@ -44,7 +44,7 @@ class MainActivity : Activity() {
         }
 
         container.addView(label("[sel_] // PLAIN-TEXT PALETTE", 16f, "#F0F0F0"))
-        container.addView(label("v1.2 · dynamic TUI overlay · QR · Define · YT · Incognito", 11f, "#666666"))
+        container.addView(label("v1.4 · drag-and-drop · magnet converter · instant browser overlay", 11f, "#666666"))
 
         container.addView(label("\n01 // PERMISSION", 12f, "#888888"))
         container.addView(label("[ ENABLE IN ACCESSIBILITY SETTINGS ↗ ]", 13.5f, "#00FF66").apply {
@@ -54,18 +54,18 @@ class MainActivity : Activity() {
             }
         })
 
-        container.addView(label("02 // SANDBOX (SELECT WORD, MATH, OR URL BELOW)", 12f, "#888888"))
+        container.addView(label("02 // SANDBOX (SELECT WORD, UNIT, MATH, OR URL BELOW)", 12f, "#888888"))
         val sandbox = EditText(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 13f
             setTextColor(Color.parseColor("#E0E0E0"))
             setBackgroundColor(Color.parseColor("#141414"))
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            setText("Try selecting: ephemeral or 125 * 8 or https://example.com/page?utm_source=ads&fbclid=123")
+            setText("Try selecting: ephemeral or 72 F or dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c or https://example.com/page?utm_source=ads")
         }
         container.addView(sandbox)
 
-        container.addView(label("\n03 // TOOL ORDER & MOST-USED SORTING", 12f, "#888888"))
+        container.addView(label("\n03 // TOOL ORDER (DRAG ≡ HANDLE TO REORDER, TAP [✓] TO HIDE)", 12f, "#888888"))
         val sortControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(6), 0, dp(6))
@@ -80,7 +80,7 @@ class MainActivity : Activity() {
             }
         }
 
-        val resetCountsBtn = label("[ RESET USAGE COUNTS ]", 12f, "#FF5555").apply {
+        val resetCountsBtn = label("[ RESET COUNTS ]", 12f, "#FF5555").apply {
             setPadding(0, dp(4), 0, dp(4))
             setOnClickListener {
                 ToolPrefs.resetUseCounts(this@MainActivity)
@@ -96,7 +96,7 @@ class MainActivity : Activity() {
         reorderListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#141414"))
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setPadding(dp(8), dp(8), dp(10), dp(8))
         }
         container.addView(reorderListContainer)
 
@@ -146,15 +146,25 @@ class MainActivity : Activity() {
     private fun refreshReorderList() {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val mostUsed = ToolPrefs.isSortMostUsed(this)
-        sortModeButton.text = if (mostUsed) "[ ★ MOST USED ON TOP: ON ]" else "[ ★ MOST USED ON TOP: OFF ]"
+        sortModeButton.text = if (mostUsed) "[ ★ MOST USED TOP: ON ]" else "[ ★ MOST USED TOP: OFF ]"
 
         reorderListContainer.removeAllViews()
-        val tools = ToolPrefs.getSortedToolsForPopup(this)
+        val tools = ToolPrefs.getAllSortedTools(this)
         tools.forEachIndexed { idx, tool ->
+            val hidden = ToolPrefs.isToolHidden(this, tool.id)
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(6), dp(4), dp(6))
+                setPadding(dp(4), dp(8), dp(4), dp(8))
+                tag = tool.id
+            }
+
+            val dragHandle = TextView(this).apply {
+                text = "≡"
+                typeface = Typeface.MONOSPACE
+                textSize = 16f
+                setTextColor(Color.parseColor("#00FF66"))
+                setPadding(dp(6), dp(2), dp(14), dp(2))
             }
 
             val count = ToolPrefs.getUseCount(this, tool.id)
@@ -162,41 +172,32 @@ class MainActivity : Activity() {
                 text = "${idx + 1}. ${tool.glyph}  ${tool.label}" + if (count > 0) "  (used $count×)" else ""
                 typeface = Typeface.MONOSPACE
                 textSize = 12f
-                setTextColor(Color.parseColor("#E0E0E0"))
-                this.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setTextColor(Color.parseColor(if (hidden) "#555555" else "#E0E0E0"))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
             }
 
-            val upBtn = TextView(this).apply {
-                text = "[↑]"
+            val visToggle = TextView(this).apply {
+                text = if (hidden) "[ HIDDEN ]" else "[ ✓ SHOW ]"
                 typeface = Typeface.MONOSPACE
-                textSize = 12f
-                setTextColor(Color.parseColor(if (idx > 0) "#00FF66" else "#444444"))
-                setPadding(dp(8), dp(2), dp(8), dp(2))
+                textSize = 11.5f
+                setTextColor(Color.parseColor(if (hidden) "#666666" else "#00FF66"))
+                setPadding(dp(8), dp(2), dp(4), dp(2))
                 setOnClickListener {
-                    if (idx > 0) {
-                        ToolPrefs.moveTool(this@MainActivity, tool.id, -1)
-                        refreshReorderList()
-                    }
+                    ToolPrefs.setToolHidden(this@MainActivity, tool.id, !hidden)
+                    refreshReorderList()
                 }
             }
 
-            val downBtn = TextView(this).apply {
-                text = "[↓]"
-                typeface = Typeface.MONOSPACE
-                textSize = 12f
-                setTextColor(Color.parseColor(if (idx < tools.size - 1) "#00FF66" else "#444444"))
-                setPadding(dp(4), dp(2), dp(4), dp(2))
-                setOnClickListener {
-                    if (idx < tools.size - 1) {
-                        ToolPrefs.moveTool(this@MainActivity, tool.id, 1)
-                        refreshReorderList()
-                    }
-                }
-            }
-
+            row.addView(dragHandle)
             row.addView(nameView)
-            row.addView(upBtn)
-            row.addView(downBtn)
+            row.addView(visToggle)
+            ToolPrefs.attachDragHandle(dragHandle, row, reorderListContainer) {
+                refreshReorderList()
+            }
             reorderListContainer.addView(row)
         }
     }

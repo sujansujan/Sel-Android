@@ -3,14 +3,15 @@
 A minimal, zero-bloat (<1 MB) PopClip alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`.
 
 ## Features
-- **Dynamic Autosizing Vertical Palette:** Wraps tightly around active tools and expands dynamically for inline views (`WRAP_CONTENT` with adaptive bounds).
-- **In-Popup QR Code Generator (`▣ QR CODE`):** Renders a scannable QR code directly inside the floating popup.
-- **In-Popup Word Definition (`📖 DEFINE WORD`):** Fetches dictionary phonetics/meanings (with Wikipedia summary fallback) directly inside the popup.
-- **YouTube Time Filters:** Instant search for `▶ YOUTUBE`, `▶d YT TODAY`, `▶w YT LAST WEEK`, and `▶m YT MONTH`.
-- **Incognito Search & Link Opener (`🕵 INCOGNITO`):** Opens selected URLs or searches in a built-in zero-history, cookie-free ephemeral browser (with 1-tap external private browser handoff).
-- **Reorderable Tools + Most-Used on Top:** Automatically floats your most-used tools to the top, with manual `[↑]` / `[↓]` reordering available both inside the popup (`⇅`) and in the app dashboard.
-
-## Enabling on Android 13+
-1. Install the APK from GitHub Actions Artifacts.
-2. Open **Settings -> Apps -> [sel] -> ⋮ (top right) -> Allow restricted settings**.
-3. Open `[sel]` and enable it in Accessibility Settings.
+- **Instant Browser & App Overlay:** Automatically spawns the vertical palette across native apps, Google Keep, Twitter/X, and Browsers (via deep Accessibility tree inspection, automatic WebView `ACTION_COPY` extraction, and `ACTION_PROCESS_TEXT` fallback).
+- **Touch Drag-and-Drop Reordering (`≡`):** Grab and slide the `≡` handle to reorder tools in real time (or toggle `[✓]` to hide tools you don't need), plus automatic **Most-Used on Top** sorting.
+- **In-Popup Power Tools:**
+  - `🧲 HASH → MAGNET` — Converts 40/64-char hex or 32-char Base32 torrent info-hashes into magnet links (with tracker list & 1-tap client launch).
+  - `▣ QR CODE` — Scannable QR code rendered directly inside the popup.
+  - `📖 DEFINE WORD` — Dictionary phonetics & definitions (with Wikipedia fallback) inside the popup.
+  - `🌐 TRANSLATE` — Instant in-popup translation with 1-tap replace/copy.
+  - `🔊 SPEAK ALOUD` — Native offline TTS readout of selected text.
+  - `＠ EXTRACT LINKS` — Pulls all URLs, emails, phone numbers, and `#tags` from messy selections.
+  - `🧹 CLEAN TEXT` — Unwraps hard line breaks and strips invisible characters.
+  - `⇄ UNIT CONVERTER` — Contextual auto-conversion for `km/mi`, `kg/lb`, `°C/°F`, `cm/in`, `ft/m`, and `0xHEX`.
+  - `▶ YOUTUBE` (`▶d TODAY`, `▶w LAST WEEK`, `▶m MONTH`) & `🕵 INCOGNITO` browser.
