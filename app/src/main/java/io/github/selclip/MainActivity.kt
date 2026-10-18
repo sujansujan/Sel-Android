@@ -15,6 +15,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.EditText
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -55,6 +56,7 @@ class MainActivity : Activity() {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
 
         ToolPrefs.ensureRulesFile(this)
+        FaviconManager.prefetchAllForTools(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -85,7 +87,7 @@ class MainActivity : Activity() {
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
-        topHeader.addView(label("+── v1.8 · strict above/below · dynamic size · plaintextsports UI ──+", 10.5f, "#777777"))
+        topHeader.addView(label("+── v1.9 · zero-overlap above · web & yt folders · live favicons ──+", 10.5f, "#777777"))
         root.addView(topHeader)
 
         // 2. Horizontal Terminal Tab Bar
@@ -309,7 +311,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // --- TAB 3: RULES (Custom Commands, Custom Folders, & Regex Pipes) ---
+    // --- TAB 3: RULES (Add Web Engines with Auto-Favicon, Custom Folders, & Regex Pipes) ---
     private fun buildRulesTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val rulesFile = ToolPrefs.ensureRulesFile(this)
@@ -317,13 +319,116 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // CUSTOM COMMANDS, FOLDERS & REGEX PIPES", 12f, "#888888"))
+            // Quick Web Search Engine Adder (automatically fetches & caches the site's favicon!)
+            addView(label("01 // ADD WEB SEARCH ENGINE (AUTO-FAVICON)", 12f, "#888888"))
+            addView(
+                label(
+                    "Any web engine added here (or in rules.txt below) automatically downloads & caches its own site favicon.",
+                    10.5f,
+                    "#777777"
+                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+            )
+
+            val engineCard = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#141414"))
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+
+            val engineNameInput = EditText(this@MainActivity).apply {
+                typeface = Typeface.MONOSPACE
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#F0F0F0"))
+                setBackgroundColor(Color.parseColor("#0D0D0D"))
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                hint = "Engine Name (e.g. KAGI, STARTPAGE, REDDIT)"
+                setHintTextColor(Color.parseColor("#555555"))
+                isSingleLine = true
+            }
+
+            val engineUrlInput = EditText(this@MainActivity).apply {
+                typeface = Typeface.MONOSPACE
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#F0F0F0"))
+                setBackgroundColor(Color.parseColor("#0D0D0D"))
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                hint = "https://kagi.com/search?q={text}"
+                setHintTextColor(Color.parseColor("#555555"))
+                isSingleLine = true
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(6)
+                }
+            }
+
+            val addEngineBtnsRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(6), 0, 0)
+            }
+
+            addEngineBtnsRow.addView(buttonPill("[ + ADD TO ↗ WEB SEARCH ▸ ]", "#00FF66") {
+                val rawName = engineNameInput.text.toString().trim().uppercase().removePrefix("SEARCH/").removePrefix("WEB/")
+                var rawUrl = engineUrlInput.text.toString().trim()
+                if (rawName.isNotEmpty() && rawUrl.isNotEmpty()) {
+                    if (!rawUrl.startsWith("http://", true) && !rawUrl.startsWith("https://", true)) {
+                        rawUrl = "https://$rawUrl"
+                    }
+                    if (!rawUrl.contains("{text}")) {
+                        rawUrl = if (rawUrl.contains("?")) "$rawUrl&q={text}" else "$rawUrl?q={text}"
+                    }
+                    val g = rawName.take(1)
+                    val newRule = "\n$g | SEARCH/$rawName | $rawUrl"
+                    rulesView.append(newRule)
+                    rulesFile.writeText(rulesView.text.toString())
+                    FaviconManager.prefetchAllForTools(this@MainActivity)
+                    engineNameInput.setText("")
+                    engineUrlInput.setText("")
+                    refreshReorderList()
+                    Toast.makeText(this@MainActivity, "✓ Added $rawName to WEB SEARCH ▸ (fetching favicon…)", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Enter both engine name and search URL", Toast.LENGTH_SHORT).show()
+                }
+            })
+
+            addEngineBtnsRow.addView(buttonPill("[ + TOP-LEVEL ]", "#CCCCCC") {
+                val rawName = engineNameInput.text.toString().trim().uppercase()
+                var rawUrl = engineUrlInput.text.toString().trim()
+                if (rawName.isNotEmpty() && rawUrl.isNotEmpty()) {
+                    if (!rawUrl.startsWith("http://", true) && !rawUrl.startsWith("https://", true)) {
+                        rawUrl = "https://$rawUrl"
+                    }
+                    if (!rawUrl.contains("{text}")) {
+                        rawUrl = if (rawUrl.contains("?")) "$rawUrl&q={text}" else "$rawUrl?q={text}"
+                    }
+                    val g = rawName.take(1)
+                    val newRule = "\n$g | $rawName | $rawUrl"
+                    rulesView.append(newRule)
+                    rulesFile.writeText(rulesView.text.toString())
+                    FaviconManager.prefetchAllForTools(this@MainActivity)
+                    engineNameInput.setText("")
+                    engineUrlInput.setText("")
+                    refreshReorderList()
+                    Toast.makeText(this@MainActivity, "✓ Added $rawName with auto-favicon", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Enter both engine name and search URL", Toast.LENGTH_SHORT).show()
+                }
+            })
+
+            engineCard.addView(engineNameInput)
+            engineCard.addView(engineUrlInput)
+            engineCard.addView(addEngineBtnsRow)
+            addView(engineCard)
+
+            addView(label("\n02 // ALL CUSTOM COMMANDS, FOLDERS & REGEX PIPES (rules.txt)", 12f, "#888888"))
             addView(
                 label(
                     "Syntax: GLYPH | LABEL | TARGET\n" +
-                        "• Use FOLDER/LABEL (e.g. DEV/GITHUB) to group inside a collapsible folder.\n" +
-                        "• Use MD/LABEL to add to M↓ MARKDOWN ▸.\n" +
-                        "• Use PIPE/LABEL with s/pattern/replace/g for custom regex transforms.",
+                        "• SEARCH/LABEL → adds to ↗ WEB SEARCH ▸ subgroup with live site favicon.\n" +
+                        "• YT/LABEL → adds to ▶ YOUTUBE ▸ subfolder.\n" +
+                        "• FOLDER/LABEL (e.g. DEV/GITHUB) → creates a custom collapsible folder.\n" +
+                        "• MD/LABEL → adds to M↓ MARKDOWN ▸.  PIPE/LABEL → adds to λ REGEX / PIPE ▸.",
                     10.5f,
                     "#777777"
                 ).apply { setPadding(0, dp(4), 0, dp(8)) }
@@ -335,21 +440,21 @@ class MainActivity : Activity() {
                 setPadding(0, 0, 0, dp(8))
             }
 
-            tplRow.addView(buttonPill("[+ URL]", "#00FF66") {
-                rulesView.append("\n🔎 | SEARCH/REDDIT | https://www.reddit.com/search/?q={text}")
-            }.apply { setPadding(0, dp(2), dp(10), dp(2)) })
+            tplRow.addView(buttonPill("[+ SEARCH]", "#00FF66") {
+                rulesView.append("\nS | SEARCH/STARTPAGE | https://www.startpage.com/sp/search?query={text}")
+            })
+
+            tplRow.addView(buttonPill("[+ YT]", "#00FF66") {
+                rulesView.append("\n▶ | YT/CHANNELS | https://www.youtube.com/results?search_query={text}&sp=EgIQAg%3D%3D")
+            })
 
             tplRow.addView(buttonPill("[+ FOLDER]", "#00FF66") {
-                rulesView.append("\n⚡ | AI/PERPLEXITY | https://www.perplexity.ai/search?q={text}")
-            }.apply { setPadding(0, dp(2), dp(10), dp(2)) })
+                rulesView.append("\nP | AI/PERPLEXITY | https://www.perplexity.ai/search?q={text}")
+            })
 
             tplRow.addView(buttonPill("[+ REGEX]", "#00FF66") {
                 rulesView.append("\nλ | PIPE/TRIM SPACES | s/\\s+/ /g")
-            }.apply { setPadding(0, dp(2), dp(10), dp(2)) })
-
-            tplRow.addView(buttonPill("[+ MD]", "#00FF66") {
-                rulesView.append("\n🔑 | MD CALLOUT | > [!NOTE]\\n> {text}")
-            }.apply { setPadding(0, dp(2), 0, dp(2)) })
+            })
 
             addView(tplRow)
 
@@ -364,11 +469,12 @@ class MainActivity : Activity() {
             }
             addView(rulesView)
 
-            addView(buttonPill("[ ✓ SAVE CUSTOM COMMANDS ]", "#00FF66") {
+            addView(buttonPill("[ ✓ SAVE COMMANDS & FETCH FAVICONS ]", "#00FF66") {
                 rulesFile.writeText(rulesView.text.toString())
+                FaviconManager.prefetchAllForTools(this@MainActivity)
                 refreshReorderList()
-                Toast.makeText(this@MainActivity, "Custom commands saved", Toast.LENGTH_SHORT).show()
-            }.apply { setPadding(0, dp(10), 0, dp(10)) })
+                Toast.makeText(this@MainActivity, "Custom commands saved & favicons updated", Toast.LENGTH_SHORT).show()
+            })
         }
     }
 
@@ -596,7 +702,8 @@ class MainActivity : Activity() {
                     ToolPrefs.importBackupJson(this, json)
                 }.getOrDefault(false)
                 if (ok) {
-                    rulesView.setText(ToolPrefs.ensureRulesFile(this).readText())
+                    rulesView.setText(ToolPrefs.ensureRulesFile(this)
+        FaviconManager.prefetchAllForTools(this).readText())
                     refreshAllTabs()
                     Toast.makeText(this, "✓ Restored settings & custom commands", Toast.LENGTH_SHORT).show()
                 } else {
@@ -759,10 +866,28 @@ class MainActivity : Activity() {
                 setPadding(dp(8), dp(4), dp(14), dp(4))
             }
 
+            val favUrl = tool.faviconUrl ?: tool.customTarget?.takeIf {
+                it.startsWith("http://", true) || it.startsWith("https://", true)
+            }
+            val favView: View? = if (!favUrl.isNullOrBlank() && FaviconManager.extractDomain(favUrl) != null) {
+                val sz = dp(18)
+                ImageView(this).apply {
+                    this.layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                        marginEnd = dp(8)
+                    }
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }.also { img ->
+                    FaviconManager.bindFavicon(this, img, favUrl, tool.glyph, sz)
+                }
+            } else {
+                null
+            }
+
             val count = ToolPrefs.getUseCount(this, tool.id)
             val numStr = "%02d".format(idx + 1)
             val nameView = TextView(this).apply {
-                text = "$numStr │ ${tool.glyph}  ${tool.label}" + if (count > 0) "  [$count×]" else ""
+                val glyphPrefix = if (favView != null) "" else "${tool.glyph}  "
+                text = "$numStr │ $glyphPrefix${tool.label}" + if (count > 0) "  [$count×]" else ""
                 typeface = Typeface.MONOSPACE
                 textSize = 12f
                 setTextColor(Color.parseColor(if (hidden) "#555555" else "#F0F0F0"))
@@ -786,6 +911,7 @@ class MainActivity : Activity() {
             }
 
             row.addView(dragHandle)
+            if (favView != null) row.addView(favView)
             row.addView(nameView)
             row.addView(visToggle)
             ToolPrefs.attachDragHandle(dragHandle, row, reorderListContainer) {

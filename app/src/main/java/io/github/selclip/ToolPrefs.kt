@@ -16,7 +16,8 @@ data class ToolSpec(
     val glyph: String,
     val label: String,
     val customTarget: String? = null,
-    val folderName: String? = null
+    val folderName: String? = null,
+    val faviconUrl: String? = null
 )
 
 data class ClipEntry(
@@ -40,6 +41,8 @@ object ToolPrefs {
     val builtInTools = listOf(
         ToolSpec("copy", "⎘", "COPY TEXT"),
         ToolSpec("screen_grab", "⊞", "LENS GRAB"),
+        ToolSpec("web_search_folder", "↗", "WEB SEARCH ▸"),
+        ToolSpec("youtube_folder", "▶", "YOUTUBE ▸", faviconUrl = "https://www.youtube.com"),
         ToolSpec("clip_history", "📋", "CLIP HISTORY ▸"),
         ToolSpec("markdown_folder", "M↓", "MARKDOWN ▸"),
         ToolSpec("regex_pipe", "λ", "REGEX / PIPE ▸"),
@@ -53,13 +56,26 @@ object ToolPrefs {
         ToolSpec("sort", "⇅", "SORT LINES"),
         ToolSpec("case", "Aa", "CYCLE CASE"),
         ToolSpec("incognito", "🕵", "INCOGNITO"),
-        ToolSpec("search", "↗", "WEB SEARCH"),
-        ToolSpec("yt_all", "▶", "YOUTUBE"),
-        ToolSpec("yt_today", "▶d", "YT TODAY"),
-        ToolSpec("yt_week", "▶w", "YT LAST WEEK"),
-        ToolSpec("yt_month", "▶m", "YT MONTH"),
         ToolSpec("speak", "🔊", "SPEAK ALOUD"),
         ToolSpec("log", "⊕", "APPEND LOG")
+    )
+
+    // Dedicated Web Search Subgroup with Top 4 Search Engines (each displays its own site favicon)
+    val webSearchSubTools = listOf(
+        ToolSpec("web_google", "G", "GOOGLE", customTarget = "https://www.google.com/search?q={text}", faviconUrl = "https://www.google.com"),
+        ToolSpec("web_ddg", "D", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}", faviconUrl = "https://duckduckgo.com"),
+        ToolSpec("web_bing", "B", "BING", customTarget = "https://www.bing.com/search?q={text}", faviconUrl = "https://www.bing.com"),
+        ToolSpec("web_brave", "B", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
+    )
+
+    // Dedicated YouTube Subfolder items (like Markdown)
+    val youtubeSubTools = listOf(
+        ToolSpec("yt_all", "▶", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_hour", "▶h", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_today", "▶d", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_week", "▶w", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_month", "▶m", "YT THIS MONTH", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBA%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_year", "▶y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D", faviconUrl = "https://www.youtube.com")
     )
 
     // Dedicated Markdown Folder Submenu items
@@ -93,9 +109,11 @@ object ToolPrefs {
     fun defaultRulesText(): String = """
         # Format: GLYPH | LABEL | TARGET ({text} = selection)
         # Submenu tips:
+        # - Prefix with 'SEARCH/' or 'WEB/' to place inside ↗ WEB SEARCH ▸ (auto-loads site favicon!)
+        # - Prefix with 'YT/' or 'YOUTUBE/' to place inside ▶ YOUTUBE ▸
         # - Prefix with 'MD ' to place inside M↓ MARKDOWN ▸
         # - Prefix with 'PIPE/' or use s/find/replace/g to place inside λ REGEX / PIPE ▸
-        # - Use 'FOLDER/LABEL' (e.g. DEV/GITHUB) to create your own collapsible folder!
+        # - Any http/https rule automatically fetches & caches its own website favicon!
         W | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}
         GH | DEV/GITHUB | https://github.com/search?q={text}
         SO | DEV/STACKOVERFLOW | https://stackoverflow.com/search?q={text}
@@ -126,7 +144,14 @@ object ToolPrefs {
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
 
+                        val isHttp = target.startsWith("http://", true) || target.startsWith("https://", true)
                         when {
+                            rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/") -> {
+                                // Handled in loadWebSearchTools (inside WEB SEARCH ▸ subgroup)
+                            }
+                            rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/") -> {
+                                // Handled in loadYoutubeTools (inside YOUTUBE ▸ subfolder)
+                            }
                             rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/") -> {
                                 // Handled in loadMarkdownTools
                             }
@@ -152,7 +177,8 @@ object ToolPrefs {
                                         id = "custom_${idx}_$rawLabel",
                                         glyph = glyph,
                                         label = rawLabel,
-                                        customTarget = target
+                                        customTarget = target,
+                                        faviconUrl = if (isHttp) target else null
                                     )
                                 )
                             }
@@ -250,13 +276,85 @@ object ToolPrefs {
                             val folder = rawLabel.substringBefore("/").trim()
                             val subLabel = rawLabel.substringAfter("/").trim()
                             if (folder == targetFolder && subLabel.isNotEmpty()) {
+                                val isHttp = target.startsWith("http://", true) || target.startsWith("https://", true)
                                 list.add(
                                     ToolSpec(
                                         id = "folder_item_${idx}_$subLabel",
                                         glyph = glyph,
                                         label = subLabel,
                                         customTarget = target,
-                                        folderName = folder
+                                        folderName = folder,
+                                        faviconUrl = if (isHttp) target else null
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return list
+    }
+
+    fun loadWebSearchTools(context: Context): List<ToolSpec> {
+        val list = mutableListOf<ToolSpec>()
+        list.addAll(webSearchSubTools)
+
+        val rulesFile = ensureRulesFile(context)
+        if (rulesFile.exists()) {
+            rulesFile.readLines().forEachIndexed { idx, line ->
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    val parts = trimmed.split("|").map { it.trim() }
+                    if (parts.size >= 3) {
+                        val glyph = parts[0].take(2)
+                        val rawLabel = parts[1].uppercase()
+                        val target = parts[2]
+                        if (rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/")) {
+                            val cleanLabel = rawLabel.removePrefix("SEARCH/").removePrefix("WEB/").trim()
+                            if (cleanLabel.isNotEmpty()) {
+                                list.add(
+                                    ToolSpec(
+                                        id = "custom_search_${idx}_$cleanLabel",
+                                        glyph = glyph,
+                                        label = cleanLabel,
+                                        customTarget = target,
+                                        faviconUrl = target
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return list
+    }
+
+    fun loadYoutubeTools(context: Context): List<ToolSpec> {
+        val list = mutableListOf<ToolSpec>()
+        list.addAll(youtubeSubTools)
+
+        val rulesFile = ensureRulesFile(context)
+        if (rulesFile.exists()) {
+            rulesFile.readLines().forEachIndexed { idx, line ->
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    val parts = trimmed.split("|").map { it.trim() }
+                    if (parts.size >= 3) {
+                        val glyph = parts[0].take(2)
+                        val rawLabel = parts[1].uppercase()
+                        val target = parts[2]
+                        if (rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/")) {
+                            val cleanLabel = rawLabel.removePrefix("YOUTUBE/").removePrefix("YT/").trim()
+                            if (cleanLabel.isNotEmpty()) {
+                                list.add(
+                                    ToolSpec(
+                                        id = "custom_yt_${idx}_$cleanLabel",
+                                        glyph = glyph,
+                                        label = cleanLabel,
+                                        customTarget = target,
+                                        faviconUrl = target
                                     )
                                 )
                             }
@@ -467,7 +565,7 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "1.8.0")
+        root.put("version", "1.9.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))

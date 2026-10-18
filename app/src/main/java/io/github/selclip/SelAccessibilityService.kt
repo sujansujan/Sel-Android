@@ -23,6 +23,7 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.util.Base64
+import android.util.DisplayMetrics
 import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
@@ -64,6 +65,8 @@ class SelAccessibilityService : AccessibilityService() {
     private enum class PopupMode {
         ACTIONS,
         COLLAPSED_PILL,
+        WEB_SEARCH_FOLDER,
+        YOUTUBE_FOLDER,
         CLIP_HISTORY,
         MARKDOWN_FOLDER,
         REGEX_PIPE,
@@ -163,6 +166,8 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
+        FaviconManager.prefetchAllForTools(this)
+
         clipboardManager.addPrimaryClipChangedListener {
             val now = System.currentTimeMillis()
             if (now - lastClipboardTime < 650) return@addPrimaryClipChangedListener
@@ -200,8 +205,8 @@ class SelAccessibilityService : AccessibilityService() {
                 currentMode = PopupMode.ACTIONS
                 currentNode = findSelectedOrFocusedNode(rootInActiveWindow)
                 lastShownTime = System.currentTimeMillis()
-                val dm = resources.displayMetrics
-                showOrUpdatePalette(Rect(0, dm.heightPixels / 3, dm.widthPixels, dm.heightPixels / 2))
+                val resolvedBounds = resolveBestScreenSelectionBounds(null)
+                showOrUpdatePalette(resolvedBounds)
             }
         }
     }
@@ -779,6 +784,124 @@ class SelAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun getRealScreenHeight(): Int {
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= 30) {
+                windowManager.currentWindowMetrics.bounds.height()
+            } else {
+                val outMetrics = DisplayMetrics()
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay.getRealMetrics(outMetrics)
+                outMetrics.heightPixels
+            }
+        }.getOrDefault(resources.displayMetrics.heightPixels)
+    }
+
+    /**
+     * Finds Android's or Chrome's floating selection toolbar ("Copy", "Select all", "Share", "Cut")
+     * on screen so that when selecting text in browsers/WebViews (like plaintextsports.com),
+     * we know the exact Y-position of both the floating "Copy | Select all" bar AND the selected line + handles!
+     */
+    private fun findNativeSelectionToolbarBounds(): Rect? {
+        val dm = resources.displayMetrics
+        val dp = { v: Int -> (v * dm.density).toInt() }
+        val realH = getRealScreenHeight()
+        val keywords = listOf("Copy", "Select all", "Share", "Cut", "Web search")
+        var unionRect: Rect? = null
+
+        val scanRoot = { root: AccessibilityNodeInfo? ->
+            if (root != null && root.packageName?.toString() != packageName) {
+                for (kw in keywords) {
+                    val matches = runCatching { root.findAccessibilityNodeInfosByText(kw) }.getOrNull() ?: continue
+                    for (m in matches) {
+                        if (!m.isVisibleToUser) continue
+                        val txt = m.text?.toString()?.trim() ?: m.contentDescription?.toString()?.trim() ?: ""
+                        if (!txt.equals(kw, ignoreCase = true)) continue
+                        val r = Rect()
+                        m.getBoundsInScreen(r)
+                        if (r.width() in dp(24)..dp(260) && r.height() in dp(18)..dp(90) && r.top in dp(24)..(realH - dp(24))) {
+                            if (unionRect == null) {
+                                unionRect = Rect(r)
+                            } else {
+                                unionRect!!.union(r)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        runCatching {
+            val winList = windows
+            if (!winList.isNullOrEmpty()) {
+                for (w in winList) {
+                    scanRoot(w.root)
+                }
+            }
+        }
+        if (unionRect == null) {
+            scanRoot(rootInActiveWindow)
+        }
+        return unionRect
+    }
+
+    /**
+     * Combines candidate node bounds with any visible native selection toolbar ("Copy | Select all")
+     * to return the forbidden vertical zone `[top, bottom]` that covers:
+     * 1. The native floating "Copy | Select all" bar
+     * 2. The highlighted text line(s)
+     * 3. The blue selection drag handles below the text
+     */
+    private fun resolveBestScreenSelectionBounds(candidateBounds: Rect?): Rect {
+        val dm = resources.displayMetrics
+        val dp = { v: Int -> (v * dm.density).toInt() }
+        val realH = getRealScreenHeight()
+
+        val toolbarRect = findNativeSelectionToolbarBounds()
+        val hasValidCandidate = candidateBounds != null &&
+            candidateBounds.width() > 0 &&
+            candidateBounds.height() > 0 &&
+            candidateBounds.height() < (realH * 0.42f).toInt()
+
+        if (toolbarRect != null) {
+            // The native "Copy | Select all" bar sits right above the selected text,
+            // and the selected text + blue teardrop handles sit ~78dp below the bar (or ~64dp above if bar is below).
+            var zoneTop = toolbarRect.top - dp(16)
+            var zoneBottom = toolbarRect.bottom + dp(88)
+            if (hasValidCandidate && candidateBounds != null) {
+                if (kotlin.math.abs(candidateBounds.top - toolbarRect.bottom) < dp(160) ||
+                    kotlin.math.abs(toolbarRect.top - candidateBounds.bottom) < dp(160)
+                ) {
+                    zoneTop = minOf(zoneTop, candidateBounds.top - dp(12))
+                    zoneBottom = maxOf(zoneBottom, candidateBounds.bottom + dp(28))
+                }
+            }
+            return Rect(
+                toolbarRect.left.coerceAtLeast(dp(12)),
+                zoneTop.coerceIn(dp(48), realH - dp(96)),
+                toolbarRect.right.coerceAtMost(dm.widthPixels - dp(12)),
+                zoneBottom.coerceIn(zoneTop + dp(44), realH - dp(48))
+            )
+        }
+
+        if (hasValidCandidate && candidateBounds != null) {
+            return Rect(
+                candidateBounds.left,
+                (candidateBounds.top - dp(12)).coerceAtLeast(dp(48)),
+                candidateBounds.right,
+                (candidateBounds.bottom + dp(26)).coerceAtMost(realH - dp(48))
+            )
+        }
+
+        // Fallback if candidateBounds was a full-screen WebView and no Copy bar was found yet
+        if (candidateBounds != null && !candidateBounds.isEmpty) {
+            val midY = candidateBounds.centerY().coerceIn(realH / 4, (realH * 3) / 4)
+            return Rect(dp(16), midY - dp(36), dm.widthPixels - dp(16), midY + dp(44))
+        }
+
+        return Rect(dp(16), realH / 3, dm.widthPixels - dp(16), realH / 3 + dp(64))
+    }
+
     private fun resolveExactSelectionBounds(
         node: AccessibilityNodeInfo,
         raw: String,
@@ -885,7 +1008,7 @@ class SelAccessibilityService : AccessibilityService() {
             if (end <= raw.length) {
                 val sub = raw.substring(start, end)
                 if (sub.isNotBlank()) {
-                    val exactRect = resolveExactSelectionBounds(node, raw, start, end)
+                    val exactRect = resolveBestScreenSelectionBounds(resolveExactSelectionBounds(node, raw, start, end))
                     return SelectionResult(sub, node, exactRect)
                 }
             }
@@ -897,7 +1020,7 @@ class SelAccessibilityService : AccessibilityService() {
             if (end <= raw.length) {
                 val sub = raw.substring(start, end)
                 if (sub.isNotBlank()) {
-                    val exactRect = resolveExactSelectionBounds(node, raw, start, end)
+                    val exactRect = resolveBestScreenSelectionBounds(resolveExactSelectionBounds(node, raw, start, end))
                     return SelectionResult(sub, node, exactRect)
                 }
             }
@@ -933,49 +1056,56 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Computes strict ABOVE or BELOW placement relative to `bounds` so the popup NEVER covers
-     * the selected text, and dynamically sizes the popup height & width based on available space.
-     * - When placed ABOVE selection: uses Gravity.BOTTOM so the popup's bottom edge is pinned
-     *   at `bounds.top - gap` (can never grow downward into the selection).
-     * - When placed BELOW selection: uses Gravity.TOP so the popup's top edge is pinned
-     *   at `bounds.bottom + gap` (can never grow upward into the selection).
+     * Computes strict ABOVE or BELOW placement in a single unified coordinate system (`Gravity.TOP`
+     * from screen top `y = 0`, matching `AccessibilityNodeInfo.getBoundsInScreen`).
+     * - When placed ABOVE: caps the popup's total height to `spaceAbove = safeZone.top - gap - topSafe`,
+     *   measures the popup's exact pixel height `measuredH`, and sets `params.y = safeZone.top - gap - measuredH`.
+     *   Because `params.y + measuredH == safeZone.top - gap`, the bottom edge of the popup NEVER crosses
+     *   into `safeZone`!
+     * - When placed BELOW: sets `params.y = safeZone.bottom + gap` and caps total height to `spaceBelow`.
      */
+    private var currentMaxTotalHeight: Int = 700
+
     private fun applyStrictPlacementAndDynamicSize(bounds: Rect, params: WindowManager.LayoutParams) {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
+        val realH = getRealScreenHeight()
 
-        val topSafe = dp(48)
-        val bottomSafe = dp(56)
+        val safeZone = resolveBestScreenSelectionBounds(bounds)
+        lastSelectionBounds = Rect(safeZone)
+
+        val topSafe = dp(52)
+        val bottomSafe = dp(68)
         val gap = dp(18)
 
-        val spaceAbove = (bounds.top - gap) - topSafe
-        val spaceBelow = (dm.heightPixels - bottomSafe) - (bounds.bottom + gap)
+        val spaceAbove = (safeZone.top - gap) - topSafe
+        val spaceBelow = (realH - bottomSafe) - (safeZone.bottom + gap)
 
-        // Choose strictly BELOW if there is comfortable room below, otherwise strictly ABOVE
+        // Choose BELOW if there is ample space below; otherwise ABOVE if there is more space above
         val placeAbove = when {
-            spaceBelow >= dp(220) && (spaceBelow >= spaceAbove || spaceBelow >= dp(300)) -> false
+            spaceBelow >= dp(240) && (spaceBelow >= spaceAbove || spaceBelow >= dp(310)) -> false
             spaceAbove >= dp(150) && spaceAbove > spaceBelow -> true
-            spaceBelow >= dp(150) -> false
+            spaceBelow >= dp(160) -> false
             else -> spaceAbove > spaceBelow
         }
         anchoredAboveSelection = placeAbove
 
         val chosenSpace = if (placeAbove) spaceAbove else spaceBelow
-        val maxTotalHeight = chosenSpace.coerceIn(dp(128), (dm.heightPixels * 0.52f).toInt())
+        currentMaxTotalHeight = chosenSpace.coerceIn(dp(118), (realH * 0.48f).toInt())
         val headerHeightEst = dp(58)
-        dynamicMaxScrollHeight = (maxTotalHeight - headerHeightEst).coerceIn(dp(82), dp(400))
+        dynamicMaxScrollHeight = (currentMaxTotalHeight - headerHeightEst).coerceIn(dp(72), dp(370))
 
-        // Dynamically scale width based on mode and whether vertical space is tight
         val tightVertical = chosenSpace < dp(230)
-        dynamicMinPopupWidth = if (tightVertical) dp(212) else dp(196)
+        dynamicMinPopupWidth = if (tightVertical) dp(212) else dp(198)
         dynamicMaxPopupWidth = when {
             currentMode != PopupMode.ACTIONS -> dp(288)
             tightVertical -> dp(264)
-            else -> dp(248)
+            else -> dp(250)
         }.coerceAtMost(dm.widthPixels - dp(20))
 
         if (!userManuallyDragged) {
             val snapLeft = ToolPrefs.isSnapLeftEdge(this)
+            params.gravity = Gravity.TOP or Gravity.START
             params.x = if (snapLeft) {
                 dp(10)
             } else {
@@ -983,13 +1113,18 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             if (placeAbove) {
-                params.gravity = Gravity.BOTTOM or Gravity.START
-                params.y = (dm.heightPixels - (bounds.top - gap))
-                    .coerceIn(bottomSafe, (dm.heightPixels - topSafe - dp(110)).coerceAtLeast(bottomSafe))
+                val v = popupView
+                val measuredH = if (v != null) {
+                    val wSpec = View.MeasureSpec.makeMeasureSpec(dynamicMaxPopupWidth, View.MeasureSpec.AT_MOST)
+                    val hSpec = View.MeasureSpec.makeMeasureSpec(currentMaxTotalHeight, View.MeasureSpec.AT_MOST)
+                    v.measure(wSpec, hSpec)
+                    v.measuredHeight.coerceIn(dp(80), currentMaxTotalHeight)
+                } else {
+                    currentMaxTotalHeight
+                }
+                params.y = (safeZone.top - gap - measuredH).coerceAtLeast(topSafe)
             } else {
-                params.gravity = Gravity.TOP or Gravity.START
-                params.y = (bounds.bottom + gap)
-                    .coerceIn(topSafe, (dm.heightPixels - bottomSafe - dp(110)).coerceAtLeast(topSafe))
+                params.y = (safeZone.bottom + gap).coerceIn(topSafe, (realH - bottomSafe - dp(110)).coerceAtLeast(topSafe))
             }
         }
     }
@@ -999,7 +1134,6 @@ class SelAccessibilityService : AccessibilityService() {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
 
-        lastSelectionBounds = Rect(bounds)
         val words = selectedText.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.size
         val chars = selectedText.length
 
@@ -1030,9 +1164,13 @@ class SelAccessibilityService : AccessibilityService() {
                     return
                 }
                 val cappedWidthSpec = MeasureSpec.makeMeasureSpec(dynamicMaxPopupWidth, MeasureSpec.AT_MOST)
-                super.onMeasure(cappedWidthSpec, heightMeasureSpec)
+                val cappedHeightSpec = MeasureSpec.makeMeasureSpec(currentMaxTotalHeight, MeasureSpec.AT_MOST)
+                super.onMeasure(cappedWidthSpec, cappedHeightSpec)
                 if (measuredWidth < dynamicMinPopupWidth) {
-                    super.onMeasure(MeasureSpec.makeMeasureSpec(dynamicMinPopupWidth, MeasureSpec.EXACTLY), heightMeasureSpec)
+                    super.onMeasure(
+                        MeasureSpec.makeMeasureSpec(dynamicMinPopupWidth, MeasureSpec.EXACTLY),
+                        cappedHeightSpec
+                    )
                 }
             }
         }.apply {
@@ -1041,6 +1179,26 @@ class SelAccessibilityService : AccessibilityService() {
                 setColor(Color.parseColor("#0A0A0A"))
                 setStroke(dp(2), Color.parseColor("#444444"))
                 cornerRadius = dp(2).toFloat()
+            }
+            // Keep bottom edge strictly above selection whenever layout height changes while anchored ABOVE
+            addOnLayoutChangeListener { v, _, top, _, bottom, _, _, _, _ ->
+                val actualH = bottom - top
+                val p = popupParams
+                if (actualH > 0 && p != null && anchoredAboveSelection && !userManuallyDragged && !lastSelectionBounds.isEmpty) {
+                    val topSafe = dp(52)
+                    val gap = dp(18)
+                    val desiredY = (lastSelectionBounds.top - gap - actualH).coerceAtLeast(topSafe)
+                    if (kotlin.math.abs(p.y - desiredY) > 2) {
+                        p.y = desiredY
+                        if (v.isAttachedToWindow) {
+                            mainHandler.post {
+                                if (v.isAttachedToWindow) {
+                                    runCatching { windowManager.updateViewLayout(v, p) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             // Immediately hide popup when clicking anywhere outside the popup
             setOnTouchListener { _, event ->
@@ -1200,17 +1358,14 @@ class SelAccessibilityService : AccessibilityService() {
         bodyContainer = container
 
         renderPopupBody()
+        // Measure once after populating rows so initial ABOVE placement has exact measured height before addView!
+        applyStrictPlacementAndDynamicSize(bounds, windowParams)
         runCatching { windowManager.addView(popupView, windowParams) }
     }
 
     private fun renderPopupBody() {
         val container = bodyContainer ?: return
         container.removeAllViews()
-
-        val params = popupParams
-        if (params != null && !lastSelectionBounds.isEmpty) {
-            applyStrictPlacementAndDynamicSize(lastSelectionBounds, params)
-        }
 
         headerBarView?.visibility = if (currentMode == PopupMode.COLLAPSED_PILL) View.GONE else View.VISIBLE
 
@@ -1221,6 +1376,8 @@ class SelAccessibilityService : AccessibilityService() {
         when (currentMode) {
             PopupMode.ACTIONS -> populateActionRows(container)
             PopupMode.COLLAPSED_PILL -> populateCollapsedPill(container)
+            PopupMode.WEB_SEARCH_FOLDER -> populateWebSearchSubmenu(container)
+            PopupMode.YOUTUBE_FOLDER -> populateYoutubeSubmenu(container)
             PopupMode.CLIP_HISTORY -> populateClipHistorySubmenu(container)
             PopupMode.MARKDOWN_FOLDER -> populateMarkdownSubmenu(container)
             PopupMode.REGEX_PIPE -> populateRegexPipeSubmenu(container)
@@ -1231,6 +1388,11 @@ class SelAccessibilityService : AccessibilityService() {
             PopupMode.TRANSLATE -> populateTranslateView(container)
             PopupMode.EXTRACT -> populateExtractView(container)
             PopupMode.REORDER -> populateReorderView(container)
+        }
+
+        val params = popupParams
+        if (params != null && !lastSelectionBounds.isEmpty) {
+            applyStrictPlacementAndDynamicSize(lastSelectionBounds, params)
         }
 
         popupView?.requestLayout()
@@ -1380,7 +1542,10 @@ class SelAccessibilityService : AccessibilityService() {
 
             val count = ToolPrefs.getUseCount(this, tool.id)
             val badge = if (showCounts && count > 0) "$count" else null
-            list.addView(makeRow(tool.glyph, tool.label, badge) {
+            val favUrl = tool.faviconUrl ?: tool.customTarget?.takeIf {
+                it.startsWith("http://", true) || it.startsWith("https://", true)
+            }
+            list.addView(makeRow(tool.glyph, tool.label, badge, favUrl) {
                 ToolPrefs.recordUse(this, tool.id)
                 executeTool(tool)
             })
@@ -1554,7 +1719,47 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Custom User-Defined Folder Submenu (from FOLDER/LABEL rules in rules.txt)
+    // Dedicated Web Search Subgroup (Top 4 Search Engines + user-added SEARCH/... engines with live favicons)
+    private fun populateWebSearchSubmenu(container: LinearLayout) {
+        container.addView(makeRow("←", "BACK TO TOOLS", null) {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = PopupMode.ACTIONS
+            renderPopupBody()
+        })
+        container.addView(makeHorizontalRule())
+
+        val engines = ToolPrefs.loadWebSearchTools(this)
+        for (engine in engines) {
+            val favUrl = engine.faviconUrl ?: engine.customTarget
+            container.addView(makeRow(engine.glyph, engine.label, null, favUrl) {
+                ToolPrefs.recordUse(this, "web_search_folder")
+                ToolPrefs.recordUse(this, engine.id)
+                executeTool(engine)
+            })
+        }
+    }
+
+    // Dedicated YouTube Subfolder (All Time, Last Hour, Today, This Week, This Month, This Year + custom YT/... rules)
+    private fun populateYoutubeSubmenu(container: LinearLayout) {
+        container.addView(makeRow("←", "BACK TO TOOLS", null) {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = PopupMode.ACTIONS
+            renderPopupBody()
+        })
+        container.addView(makeHorizontalRule())
+
+        val ytTools = ToolPrefs.loadYoutubeTools(this)
+        for (ytTool in ytTools) {
+            val favUrl = ytTool.faviconUrl ?: ytTool.customTarget
+            container.addView(makeRow(ytTool.glyph, ytTool.label, null, favUrl) {
+                ToolPrefs.recordUse(this, "youtube_folder")
+                ToolPrefs.recordUse(this, ytTool.id)
+                executeTool(ytTool)
+            })
+        }
+    }
+
+    // Custom User-Defined Folder Submenu (from FOLDER/LABEL rules in rules.txt — also shows favicons for web engines!)
     private fun populateCustomFolderSubmenu(container: LinearLayout, folderName: String) {
         container.addView(makeRow("←", "BACK ($folderName)", null) {
             lastShownTime = System.currentTimeMillis()
@@ -1565,7 +1770,10 @@ class SelAccessibilityService : AccessibilityService() {
 
         val items = ToolPrefs.loadCustomFolderTools(this, folderName)
         for (item in items) {
-            container.addView(makeRow(item.glyph, item.label, null) {
+            val favUrl = item.faviconUrl ?: item.customTarget?.takeIf {
+                it.startsWith("http://", true) || it.startsWith("https://", true)
+            }
+            container.addView(makeRow(item.glyph, item.label, null, favUrl) {
                 ToolPrefs.recordUse(this, "folder_custom_$folderName")
                 executeTool(item)
             })
@@ -1702,11 +1910,16 @@ class SelAccessibilityService : AccessibilityService() {
                 }
                 openIncognito(targetUrl)
             }
-            "search" -> openUrl("https://duckduckgo.com/?q=$encoded")
-            "yt_all" -> openUrl("https://www.youtube.com/results?search_query=$encoded")
-            "yt_today" -> openUrl("https://www.youtube.com/results?search_query=$encoded&sp=EgIIAg%3D%3D")
-            "yt_week" -> openUrl("https://www.youtube.com/results?search_query=$encoded&sp=EgIIAw%3D%3D")
-            "yt_month" -> openUrl("https://www.youtube.com/results?search_query=$encoded&sp=EgIIBA%3D%3D")
+            "web_search_folder" -> {
+                lastShownTime = System.currentTimeMillis()
+                currentMode = PopupMode.WEB_SEARCH_FOLDER
+                renderPopupBody()
+            }
+            "youtube_folder" -> {
+                lastShownTime = System.currentTimeMillis()
+                currentMode = PopupMode.YOUTUBE_FOLDER
+                renderPopupBody()
+            }
             "case" -> applyResult(cycleCase(selectedText))
             "sort" -> {
                 val sorted = selectedText.lines().filter { it.isNotBlank() }.distinct().sorted().joinToString("\n")
@@ -2257,7 +2470,13 @@ class SelAccessibilityService : AccessibilityService() {
      * PlainTextSports.com-inspired boxed scoreboard row with generous vertical/horizontal padding
      * (`dp(14)` horizontal, `dp(12)` vertical, `dp(4)` vertical gap between items) so items never feel cramped.
      */
-    private fun makeRow(glyph: String, label: String, countBadge: String?, onClick: () -> Unit): View {
+    private fun makeRow(
+        glyph: String,
+        label: String,
+        countBadge: String?,
+        faviconUrl: String? = null,
+        onClick: () -> Unit
+    ): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2295,13 +2514,29 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
-        val iconView = TextView(this).apply {
-            text = glyph
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            setTextColor(Color.parseColor("#00FF66"))
-            width = dp(30)
+        val iconHolder = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            this.layoutParams = LinearLayout.LayoutParams(dp(30), LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        if (!faviconUrl.isNullOrBlank() && FaviconManager.extractDomain(faviconUrl) != null) {
+            val iconSize = dp(18)
+            val favImg = ImageView(this).apply {
+                this.layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }
+            FaviconManager.bindFavicon(this, favImg, faviconUrl, glyph, iconSize)
+            iconHolder.addView(favImg)
+        } else {
+            val iconView = TextView(this).apply {
+                text = glyph
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                setTextColor(Color.parseColor("#00FF66"))
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            }
+            iconHolder.addView(iconView)
         }
 
         val pipeSep = TextView(this).apply {
@@ -2325,7 +2560,7 @@ class SelAccessibilityService : AccessibilityService() {
             )
         }
 
-        row.addView(iconView)
+        row.addView(iconHolder)
         row.addView(pipeSep)
         row.addView(labelView)
 
