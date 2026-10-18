@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -100,6 +101,12 @@ class SelAccessibilityService : AccessibilityService() {
     private var activeCustomFolder: String = ""
     private var currentNode: AccessibilityNodeInfo? = null
     private var selectedText: String = ""
+    private var lastSelectionBounds: Rect = Rect()
+    private var dynamicMaxScrollHeight: Int = 600
+    private var dynamicMaxPopupWidth: Int = 540
+    private var dynamicMinPopupWidth: Int = 380
+    private var anchoredAboveSelection: Boolean = false
+    private var userManuallyDragged: Boolean = false
     private var lastClipboardTime = 0L
     private var lastWebAutoCopyTime = 0L
     private var lastShownTime = 0L
@@ -585,6 +592,16 @@ class SelAccessibilityService : AccessibilityService() {
         }
 
         when (event.eventType) {
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START -> {
+                if (popupView != null && pkg != packageName) {
+                    val elapsed = System.currentTimeMillis() - lastShownTime
+                    if (elapsed > 220L) {
+                        hidePalette()
+                    }
+                }
+            }
+
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> {
                 val result = extractSelection(event)
                 if (result != null) {
@@ -762,6 +779,94 @@ class SelAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun resolveExactSelectionBounds(
+        node: AccessibilityNodeInfo,
+        raw: String,
+        start: Int,
+        end: Int
+    ): Rect {
+        val dm = resources.displayMetrics
+        val dp = { v: Int -> (v * dm.density).toInt() }
+        val nodeRect = Rect()
+        node.getBoundsInScreen(nodeRect)
+        if (nodeRect.width() <= 0 || nodeRect.height() <= 0) {
+            nodeRect.set(dp(24), dm.heightPixels / 3, dm.widthPixels - dp(24), dm.heightPixels / 3 + dp(48))
+        }
+
+        // 1. Try Android 8.0+ (API 26+) exact character screen bounds first
+        runCatching {
+            val safeStart = start.coerceIn(0, (raw.length - 1).coerceAtLeast(0))
+            val safeLen = (end - safeStart).coerceIn(1, 64)
+            val extrasArg = Bundle().apply {
+                putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_START_INDEX, safeStart)
+                putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_LENGTH, safeLen)
+            }
+            if (node.refreshWithExtraData(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, extrasArg)) {
+                @Suppress("DEPRECATION")
+                val parcelables = node.extras?.getParcelableArray(
+                    AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY
+                )
+                if (!parcelables.isNullOrEmpty()) {
+                    var minLeft = Float.MAX_VALUE
+                    var minTop = Float.MAX_VALUE
+                    var maxRight = -Float.MAX_VALUE
+                    var maxBottom = -Float.MAX_VALUE
+                    for (p in parcelables) {
+                        val rf = p as? RectF ?: continue
+                        if (!rf.isEmpty) {
+                            if (rf.left < minLeft) minLeft = rf.left
+                            if (rf.top < minTop) minTop = rf.top
+                            if (rf.right > maxRight) maxRight = rf.right
+                            if (rf.bottom > maxBottom) maxBottom = rf.bottom
+                        }
+                    }
+                    if (minTop < maxBottom && minLeft < maxRight) {
+                        return Rect(
+                            minLeft.toInt(),
+                            minTop.toInt() - dp(6),
+                            maxRight.toInt(),
+                            maxBottom.toInt() + dp(18) // extra bottom clearance for selection handles
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. If the node is a tall multi-line container (e.g. EditText / article view > 84dp tall),
+        // estimate the exact vertical line band of [start..end] so we never cover the selected line
+        if (nodeRect.height() > dp(84) && raw.isNotEmpty()) {
+            val avgCharsPerLine = ((nodeRect.width() / dp(8).coerceAtLeast(1))).coerceIn(18, 68)
+            var currentLine = 0
+            var startLine = 0
+            var endLine = 0
+            var col = 0
+            for (i in raw.indices) {
+                if (i == start) startLine = currentLine
+                if (i == end) endLine = currentLine
+                val ch = raw[i]
+                if (ch == '\n') {
+                    currentLine++
+                    col = 0
+                } else {
+                    col++
+                    if (col >= avgCharsPerLine) {
+                        currentLine++
+                        col = 0
+                    }
+                }
+            }
+            if (end >= raw.length) endLine = currentLine
+            val totalLines = (currentLine + 1).coerceAtLeast(1)
+            val estLineH = (nodeRect.height().toFloat() / totalLines.toFloat()).coerceIn(dp(20).toFloat(), dp(42).toFloat())
+            val bandTop = (nodeRect.top + startLine * estLineH).toInt().coerceIn(nodeRect.top, nodeRect.bottom - dp(24))
+            val bandBottom = (nodeRect.top + (endLine + 1) * estLineH + dp(20)).toInt()
+                .coerceIn(bandTop + dp(28), nodeRect.bottom + dp(16))
+            return Rect(nodeRect.left, bandTop, nodeRect.right, bandBottom)
+        }
+
+        return Rect(nodeRect.left, nodeRect.top, nodeRect.right, nodeRect.bottom + dp(16))
+    }
+
     private fun extractFromNode(
         node: AccessibilityNodeInfo,
         evFrom: Int = -1,
@@ -772,12 +877,6 @@ class SelAccessibilityService : AccessibilityService() {
         val hint = node.hintText?.toString() ?: ""
         if (raw.isEmpty() || (hint.isNotEmpty() && raw == hint)) return null
 
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        if (rect.width() <= 0 || rect.height() <= 0) {
-            rect.set(0, 400, 1000, 600)
-        }
-
         val ns = node.textSelectionStart
         val ne = node.textSelectionEnd
         if (ns >= 0 && ne >= 0 && ns != ne) {
@@ -786,7 +885,8 @@ class SelAccessibilityService : AccessibilityService() {
             if (end <= raw.length) {
                 val sub = raw.substring(start, end)
                 if (sub.isNotBlank()) {
-                    return SelectionResult(sub, node, rect)
+                    val exactRect = resolveExactSelectionBounds(node, raw, start, end)
+                    return SelectionResult(sub, node, exactRect)
                 }
             }
         }
@@ -797,7 +897,8 @@ class SelAccessibilityService : AccessibilityService() {
             if (end <= raw.length) {
                 val sub = raw.substring(start, end)
                 if (sub.isNotBlank()) {
-                    return SelectionResult(sub, node, rect)
+                    val exactRect = resolveExactSelectionBounds(node, raw, start, end)
+                    return SelectionResult(sub, node, exactRect)
                 }
             }
         }
@@ -831,30 +932,86 @@ class SelAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // Dynamic autosizing vertical palette with Smart Anchor, Edge-Snap, and Collapse-to-Pill
+    /**
+     * Computes strict ABOVE or BELOW placement relative to `bounds` so the popup NEVER covers
+     * the selected text, and dynamically sizes the popup height & width based on available space.
+     * - When placed ABOVE selection: uses Gravity.BOTTOM so the popup's bottom edge is pinned
+     *   at `bounds.top - gap` (can never grow downward into the selection).
+     * - When placed BELOW selection: uses Gravity.TOP so the popup's top edge is pinned
+     *   at `bounds.bottom + gap` (can never grow upward into the selection).
+     */
+    private fun applyStrictPlacementAndDynamicSize(bounds: Rect, params: WindowManager.LayoutParams) {
+        val dm = resources.displayMetrics
+        val dp = { v: Int -> (v * dm.density).toInt() }
+
+        val topSafe = dp(48)
+        val bottomSafe = dp(56)
+        val gap = dp(18)
+
+        val spaceAbove = (bounds.top - gap) - topSafe
+        val spaceBelow = (dm.heightPixels - bottomSafe) - (bounds.bottom + gap)
+
+        // Choose strictly BELOW if there is comfortable room below, otherwise strictly ABOVE
+        val placeAbove = when {
+            spaceBelow >= dp(220) && (spaceBelow >= spaceAbove || spaceBelow >= dp(300)) -> false
+            spaceAbove >= dp(150) && spaceAbove > spaceBelow -> true
+            spaceBelow >= dp(150) -> false
+            else -> spaceAbove > spaceBelow
+        }
+        anchoredAboveSelection = placeAbove
+
+        val chosenSpace = if (placeAbove) spaceAbove else spaceBelow
+        val maxTotalHeight = chosenSpace.coerceIn(dp(128), (dm.heightPixels * 0.52f).toInt())
+        val headerHeightEst = dp(58)
+        dynamicMaxScrollHeight = (maxTotalHeight - headerHeightEst).coerceIn(dp(82), dp(400))
+
+        // Dynamically scale width based on mode and whether vertical space is tight
+        val tightVertical = chosenSpace < dp(230)
+        dynamicMinPopupWidth = if (tightVertical) dp(212) else dp(196)
+        dynamicMaxPopupWidth = when {
+            currentMode != PopupMode.ACTIONS -> dp(288)
+            tightVertical -> dp(264)
+            else -> dp(248)
+        }.coerceAtMost(dm.widthPixels - dp(20))
+
+        if (!userManuallyDragged) {
+            val snapLeft = ToolPrefs.isSnapLeftEdge(this)
+            params.x = if (snapLeft) {
+                dp(10)
+            } else {
+                (dm.widthPixels - dynamicMaxPopupWidth - dp(10)).coerceAtLeast(dp(10))
+            }
+
+            if (placeAbove) {
+                params.gravity = Gravity.BOTTOM or Gravity.START
+                params.y = (dm.heightPixels - (bounds.top - gap))
+                    .coerceIn(bottomSafe, (dm.heightPixels - topSafe - dp(110)).coerceAtLeast(bottomSafe))
+            } else {
+                params.gravity = Gravity.TOP or Gravity.START
+                params.y = (bounds.bottom + gap)
+                    .coerceIn(topSafe, (dm.heightPixels - bottomSafe - dp(110)).coerceAtLeast(topSafe))
+            }
+        }
+    }
+
+    // Dynamic autosizing vertical palette inspired by PlainTextSports.com with strict Above/Below anchor
     private fun showOrUpdatePalette(bounds: Rect) {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
 
+        lastSelectionBounds = Rect(bounds)
         val words = selectedText.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.size
         val chars = selectedText.length
 
-        if (popupView != null && statsLabelView != null && bodyContainer != null) {
-            statsLabelView?.text = "${words}W·${chars}C"
+        if (popupView != null && statsLabelView != null && bodyContainer != null && popupParams != null) {
+            applyStrictPlacementAndDynamicSize(bounds, popupParams!!)
+            val posGlyph = if (anchoredAboveSelection) "▲" else "▼"
+            statsLabelView?.text = "│ ${words}W·${chars}C $posGlyph"
             renderPopupBody()
             return
         }
 
-        val snapLeft = ToolPrefs.isSnapLeftEdge(this)
-        val initialX = if (snapLeft) dp(10) else (dm.widthPixels - dp(236)).coerceAtLeast(dp(10))
-
-        // Smart Y positioning: if selection is in lower half (keyboard likely open), anchor above selection
-        val targetY = if (bounds.bottom > dm.heightPixels * 0.56f) {
-            (bounds.top - dp(260)).coerceIn(dp(64), (dm.heightPixels - dp(340)).coerceAtLeast(dp(72)))
-        } else {
-            (bounds.bottom + dp(14)).coerceIn(dp(64), (dm.heightPixels - dp(340)).coerceAtLeast(dp(72)))
-        }
-
+        userManuallyDragged = false
         val windowParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -863,11 +1020,8 @@ class SelAccessibilityService : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = initialX
-            y = targetY
-        }
+        )
+        applyStrictPlacementAndDynamicSize(bounds, windowParams)
 
         val rootCard = object : LinearLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -875,43 +1029,24 @@ class SelAccessibilityService : AccessibilityService() {
                     super.onMeasure(widthMeasureSpec, heightMeasureSpec)
                     return
                 }
-                val maxW = if (currentMode != PopupMode.ACTIONS) {
-                    dp(268)
-                } else {
-                    dp(228)
-                }
-                val cappedWidthSpec = MeasureSpec.makeMeasureSpec(maxW, MeasureSpec.AT_MOST)
+                val cappedWidthSpec = MeasureSpec.makeMeasureSpec(dynamicMaxPopupWidth, MeasureSpec.AT_MOST)
                 super.onMeasure(cappedWidthSpec, heightMeasureSpec)
-                val minW = dp(172)
-                if (measuredWidth < minW) {
-                    super.onMeasure(MeasureSpec.makeMeasureSpec(minW, MeasureSpec.EXACTLY), heightMeasureSpec)
+                if (measuredWidth < dynamicMinPopupWidth) {
+                    super.onMeasure(MeasureSpec.makeMeasureSpec(dynamicMinPopupWidth, MeasureSpec.EXACTLY), heightMeasureSpec)
                 }
             }
         }.apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#0A0A0A"))
-                setStroke(dp(1), Color.parseColor("#383838"))
-                cornerRadius = dp(3).toFloat()
+                setStroke(dp(2), Color.parseColor("#444444"))
+                cornerRadius = dp(2).toFloat()
             }
+            // Immediately hide popup when clicking anywhere outside the popup
             setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_OUTSIDE) {
-                    if (System.currentTimeMillis() - lastShownTime > 850 && currentMode == PopupMode.ACTIONS) {
-                        mainHandler.removeCallbacks(delayedHideRunnable)
-                        mainHandler.postDelayed({
-                            val activeNode = currentNode
-                            val stillSelected = if (activeNode != null) {
-                                runCatching { activeNode.refresh() }
-                                val s = activeNode.textSelectionStart
-                                val e = activeNode.textSelectionEnd
-                                s >= 0 && e >= 0 && s != e
-                            } else {
-                                false
-                            }
-                            if (!stillSelected) {
-                                hidePalette()
-                            }
-                        }, 320)
+                if (event.action == MotionEvent.ACTION_OUTSIDE || event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                    if (System.currentTimeMillis() - lastShownTime > 150L) {
+                        hidePalette()
                     }
                     true
                 } else {
@@ -920,19 +1055,21 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
+        // PlainTextSports-inspired scoreboard header bar with generous spacing & oversized Close button
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.parseColor("#141414"))
-            setPadding(dp(10), dp(6), dp(6), dp(6))
+            setBackgroundColor(Color.parseColor("#121212"))
+            setPadding(dp(12), dp(8), dp(8), dp(8))
         }
 
+        val posGlyph = if (anchoredAboveSelection) "▲" else "▼"
         val statsLabel = TextView(this).apply {
-            text = "${words}W·${chars}C"
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-            setTextColor(Color.parseColor("#777777"))
-            setPadding(0, 0, dp(6), 0)
+            text = "│ ${words}W·${chars}C $posGlyph"
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Color.parseColor("#999999"))
+            setPadding(0, 0, dp(8), 0)
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -940,53 +1077,91 @@ class SelAccessibilityService : AccessibilityService() {
             )
         }
 
-        val quickCopyHeaderBtn = TextView(this).apply {
-            text = "[⎘]"
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(Color.parseColor("#00FF66"))
-            setPadding(dp(4), 0, dp(4), 0)
-            setOnClickListener {
-                ToolPrefs.recordUse(this@SelAccessibilityService, "copy")
-                smoothCopyText(selectedText)
-                hidePalette()
+        fun makeHeaderBoxBtn(
+            textStr: String,
+            fgHex: String,
+            bgHex: String = "#1A1A1A",
+            borderHex: String = "#383838",
+            textSp: Float = 12f,
+            hPadDp: Int = 8,
+            vPadDp: Int = 6,
+            minW: Int = 34,
+            minH: Int = 34,
+            onClick: () -> Unit
+        ): TextView {
+            return TextView(this).apply {
+                text = textStr
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
+                setTextColor(Color.parseColor(fgHex))
+                gravity = Gravity.CENTER
+                minWidth = dp(minW)
+                minHeight = dp(minH)
+                setPadding(dp(hPadDp), dp(vPadDp), dp(hPadDp), dp(vPadDp))
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#2E2E2E"))
+                            setStroke(dp(1), Color.parseColor("#00FF66"))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor(bgHex))
+                            setStroke(dp(1), Color.parseColor(borderHex))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                }
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginStart = dp(5)
+                }
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    onClick()
+                }
             }
         }
 
-        // Collapse-to-pill button so you can peek at underlying text without losing your selection
-        val collapseBtn = TextView(this).apply {
-            text = "–"
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(Color.parseColor("#888888"))
-            setPadding(dp(5), 0, dp(5), 0)
-            setOnClickListener {
-                lastShownTime = System.currentTimeMillis()
-                currentMode = PopupMode.COLLAPSED_PILL
-                renderPopupBody()
-            }
+        val quickCopyHeaderBtn = makeHeaderBoxBtn("⎘", "#00FF66", "#101E15", "#295238") {
+            ToolPrefs.recordUse(this@SelAccessibilityService, "copy")
+            smoothCopyText(selectedText)
+            hidePalette()
         }
 
-        val reorderBtn = TextView(this).apply {
-            text = "⇅"
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            setTextColor(Color.parseColor("#888888"))
-            setPadding(dp(5), 0, dp(5), 0)
-            setOnClickListener {
-                lastShownTime = System.currentTimeMillis()
-                currentMode = if (currentMode == PopupMode.REORDER) PopupMode.ACTIONS else PopupMode.REORDER
-                renderPopupBody()
-            }
+        val collapseBtn = makeHeaderBoxBtn("–", "#CCCCCC") {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = PopupMode.COLLAPSED_PILL
+            renderPopupBody()
         }
 
-        val closeBtn = TextView(this).apply {
-            text = "×"
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setTextColor(Color.parseColor("#888888"))
-            setPadding(dp(5), 0, dp(4), 0)
-            setOnClickListener { hidePalette() }
+        val reorderBtn = makeHeaderBoxBtn("⇅", "#CCCCCC") {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = if (currentMode == PopupMode.REORDER) PopupMode.ACTIONS else PopupMode.REORDER
+            renderPopupBody()
+        }
+
+        // Significantly larger, high-contrast Close button ([ × ]) so it is effortless to press
+        val closeBtn = makeHeaderBoxBtn(
+            textStr = " × ",
+            fgHex = "#FF6666",
+            bgHex = "#241212",
+            borderHex = "#6E3333",
+            textSp = 16.5f,
+            hPadDp = 12,
+            vPadDp = 7,
+            minW = 46,
+            minH = 38
+        ) {
+            hidePalette()
+        }.apply {
+            (this.layoutParams as? LinearLayout.LayoutParams)?.marginStart = dp(7)
         }
 
         header.addView(statsLabel)
@@ -996,20 +1171,22 @@ class SelAccessibilityService : AccessibilityService() {
         header.addView(closeBtn)
         enableDragAndEdgeSnapOnHeader(header, rootCard, windowParams)
         rootCard.addView(header)
-        rootCard.addView(makeHorizontalRule())
+        rootCard.addView(makeHorizontalRule(thick = true))
 
-        val maxScrollHeight = (dm.heightPixels * 0.52f).toInt().coerceIn(dp(220), dp(420))
         val scrollView = object : ScrollView(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val maxHeightSpec = MeasureSpec.makeMeasureSpec(maxScrollHeight, MeasureSpec.AT_MOST)
+                val maxHeightSpec = MeasureSpec.makeMeasureSpec(dynamicMaxScrollHeight, MeasureSpec.AT_MOST)
                 super.onMeasure(widthMeasureSpec, maxHeightSpec)
             }
         }.apply {
             isVerticalScrollBarEnabled = true
+            setPadding(0, dp(4), 0, dp(4))
+            clipToPadding = false
         }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(2), dp(6), dp(4))
         }
 
         scrollView.addView(container)
@@ -1030,10 +1207,15 @@ class SelAccessibilityService : AccessibilityService() {
         val container = bodyContainer ?: return
         container.removeAllViews()
 
+        val params = popupParams
+        if (params != null && !lastSelectionBounds.isEmpty) {
+            applyStrictPlacementAndDynamicSize(lastSelectionBounds, params)
+        }
+
         headerBarView?.visibility = if (currentMode == PopupMode.COLLAPSED_PILL) View.GONE else View.VISIBLE
 
         reorderToggleBtn?.setTextColor(
-            Color.parseColor(if (currentMode == PopupMode.REORDER) "#00FF66" else "#888888")
+            Color.parseColor(if (currentMode == PopupMode.REORDER) "#00FF66" else "#CCCCCC")
         )
 
         when (currentMode) {
@@ -1053,7 +1235,6 @@ class SelAccessibilityService : AccessibilityService() {
 
         popupView?.requestLayout()
         val view = popupView
-        val params = popupParams
         if (view != null && params != null && view.isAttachedToWindow) {
             runCatching { windowManager.updateViewLayout(view, params) }
         }
@@ -1062,11 +1243,11 @@ class SelAccessibilityService : AccessibilityService() {
     private fun populateCollapsedPill(container: LinearLayout) {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val pill = TextView(this).apply {
-            text = "[sel_ ▸]"
+            text = "+── [sel_ ▸] ──+"
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             setTextColor(Color.parseColor("#00FF66"))
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(14), dp(11), dp(14), dp(11))
             setOnClickListener {
                 performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                 lastShownTime = System.currentTimeMillis()
@@ -1237,7 +1418,7 @@ class SelAccessibilityService : AccessibilityService() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(7), dp(8), dp(7))
+                setPadding(dp(12), dp(11), dp(12), dp(11))
             }
 
             val pinBtn = TextView(this).apply {
@@ -2005,7 +2186,7 @@ class SelAccessibilityService : AccessibilityService() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(7), dp(8), dp(7))
+                setPadding(dp(10), dp(11), dp(12), dp(11))
                 tag = tool.id
             }
 
@@ -2072,18 +2253,41 @@ class SelAccessibilityService : AccessibilityService() {
         hidePalette()
     }
 
+    /**
+     * PlainTextSports.com-inspired boxed scoreboard row with generous vertical/horizontal padding
+     * (`dp(14)` horizontal, `dp(12)` vertical, `dp(4)` vertical gap between items) so items never feel cramped.
+     */
     private fun makeRow(glyph: String, label: String, countBadge: String?, onClick: () -> Unit): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+            minimumHeight = dp(46)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(2)
+            }
             background = StateListDrawable().apply {
                 addState(
                     intArrayOf(android.R.attr.state_pressed),
-                    GradientDrawable().apply { setColor(Color.parseColor("#242424")) }
+                    GradientDrawable().apply {
+                        setColor(Color.parseColor("#1D2620"))
+                        setStroke(dp(1), Color.parseColor("#00FF66"))
+                        cornerRadius = dp(2).toFloat()
+                    }
                 )
-                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+                addState(
+                    intArrayOf(),
+                    GradientDrawable().apply {
+                        setColor(Color.parseColor("#111111"))
+                        setStroke(dp(1), Color.parseColor("#262626"))
+                        cornerRadius = dp(2).toFloat()
+                    }
+                )
             }
             setOnClickListener {
                 runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
@@ -2093,18 +2297,26 @@ class SelAccessibilityService : AccessibilityService() {
 
         val iconView = TextView(this).apply {
             text = glyph
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setTextColor(Color.parseColor("#00FF66"))
+            width = dp(30)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        }
+
+        val pipeSep = TextView(this).apply {
+            text = "│"
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setTextColor(Color.parseColor("#00FF66"))
-            width = dp(28)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setTextColor(Color.parseColor("#333333"))
+            setPadding(0, 0, dp(10), 0)
         }
 
         val labelView = TextView(this).apply {
             text = label
             typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(Color.parseColor("#F0F0F0"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(Color.parseColor("#F2F2F2"))
             isSingleLine = true
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -2114,15 +2326,16 @@ class SelAccessibilityService : AccessibilityService() {
         }
 
         row.addView(iconView)
+        row.addView(pipeSep)
         row.addView(labelView)
 
         if (!countBadge.isNullOrBlank()) {
             val badgeView = TextView(this).apply {
-                text = "·$countBadge"
+                text = "[$countBadge]"
                 typeface = Typeface.MONOSPACE
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
-                setTextColor(Color.parseColor("#666666"))
-                setPadding(dp(6), 0, 0, 0)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                setTextColor(Color.parseColor("#777777"))
+                setPadding(dp(8), 0, 0, 0)
             }
             row.addView(badgeView)
         }
@@ -2130,15 +2343,23 @@ class SelAccessibilityService : AccessibilityService() {
         return row
     }
 
-    private fun makeHorizontalRule(): View {
+    private fun makeHorizontalRule(thick: Boolean = false): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         return View(this).apply {
-            this.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
-            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                if (thick) dp(2) else dp(1)
+            ).apply {
+                if (!thick) {
+                    topMargin = dp(4)
+                    bottomMargin = dp(4)
+                }
+            }
+            setBackgroundColor(Color.parseColor(if (thick) "#383838" else "#2A2A2A"))
         }
     }
 
-    // Header Drag + Magnetic Edge-Snap on release
+    // Header Drag + Magnetic Edge-Snap on release (supports both Gravity.TOP and Gravity.BOTTOM)
     private fun enableDragAndEdgeSnapOnHeader(
         header: View,
         rootView: View,
@@ -2153,6 +2374,7 @@ class SelAccessibilityService : AccessibilityService() {
             runCatching {
                 val dm = resources.displayMetrics
                 val dp = { d: Int -> (d * dm.density).toInt() }
+                val isBottomGrav = (params.gravity and Gravity.VERTICAL_GRAVITY_MASK) == Gravity.BOTTOM
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         mainHandler.removeCallbacks(delayedHideRunnable)
@@ -2163,17 +2385,21 @@ class SelAccessibilityService : AccessibilityService() {
                         true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        params.x = (initialX + (event.rawX - touchX).toInt())
+                        val dx = (event.rawX - touchX).toInt()
+                        val dy = if (isBottomGrav) (touchY - event.rawY).toInt() else (event.rawY - touchY).toInt()
+                        if (kotlin.math.abs(dx) > dp(6) || kotlin.math.abs(dy) > dp(6)) {
+                            userManuallyDragged = true
+                        }
+                        params.x = (initialX + dx)
                             .coerceIn(dp(6), (dm.widthPixels - rootView.width - dp(6)).coerceAtLeast(dp(6)))
-                        params.y = (initialY + (event.rawY - touchY).toInt())
-                            .coerceIn(dp(36), (dm.heightPixels - dp(80)).coerceAtLeast(dp(40)))
+                        params.y = (initialY + dy)
+                            .coerceIn(dp(44), (dm.heightPixels - dp(84)).coerceAtLeast(dp(48)))
                         if (rootView.isAttachedToWindow) {
                             windowManager.updateViewLayout(rootView, params)
                         }
                         true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        // Snap to nearest horizontal screen edge if dragged more than 8dp
                         if (kotlin.math.abs(event.rawX - touchX) > dp(8)) {
                             val centerX = params.x + rootView.width / 2
                             val snapLeft = centerX < dm.widthPixels / 2

@@ -85,7 +85,7 @@ class MainActivity : Activity() {
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
-        topHeader.addView(label("v1.7 · lens grab · context-aware · folders · regex pipes · backup", 10.5f, "#666666"))
+        topHeader.addView(label("+── v1.8 · strict above/below · dynamic size · plaintextsports UI ──+", 10.5f, "#777777"))
         root.addView(topHeader)
 
         // 2. Horizontal Terminal Tab Bar
@@ -104,8 +104,14 @@ class MainActivity : Activity() {
             val btn = TextView(this).apply {
                 text = "[ ${tab.title} ]"
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-                setPadding(dp(10), dp(7), dp(10), dp(7))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginEnd = dp(6)
+                }
                 setOnClickListener { switchTab(tab) }
             }
             tabButtons[tab] = btn
@@ -622,25 +628,37 @@ class MainActivity : Activity() {
         clipListContainer.removeAllViews()
         val clips = ToolPrefs.getClipHistory(this)
         if (clips.isEmpty()) {
-            clipListContainer.addView(label("(No recent clips yet)", 11f, "#666666"))
+            clipListContainer.addView(label("(No recent clips yet)", 11.5f, "#666666"))
             return
         }
         clips.forEach { entry ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(6), 0, dp(6))
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(3)
+                    bottomMargin = dp(3)
+                }
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#101010"))
+                    setStroke(dp(1), Color.parseColor("#282828"))
+                    cornerRadius = dp(2).toFloat()
+                }
             }
 
-            val pinBtn = label(if (entry.pinned) "[📌]" else "[ · ]", 11f, if (entry.pinned) "#00FF66" else "#666666").apply {
-                setPadding(0, 0, dp(10), 0)
+            val pinBtn = label(if (entry.pinned) "[📌]" else "[ · ]", 11.5f, if (entry.pinned) "#00FF66" else "#777777").apply {
+                setPadding(dp(4), dp(4), dp(12), dp(4))
                 setOnClickListener {
                     ToolPrefs.togglePinClip(this@MainActivity, entry.text)
                     refreshClipHistory()
                 }
             }
 
-            val txtView = label(entry.text.replace("\n", " ↵ "), 11.5f, "#E0E0E0").apply {
+            val txtView = label("│ " + entry.text.replace("\n", " ↵ "), 12f, "#E6E6E6").apply {
                 isSingleLine = true
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
@@ -648,7 +666,8 @@ class MainActivity : Activity() {
                 }
             }
 
-            val delBtn = label(" [×]", 11.5f, "#FF5555").apply {
+            val delBtn = label("[ × ]", 13f, "#FF6666").apply {
+                setPadding(dp(10), dp(4), dp(6), dp(4))
                 setOnClickListener {
                     ToolPrefs.deleteClip(this@MainActivity, entry.text)
                     refreshClipHistory()
@@ -667,19 +686,32 @@ class MainActivity : Activity() {
         blacklistContainer.removeAllViews()
         val apps = ToolPrefs.getBlacklistedApps(this)
         if (apps.isEmpty()) {
-            blacklistContainer.addView(label("(No muted apps)", 11f, "#666666"))
+            blacklistContainer.addView(label("(No muted apps)", 11.5f, "#666666"))
             return
         }
         apps.forEach { pkg ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(4), 0, dp(4))
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(3)
+                    bottomMargin = dp(3)
+                }
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#101010"))
+                    setStroke(dp(1), Color.parseColor("#282828"))
+                    cornerRadius = dp(2).toFloat()
+                }
             }
-            val pkgLabel = label("⊘ $pkg", 11.5f, "#E0E0E0").apply {
+            val pkgLabel = label("⊘ │ $pkg", 12f, "#E0E0E0").apply {
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
-            val removeBtn = label("[ UNMUTE ]", 11f, "#00FF66").apply {
+            val removeBtn = label("[ UNMUTE ]", 11.5f, "#00FF66").apply {
+                setPadding(dp(10), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     ToolPrefs.setAppBlacklisted(this@MainActivity, pkg, false)
                     refreshBlacklistView()
@@ -703,24 +735,37 @@ class MainActivity : Activity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(8), dp(4), dp(8))
+                setPadding(dp(10), dp(12), dp(12), dp(12))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(3)
+                    bottomMargin = dp(3)
+                }
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#101010"))
+                    setStroke(dp(1), Color.parseColor("#282828"))
+                    cornerRadius = dp(2).toFloat()
+                }
                 tag = tool.id
             }
 
             val dragHandle = TextView(this).apply {
                 text = "≡"
                 typeface = Typeface.MONOSPACE
-                textSize = 16f
+                textSize = 17f
                 setTextColor(Color.parseColor("#00FF66"))
-                setPadding(dp(6), dp(2), dp(14), dp(2))
+                setPadding(dp(8), dp(4), dp(14), dp(4))
             }
 
             val count = ToolPrefs.getUseCount(this, tool.id)
+            val numStr = "%02d".format(idx + 1)
             val nameView = TextView(this).apply {
-                text = "${idx + 1}. ${tool.glyph}  ${tool.label}" + if (count > 0) "  (used $count×)" else ""
+                text = "$numStr │ ${tool.glyph}  ${tool.label}" + if (count > 0) "  [$count×]" else ""
                 typeface = Typeface.MONOSPACE
                 textSize = 12f
-                setTextColor(Color.parseColor(if (hidden) "#555555" else "#E0E0E0"))
+                setTextColor(Color.parseColor(if (hidden) "#555555" else "#F0F0F0"))
                 this.layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -730,10 +775,10 @@ class MainActivity : Activity() {
 
             val visToggle = TextView(this).apply {
                 text = if (hidden) "[ HIDDEN ]" else "[ ✓ SHOW ]"
-                typeface = Typeface.MONOSPACE
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
                 textSize = 11.5f
                 setTextColor(Color.parseColor(if (hidden) "#666666" else "#00FF66"))
-                setPadding(dp(8), dp(2), dp(4), dp(2))
+                setPadding(dp(10), dp(4), dp(6), dp(4))
                 setOnClickListener {
                     ToolPrefs.setToolHidden(this@MainActivity, tool.id, !hidden)
                     refreshReorderList()
@@ -762,7 +807,22 @@ class MainActivity : Activity() {
     }
 
     private fun buttonPill(content: String, hexColor: String, onClick: () -> Unit): TextView {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         return label(content, 12f, hexColor).apply {
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#141414"))
+                setStroke(dp(1), Color.parseColor("#343434"))
+                cornerRadius = dp(2).toFloat()
+            }
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(4)
+                marginEnd = dp(8)
+            }
             setOnClickListener { onClick() }
         }
     }

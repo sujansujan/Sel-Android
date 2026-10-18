@@ -78,11 +78,11 @@ class IncognitoActivity : Activity() {
         }
 
         val closeBtn = TextView(this).apply {
-            text = "[× WIPE]"
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(Color.parseColor("#FF5555"))
-            setPadding(dp(6), dp(2), 0, dp(2))
+            text = "[ × WIPE ]"
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(Color.parseColor("#FF6666"))
+            setPadding(dp(12), dp(6), dp(10), dp(6))
             setOnClickListener {
                 wipeAndClose()
             }

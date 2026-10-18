@@ -424,7 +424,7 @@ class LensOverlayView(
         }
 
         // 5. Top Plain-Text Lens HUD Bar with [+ADD], [📸], [ALL], [×ESC]
-        val topHudRect = RectF(dp(10f), dp(36f), viewW - dp(10f), dp(78f))
+        val topHudRect = RectF(dp(10f), dp(36f), viewW - dp(10f), dp(84f))
         canvas.drawRoundRect(topHudRect, dp(4f), dp(4f), hudBgPaint)
         canvas.drawRoundRect(topHudRect, dp(4f), dp(4f), hudStrokePaint)
 
@@ -446,7 +446,7 @@ class LensOverlayView(
         canvas.drawText(hudTitle, topHudRect.left + dp(10f), titleY, hudTitlePaint)
 
         val btnHPad = dp(6f)
-        val escW = dp(50f)
+        val escW = dp(64f)
         val allW = dp(42f)
         val snapW = dp(40f)
         val multiW = dp(54f)
@@ -520,7 +520,7 @@ class LensOverlayView(
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
-            "×ESC",
+            "× ESC",
             topEscBtnRect.centerX(),
             topEscBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
             btnSecondaryTextPaint
