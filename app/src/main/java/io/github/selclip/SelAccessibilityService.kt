@@ -87,7 +87,7 @@ class SelAccessibilityService : AccessibilityService() {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
 
-        val layoutParams = WindowManager.LayoutParams(
+        val windowParams = WindowManager.LayoutParams(
             dp(172),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -124,7 +124,7 @@ class SelAccessibilityService : AccessibilityService() {
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(Color.parseColor("#777777"))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
         val closeBtn = TextView(this).apply {
@@ -138,7 +138,7 @@ class SelAccessibilityService : AccessibilityService() {
 
         header.addView(statsLabel)
         header.addView(closeBtn)
-        enableDragOnHeader(header, rootCard, layoutParams)
+        enableDragOnHeader(header, rootCard, windowParams)
         rootCard.addView(header)
         rootCard.addView(makeHorizontalRule())
 
@@ -194,7 +194,7 @@ class SelAccessibilityService : AccessibilityService() {
         rootCard.addView(scrollView)
 
         popupView = rootCard
-        runCatching { windowManager.addView(popupView, layoutParams) }
+        runCatching { windowManager.addView(popupView, windowParams) }
     }
 
     // Format: GLYPH | LABEL | URL_TEMPLATE
