@@ -1,11 +1,11 @@
 # `[sel_]` — Plain-Text Vertical Selection Palette for Android
 
-A minimal, zero-bloat (<1 MB) PopClip alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`.
+A minimal, zero-bloat (<1 MB) PopClip + Google Lens plain-text alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`.
 
-## Features
-- **Universal X-Ray Screen Text Grabber (`⊞ GRAB SCREEN`):** Select and extract text on any screen even when `textIsSelectable="false"`. Triggerable via 3rd-party Intent (`io.github.selclip.ACTION_GRAB_SCREEN`), Deep Link (`sel://grab`), Quick Settings Tile (`[sel] Grab Text`), or Assist shortcut.
-- **In-Popup Magnet Converter (`🧲 HASH → MAGNET`):** Displays the generated `magnet:?xt=urn:btih:...` link directly inside the popup with `[ ⎘ COPY MAGNET ]`, `[ 📋 PASTE / REPLACE ]`, and `[ ⚡ OPEN IN TORRENT APP ]` options.
-- **Crash-Free Touch Drag-and-Drop Reordering (`≡`):** Smooth translation-based drag-and-drop sorting that never detaches views mid-gesture.
+## v1.6 Highlights
+- **Google Lens-Style Plain-Text Screen Grabber (`⊞ LENS GRAB`):** Select and copy unselectable screen text directly in place like Google Lens—rendered in a crisp monospace terminal aesthetic. Tap individual word chips, double-tap to select a block, swipe across words, or drag the `[` and `]` terminal handles at 60fps.
+- **Context-Aware Popup Items:** Tools appear only when relevant to your selection (`🧲 HASH → MAGNET` only on torrent hashes, `⌫ CLEAN URL` only on URLs with tracking/query parameters, `📖 DEFINE WORD` only on 1–4 word selections, `⇅ SORT LINES` only on multi-line text, `🧹 CLEAN TEXT` only on messy whitespace/linebreaks, and `＠ EXTRACT LINKS` only when URLs/emails/phones/tags are present).
+- **Markdown Folder Submenu (`M↓ MARKDOWN ▸`):** All Markdown formatting tools (`MD BOLD`, `MD ITALIC`, `MD CODE`, `MD QUOTE`, `MD LINK`, `MD STRIKE`, `MD BULLET LIST`, `MD TASK LIST`, `MD HEADING`, `MD SPOILER`) live inside an inline folder submenu.
 
 ## 3rd-Party Intent for Screen Text Extraction
 - **Action:** `io.github.selclip.ACTION_GRAB_SCREEN`

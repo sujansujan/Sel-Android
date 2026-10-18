@@ -2,6 +2,7 @@ package io.github.selclip
 
 import android.content.Context
 import android.graphics.Color
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.widget.LinearLayout
@@ -22,13 +23,20 @@ object ToolPrefs {
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
 
+    // Top-level tools in the main popup (filtered dynamically by context in SelAccessibilityService)
     val builtInTools = listOf(
         ToolSpec("copy", "⎘", "COPY TEXT"),
-        ToolSpec("screen_grab", "⊞", "GRAB SCREEN"),
+        ToolSpec("screen_grab", "⊞", "LENS GRAB"),
+        ToolSpec("markdown_folder", "M↓", "MARKDOWN ▸"),
         ToolSpec("define", "📖", "DEFINE WORD"),
         ToolSpec("translate", "🌐", "TRANSLATE"),
         ToolSpec("qr", "▣", "QR CODE"),
         ToolSpec("magnet", "🧲", "HASH → MAGNET"),
+        ToolSpec("clean_url", "⌫", "CLEAN URL"),
+        ToolSpec("extract", "＠", "EXTRACT LINKS"),
+        ToolSpec("clean_text", "🧹", "CLEAN TEXT"),
+        ToolSpec("sort", "⇅", "SORT LINES"),
+        ToolSpec("case", "Aa", "CYCLE CASE"),
         ToolSpec("incognito", "🕵", "INCOGNITO"),
         ToolSpec("search", "↗", "WEB SEARCH"),
         ToolSpec("yt_all", "▶", "YOUTUBE"),
@@ -36,13 +44,21 @@ object ToolPrefs {
         ToolSpec("yt_week", "▶w", "YT LAST WEEK"),
         ToolSpec("yt_month", "▶m", "YT MONTH"),
         ToolSpec("speak", "🔊", "SPEAK ALOUD"),
-        ToolSpec("extract", "＠", "EXTRACT LINKS"),
-        ToolSpec("clean_text", "🧹", "CLEAN TEXT"),
-        ToolSpec("case", "Aa", "CYCLE CASE"),
-        ToolSpec("quote", "❝", "MD QUOTE"),
-        ToolSpec("code", "⟨⟩", "CODE BLOCK"),
-        ToolSpec("sort", "⇅", "SORT LINES"),
         ToolSpec("log", "⊕", "APPEND LOG")
+    )
+
+    // Dedicated Markdown Folder Submenu items
+    val markdownSubTools = listOf(
+        ToolSpec("md_bold", "B", "MD BOLD (**)"),
+        ToolSpec("md_italic", "I", "MD ITALIC (*)"),
+        ToolSpec("md_code", "⟨⟩", "MD CODE (` / ```)"),
+        ToolSpec("md_quote", "❝", "MD QUOTE (>)"),
+        ToolSpec("md_link", "🔗", "MD LINK ([txt](url))"),
+        ToolSpec("md_strike", "S̶", "MD STRIKE (~~)"),
+        ToolSpec("md_bullet", "•", "MD BULLET LIST (-)"),
+        ToolSpec("md_task", "☐", "MD TASK LIST (- [ ])"),
+        ToolSpec("md_h2", "H2", "MD HEADING (##)"),
+        ToolSpec("md_spoiler", "▒▒", "MD SPOILER (||)")
     )
 
     fun loadAllTools(context: Context): List<ToolSpec> {
@@ -59,14 +75,52 @@ object ToolPrefs {
                         val glyph = parts[0].take(2)
                         val label = parts[1].uppercase()
                         val target = parts[2]
-                        list.add(
-                            ToolSpec(
-                                id = "custom_${idx}_$label",
-                                glyph = glyph,
-                                label = label,
-                                customTarget = target
+                        if (!label.startsWith("MD ") && !label.startsWith("MARKDOWN")) {
+                            list.add(
+                                ToolSpec(
+                                    id = "custom_${idx}_$label",
+                                    glyph = glyph,
+                                    label = label,
+                                    customTarget = target
+                                )
                             )
-                        )
+                        }
+                    }
+                }
+            }
+        }
+        return list
+    }
+
+    fun loadMarkdownTools(context: Context): List<ToolSpec> {
+        val list = mutableListOf<ToolSpec>()
+        list.addAll(markdownSubTools)
+
+        val rulesFile = File(context.filesDir, "rules.txt")
+        if (rulesFile.exists()) {
+            rulesFile.readLines().forEachIndexed { idx, line ->
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    val parts = trimmed.split("|").map { it.trim() }
+                    if (parts.size >= 3) {
+                        val glyph = parts[0].take(2)
+                        val label = parts[1].uppercase()
+                        val target = parts[2]
+                        if (label.startsWith("MD ") || label.startsWith("MARKDOWN")) {
+                            val alreadyBuiltIn = markdownSubTools.any {
+                                it.label.startsWith(label) && (target == "**{text}**" || target == "*{text}*")
+                            }
+                            if (!alreadyBuiltIn) {
+                                list.add(
+                                    ToolSpec(
+                                        id = "custom_md_${idx}_$label",
+                                    glyph = glyph,
+                                    label = label,
+                                    customTarget = target
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -162,11 +216,6 @@ object ToolPrefs {
         editor.apply()
     }
 
-    /**
-     * Crash-proof drag-and-drop:
-     * Never detaches or removes views during MotionEvent.ACTION_MOVE (which corrupts Android ViewGroup TouchTargets).
-     * Instead, shifts sibling rows via translationY during the drag and commits the new order on ACTION_UP via post{}.
-     */
     fun attachDragHandle(
         handleView: View,
         rowView: View,
@@ -178,7 +227,7 @@ object ToolPrefs {
         var targetIndex = -1
         var rowHeight = 1
 
-        handleView.setOnTouchListener { _, event ->
+        handleView.setOnTouchListener { v, event ->
             runCatching {
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -191,6 +240,7 @@ object ToolPrefs {
                         rowView.setBackgroundColor(Color.parseColor("#1F3324"))
                         rowView.alpha = 0.94f
                         rowView.translationZ = 10f
+                        runCatching { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
                         true
                     }
 
@@ -203,7 +253,11 @@ object ToolPrefs {
                         rowView.translationY = dy
 
                         val shiftSlots = (dy / rowHeight.toFloat()).roundToInt()
-                        targetIndex = (origIndex + shiftSlots).coerceIn(0, container.childCount - 1)
+                        val newTarget = (origIndex + shiftSlots).coerceIn(0, container.childCount - 1)
+                        if (newTarget != targetIndex) {
+                            targetIndex = newTarget
+                            runCatching { v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
+                        }
 
                         for (i in 0 until container.childCount) {
                             if (i == origIndex) continue

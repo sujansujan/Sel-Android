@@ -32,7 +32,7 @@ class SelTileService : TileService() {
             runCatching { startActivityAndCollapse(pi) }
         } else {
             runCatching { startActivity(targetIntent) }
-            SelAccessibilityService.instance?.triggerScreenGrab(delayMs = 350L)
+            SelAccessibilityService.instance?.triggerScreenGrab(delayMs = 320L)
         }
     }
 }

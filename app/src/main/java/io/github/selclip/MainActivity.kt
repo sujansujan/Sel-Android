@@ -29,8 +29,8 @@ class MainActivity : Activity() {
 
         val defaultRules = """
             # Format: GLYPH | LABEL | TARGET ({text} = selection)
+            # Tip: Any rule starting with 'MD ' is grouped inside M↓ MARKDOWN ▸
             W | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}
-            ★ | MD BOLD | **{text}**
         """.trimIndent()
 
         val rulesFile = File(filesDir, "rules.txt")
@@ -46,7 +46,7 @@ class MainActivity : Activity() {
         }
 
         container.addView(label("[sel_] // PLAIN-TEXT PALETTE", 16f, "#F0F0F0"))
-        container.addView(label("v1.5 · x-ray screen grab · in-popup magnet · drag-sort", 11f, "#666666"))
+        container.addView(label("v1.6 · google-lens plain-text copy · context-aware · markdown folder", 11f, "#666666"))
 
         container.addView(label("\n01 // PERMISSION", 12f, "#888888"))
         container.addView(label("[ ENABLE IN ACCESSIBILITY SETTINGS ↗ ]", 13.5f, "#00FF66").apply {
@@ -56,7 +56,7 @@ class MainActivity : Activity() {
             }
         })
 
-        container.addView(label("02 // UNIVERSAL SCREEN TEXT GRABBER (3RD-PARTY INTENT)", 12f, "#888888"))
+        container.addView(label("02 // GOOGLE-LENS PLAIN-TEXT SCREEN GRABBER (3RD-PARTY INTENT)", 12f, "#888888"))
         val intentInfo = """
             Action:    io.github.selclip.ACTION_GRAB_SCREEN
             Package:   io.github.selclip
@@ -79,7 +79,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(6), 0, dp(14))
         }
 
-        val testGrabBtn = label("[ ⊞ TEST SCREEN GRAB NOW ]", 12f, "#00FF66").apply {
+        val testGrabBtn = label("[ ⊞ LAUNCH LENS GRAB NOW ]", 12f, "#00FF66").apply {
             setPadding(0, dp(4), dp(16), dp(4))
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, ScreenGrabTriggerActivity::class.java))
@@ -99,14 +99,14 @@ class MainActivity : Activity() {
         intentBtnRow.addView(copyIntentBtn)
         container.addView(intentBtnRow)
 
-        container.addView(label("03 // SANDBOX (SELECT WORD, HASH, UNIT, OR URL BELOW)", 12f, "#888888"))
+        container.addView(label("03 // CONTEXT-AWARE SANDBOX (SELECT WORD, HASH, MATH, OR URL)", 12f, "#888888"))
         val sandbox = EditText(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 13f
             setTextColor(Color.parseColor("#E0E0E0"))
             setBackgroundColor(Color.parseColor("#141414"))
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            setText("Try selecting: ephemeral or 72 F or dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c or https://example.com/page?utm_source=ads")
+            setText("Select a word: serendipity\nSelect a hash: dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\nSelect math/unit: 145 * 12 or 72 F\nSelect URL: https://example.com/item?utm_source=ads")
         }
         container.addView(sandbox)
 
