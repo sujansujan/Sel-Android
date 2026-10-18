@@ -27,16 +27,17 @@ data class LensWord(
 /**
  * Google Lens-style on-screen text selection rendered in a crisp plain-text terminal aesthetic:
  * - Breaks every on-screen text block into individual interactive word chips at their exact screen coordinates.
- * - Tap any word to select it, double-tap to select its whole block, or drag across words to highlight a phrase.
- * - Drag the plain-text `[` and `]` terminal handles to fine-tune the start/end of your selection at 60fps.
- * - Bottom plain-text action bar provides instant 1-tap `[ ⎘ COPY ]`, `[ ⚡ TOOLS ▸ ]`, and `[ ↗ SEARCH ]`.
+ * - Supports both contiguous range selection (with draggable `[` and `]` handles) AND multi-region `[ + ADD ]` selection!
+ * - Dynamically adapts the bottom smart button (`🧲 MAGNET`, `⌫ CLEAN URL`, `📖 DEFINE`, `📞 DIAL`, or `⚡ TOOLS ▸`) based on what you highlight.
  */
 class LensOverlayView(
     context: Context,
     private val blocks: List<LensBlock>,
     private val onCopyText: (String) -> Unit,
+    private val onSmartAction: (String, String) -> Unit,
     private val onOpenInTools: (String) -> Unit,
     private val onSearchText: (String) -> Unit,
+    private val onCaptureScreenshot: () -> Unit,
     private val onDismiss: () -> Unit
 ) : View(context) {
 
@@ -48,6 +49,8 @@ class LensOverlayView(
 
     private var selStart: Int = -1
     private var selEnd: Int = -1
+    private var multiSelectMode: Boolean = false
+    private val multiSelectedIndices = LinkedHashSet<Int>()
 
     private enum class DragMode {
         NONE,
@@ -64,12 +67,14 @@ class LensOverlayView(
     private val startHandleCenter = RectF()
     private val endHandleCenter = RectF()
 
+    private val topMultiBtnRect = RectF()
+    private val topSnapBtnRect = RectF()
     private val topAllBtnRect = RectF()
     private val topEscBtnRect = RectF()
 
     private val bottomBarRect = RectF()
     private val btnCopyRect = RectF()
-    private val btnToolsRect = RectF()
+    private val btnSmartRect = RectF()
     private val btnSearchRect = RectF()
     private val btnClearRect = RectF()
 
@@ -144,7 +149,7 @@ class LensOverlayView(
     private val hudTitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         color = Color.parseColor("#00FF66")
-        textSize = dp(11.5f)
+        textSize = dp(11f)
     }
 
     private val hudSubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -172,14 +177,14 @@ class LensOverlayView(
     private val btnPrimaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         color = Color.parseColor("#080808")
-        textSize = dp(11.5f)
+        textSize = dp(11f)
         textAlign = Paint.Align.CENTER
     }
 
     private val btnSecondaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         color = Color.parseColor("#F0F0F0")
-        textSize = dp(11.5f)
+        textSize = dp(11f)
         textAlign = Paint.Align.CENTER
     }
 
@@ -270,7 +275,11 @@ class LensOverlayView(
     }
 
     private fun hasSelection(): Boolean {
-        return selStart in words.indices && selEnd in words.indices
+        return if (multiSelectMode) {
+            multiSelectedIndices.isNotEmpty()
+        } else {
+            selStart in words.indices && selEnd in words.indices
+        }
     }
 
     private fun normalizedRange(): IntRange {
@@ -279,12 +288,24 @@ class LensOverlayView(
         return s..e
     }
 
+    private fun isWordSelected(idx: Int): Boolean {
+        return if (multiSelectMode) {
+            idx in multiSelectedIndices
+        } else {
+            hasSelection() && idx in normalizedRange()
+        }
+    }
+
     fun getSelectedText(): String {
         if (!hasSelection() || words.isEmpty()) return ""
-        val range = normalizedRange()
+        val indices = if (multiSelectMode) {
+            multiSelectedIndices.filter { it in words.indices }
+        } else {
+            normalizedRange().toList()
+        }
         val sb = StringBuilder()
         var prevBlock = -1
-        for (i in range) {
+        for (i in indices) {
             val w = words[i]
             if (prevBlock != -1) {
                 if (w.blockIndex != prevBlock) {
@@ -297,6 +318,34 @@ class LensOverlayView(
             prevBlock = w.blockIndex
         }
         return sb.toString().trim()
+    }
+
+    /**
+     * Context-aware smart action pill in Lens Bottom Dock:
+     * Inspects the highlighted words and returns (actionId, buttonLabel).
+     */
+    private fun resolveSmartAction(text: String): Pair<String, String> {
+        val trimmed = text.trim()
+        if (Regex("\\b([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[A-Za-z2-7]{32})\\b").containsMatchIn(trimmed) ||
+            trimmed.startsWith("magnet:?", ignoreCase = true)
+        ) {
+            return "magnet" to "🧲 MAGNET"
+        }
+        if (!trimmed.contains(" ") && (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true))) {
+            return if (trimmed.contains("?") || trimmed.contains("&")) {
+                "clean_url" to "⌫ CLEAN URL"
+            } else {
+                "open_url" to "↗ OPEN URL"
+            }
+        }
+        if (Regex("^\\+?[0-9][0-9\\- ()]{6,16}[0-9]$").matches(trimmed)) {
+            return "dial" to "📞 DIAL"
+        }
+        val wordCount = trimmed.split(Regex("\\s+")).count { it.isNotEmpty() }
+        if (wordCount in 1..3 && trimmed.any { it.isLetter() } && trimmed.length <= 36) {
+            return "define" to "📖 DEFINE"
+        }
+        return "tools" to "⚡ TOOLS ▸"
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -313,9 +362,8 @@ class LensOverlayView(
         }
 
         // 3. Draw each detected word chip at its screen position
-        val activeRange = if (hasSelection()) normalizedRange() else IntRange.EMPTY
         for (w in words) {
-            val isSel = w.globalIndex in activeRange
+            val isSel = isWordSelected(w.globalIndex)
             val r = w.rect
             val corner = dp(3f)
 
@@ -335,8 +383,8 @@ class LensOverlayView(
             canvas.drawText(w.text, r.centerX(), textY, paint)
         }
 
-        // 4. Draw draggable plain-text terminal handles '[' and ']' when text is selected
-        if (hasSelection()) {
+        // 4. Draw draggable plain-text terminal handles '[' and ']' when contiguous text is selected
+        if (hasSelection() && !multiSelectMode) {
             val range = normalizedRange()
             val firstWord = words[range.first].rect
             val lastWord = words[range.last].rect
@@ -362,7 +410,6 @@ class LensOverlayView(
             endHandleCenter.right = endHandleCenter.left + handleW
             endHandleCenter.bottom = endHandleCenter.top + handleH
 
-            // Stem line connecting word to handle
             canvas.drawLine(firstWord.left, firstWord.top, firstWord.left, startHandleCenter.top, handleStrokePaint)
             canvas.drawRoundRect(startHandleCenter, dp(4f), dp(4f), handleBgPaint)
             canvas.drawRoundRect(startHandleCenter, dp(4f), dp(4f), handleStrokePaint)
@@ -376,37 +423,90 @@ class LensOverlayView(
             canvas.drawText("]", endHandleCenter.centerX(), ey, handleGlyphPaint)
         }
 
-        // 5. Top Plain-Text Lens HUD Bar
-        val topHudRect = RectF(dp(12f), dp(36f), viewW - dp(12f), dp(78f))
+        // 5. Top Plain-Text Lens HUD Bar with [+ADD], [📸], [ALL], [×ESC]
+        val topHudRect = RectF(dp(10f), dp(36f), viewW - dp(10f), dp(78f))
         canvas.drawRoundRect(topHudRect, dp(4f), dp(4f), hudBgPaint)
         canvas.drawRoundRect(topHudRect, dp(4f), dp(4f), hudStrokePaint)
 
-        val hudTitle = if (hasSelection()) {
-            val range = normalizedRange()
-            val count = range.last - range.first + 1
-            "⊞ LENS // $count WORD${if (count == 1) "" else "S"} SELECTED"
+        val selectedCount = if (multiSelectMode) {
+            multiSelectedIndices.size
+        } else if (hasSelection()) {
+            val r = normalizedRange()
+            r.last - r.first + 1
         } else {
-            "⊞ LENS // TAP OR SWIPE WORDS (${words.size} FOUND)"
+            0
+        }
+
+        val hudTitle = if (selectedCount > 0) {
+            "⊞ ${selectedCount}W SELECTED"
+        } else {
+            "⊞ LENS (${words.size}W)"
         }
         val titleY = topHudRect.centerY() - (hudTitlePaint.descent() + hudTitlePaint.ascent()) / 2f
-        canvas.drawText(hudTitle, topHudRect.left + dp(12f), titleY, hudTitlePaint)
+        canvas.drawText(hudTitle, topHudRect.left + dp(10f), titleY, hudTitlePaint)
 
-        // [ALL] and [ESC] buttons on right of top bar
-        val escW = dp(58f)
-        val allW = dp(58f)
+        val btnHPad = dp(6f)
+        val escW = dp(50f)
+        val allW = dp(42f)
+        val snapW = dp(40f)
+        val multiW = dp(54f)
+
         topEscBtnRect.set(
-            topHudRect.right - escW - dp(8f),
-            topHudRect.top + dp(6f),
-            topHudRect.right - dp(8f),
-            topHudRect.bottom - dp(6f)
+            topHudRect.right - escW - dp(6f),
+            topHudRect.top + btnHPad,
+            topHudRect.right - dp(6f),
+            topHudRect.bottom - btnHPad
         )
         topAllBtnRect.set(
-            topEscBtnRect.left - allW - dp(6f),
-            topHudRect.top + dp(6f),
-            topEscBtnRect.left - dp(6f),
-            topHudRect.bottom - dp(6f)
+            topEscBtnRect.left - allW - dp(5f),
+            topHudRect.top + btnHPad,
+            topEscBtnRect.left - dp(5f),
+            topHudRect.bottom - btnHPad
+        )
+        topSnapBtnRect.set(
+            topAllBtnRect.left - snapW - dp(5f),
+            topHudRect.top + btnHPad,
+            topAllBtnRect.left - dp(5f),
+            topHudRect.bottom - btnHPad
+        )
+        topMultiBtnRect.set(
+            topSnapBtnRect.left - multiW - dp(5f),
+            topHudRect.top + btnHPad,
+            topSnapBtnRect.left - dp(5f),
+            topHudRect.bottom - btnHPad
         )
 
+        // [+ADD] multi-select toggle button
+        if (multiSelectMode) {
+            canvas.drawRoundRect(topMultiBtnRect, dp(3f), dp(3f), btnPrimaryBgPaint)
+            canvas.drawText(
+                "+ADD✓",
+                topMultiBtnRect.centerX(),
+                topMultiBtnRect.centerY() - (btnPrimaryTextPaint.descent() + btnPrimaryTextPaint.ascent()) / 2f,
+                btnPrimaryTextPaint
+            )
+        } else {
+            canvas.drawRoundRect(topMultiBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
+            canvas.drawRoundRect(topMultiBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
+            canvas.drawText(
+                "+ADD",
+                topMultiBtnRect.centerX(),
+                topMultiBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
+                btnSecondaryTextPaint
+            )
+        }
+
+        // [📸] screenshot/image fallback button
+        canvas.drawRoundRect(topSnapBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
+        canvas.drawRoundRect(topSnapBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
+        canvas.drawText(
+            "📸",
+            topSnapBtnRect.centerX(),
+            topSnapBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
+            btnSecondaryTextPaint
+        )
+
+        // [ALL] button
         canvas.drawRoundRect(topAllBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topAllBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
@@ -416,10 +516,11 @@ class LensOverlayView(
             btnSecondaryTextPaint
         )
 
+        // [×ESC] button
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
-            "× ESC",
+            "×ESC",
             topEscBtnRect.centerX(),
             topEscBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
             btnSecondaryTextPaint
@@ -428,12 +529,12 @@ class LensOverlayView(
         // 6. Bottom Google Lens-Style Action Dock when words are selected
         if (hasSelection()) {
             val selText = getSelectedText()
+            val (_, smartLabel) = resolveSmartAction(selText)
             val barH = dp(98f)
             bottomBarRect.set(dp(12f), viewH - barH - dp(22f), viewW - dp(12f), viewH - dp(22f))
             canvas.drawRoundRect(bottomBarRect, dp(5f), dp(5f), hudBgPaint)
             canvas.drawRoundRect(bottomBarRect, dp(5f), dp(5f), hudStrokePaint)
 
-            // Preview line of selected text
             val singleLinePreview = selText.replace("\n", " ↵ ").let {
                 if (it.length > 44) it.take(43) + "…" else it
             }
@@ -444,7 +545,6 @@ class LensOverlayView(
                 hudSubPaint
             )
 
-            // Action Buttons row: [ ⎘ COPY ]  [ ⚡ TOOLS ▸ ]  [ ↗ SEARCH ]  [ ✕ ]
             val btnTop = bottomBarRect.top + dp(40f)
             val btnBottom = bottomBarRect.bottom - dp(10f)
             val innerW = bottomBarRect.width() - dp(24f)
@@ -456,7 +556,7 @@ class LensOverlayView(
             var curLeft = bottomBarRect.left + dp(12f)
             btnCopyRect.set(curLeft, btnTop, curLeft + mainBtnW, btnBottom)
             curLeft += mainBtnW + gap
-            btnToolsRect.set(curLeft, btnTop, curLeft + mainBtnW, btnBottom)
+            btnSmartRect.set(curLeft, btnTop, curLeft + mainBtnW, btnBottom)
             curLeft += mainBtnW + gap
             btnSearchRect.set(curLeft, btnTop, curLeft + mainBtnW, btnBottom)
             curLeft += mainBtnW + gap
@@ -467,15 +567,16 @@ class LensOverlayView(
             val btnTextY = btnCopyRect.centerY() - (btnPrimaryTextPaint.descent() + btnPrimaryTextPaint.ascent()) / 2f
             canvas.drawText("⎘ COPY", btnCopyRect.centerX(), btnTextY, btnPrimaryTextPaint)
 
-            // [ ⚡ TOOLS ▸ ] button
-            canvas.drawRoundRect(btnToolsRect, dp(3f), dp(3f), btnSecondaryBgPaint)
-            canvas.drawRoundRect(btnToolsRect, dp(3f), dp(3f), hudStrokePaint)
-            canvas.drawText("⚡ TOOLS ▸", btnToolsRect.centerX(), btnTextY, btnSecondaryTextPaint)
+            // Context-Aware Smart Pill ([🧲 MAGNET], [⌫ CLEAN URL], [📖 DEFINE], [📞 DIAL], or [⚡ TOOLS ▸])
+            canvas.drawRoundRect(btnSmartRect, dp(3f), dp(3f), btnSecondaryBgPaint)
+            canvas.drawRoundRect(btnSmartRect, dp(3f), dp(3f), hudStrokePaint)
+            canvas.drawText(smartLabel, btnSmartRect.centerX(), btnTextY, btnSecondaryTextPaint)
 
-            // [ ↗ SEARCH ] button
+            // [ ⚡ TOOLS ▸ ] or [ ↗ SEARCH ] button
+            val thirdLabel = if (smartLabel == "⚡ TOOLS ▸") "↗ SEARCH" else "⚡ TOOLS ▸"
             canvas.drawRoundRect(btnSearchRect, dp(3f), dp(3f), btnSecondaryBgPaint)
             canvas.drawRoundRect(btnSearchRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
-            canvas.drawText("↗ SEARCH", btnSearchRect.centerX(), btnTextY, btnSecondaryTextPaint)
+            canvas.drawText(thirdLabel, btnSearchRect.centerX(), btnTextY, btnSecondaryTextPaint)
 
             // [ ✕ ] clear selection button
             canvas.drawRoundRect(btnClearRect, dp(3f), dp(3f), btnSecondaryBgPaint)
@@ -490,52 +591,77 @@ class LensOverlayView(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // 1. Check top HUD buttons
                 if (topEscBtnRect.contains(x, y)) {
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     onDismiss()
                     return true
                 }
+                if (topMultiBtnRect.contains(x, y)) {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    if (!multiSelectMode && hasSelection()) {
+                        multiSelectedIndices.clear()
+                        multiSelectedIndices.addAll(normalizedRange())
+                    }
+                    multiSelectMode = !multiSelectMode
+                    if (!multiSelectMode && multiSelectedIndices.isNotEmpty()) {
+                        selStart = multiSelectedIndices.minOrNull() ?: -1
+                        selEnd = multiSelectedIndices.maxOrNull() ?: -1
+                    }
+                    invalidate()
+                    return true
+                }
+                if (topSnapBtnRect.contains(x, y)) {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    onCaptureScreenshot()
+                    return true
+                }
                 if (topAllBtnRect.contains(x, y)) {
                     if (words.isNotEmpty()) {
-                        selStart = 0
-                        selEnd = words.lastIndex
+                        if (multiSelectMode) {
+                            multiSelectedIndices.clear()
+                            multiSelectedIndices.addAll(words.indices)
+                        } else {
+                            selStart = 0
+                            selEnd = words.lastIndex
+                        }
                         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                         invalidate()
                     }
                     return true
                 }
 
-                // 2. Check bottom action dock buttons if visible
                 if (hasSelection() && bottomBarRect.contains(x, y)) {
+                    val txt = getSelectedText()
+                    val (smartId, _) = resolveSmartAction(txt)
                     when {
                         btnCopyRect.contains(x, y) -> {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            val txt = getSelectedText()
                             if (txt.isNotEmpty()) onCopyText(txt)
                         }
-                        btnToolsRect.contains(x, y) -> {
+                        btnSmartRect.contains(x, y) -> {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            val txt = getSelectedText()
-                            if (txt.isNotEmpty()) onOpenInTools(txt)
+                            if (txt.isNotEmpty()) {
+                                if (smartId == "tools") onOpenInTools(txt) else onSmartAction(smartId, txt)
+                            }
                         }
                         btnSearchRect.contains(x, y) -> {
                             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            val txt = getSelectedText()
-                            if (txt.isNotEmpty()) onSearchText(txt)
+                            if (txt.isNotEmpty()) {
+                                if (smartId == "tools") onSearchText(txt) else onOpenInTools(txt)
+                            }
                         }
                         btnClearRect.contains(x, y) -> {
                             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             selStart = -1
                             selEnd = -1
+                            multiSelectedIndices.clear()
                             invalidate()
                         }
                     }
                     return true
                 }
 
-                // 3. Check if dragging '[' or ']' selection handles
-                if (hasSelection()) {
+                if (hasSelection() && !multiSelectMode) {
                     val slop = dp(18f)
                     if (expandRect(startHandleCenter, slop).contains(x, y)) {
                         dragMode = DragMode.HANDLE_START
@@ -555,12 +681,23 @@ class LensOverlayView(
                     }
                 }
 
-                // 4. Check if touching a word chip (or nearby word)
                 val hitWord = findNearestWordIndex(x, y, maxDist = dp(26f))
                 if (hitWord != -1) {
+                    if (multiSelectMode) {
+                        if (hitWord in multiSelectedIndices) {
+                            multiSelectedIndices.remove(hitWord)
+                        } else {
+                            multiSelectedIndices.add(hitWord)
+                        }
+                        dragMode = DragMode.SWIPE_WORDS
+                        anchorWordIndex = hitWord
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        invalidate()
+                        return true
+                    }
+
                     val now = System.currentTimeMillis()
                     if (hitWord == lastTappedWord && now - lastTapTime < 340L) {
-                        // Double-tap selects the entire text block!
                         val targetBlock = words[hitWord].blockIndex
                         val blockWordIndices = words.filter { it.blockIndex == targetBlock }.map { it.globalIndex }
                         if (blockWordIndices.isNotEmpty()) {
@@ -583,10 +720,10 @@ class LensOverlayView(
                     return true
                 }
 
-                // 5. Tapped empty background: clear selection if active, otherwise dismiss
                 if (hasSelection()) {
                     selStart = -1
                     selEnd = -1
+                    multiSelectedIndices.clear()
                     invalidate()
                 } else {
                     onDismiss()
@@ -598,11 +735,18 @@ class LensOverlayView(
                 when (dragMode) {
                     DragMode.SWIPE_WORDS -> {
                         val hit = findNearestWordIndex(x, y, maxDist = dp(38f))
-                        if (hit != -1 && hit != selEnd) {
-                            selStart = anchorWordIndex
-                            selEnd = hit
-                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            invalidate()
+                        if (hit != -1) {
+                            if (multiSelectMode) {
+                                if (multiSelectedIndices.add(hit)) {
+                                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    invalidate()
+                                }
+                            } else if (hit != selEnd) {
+                                selStart = anchorWordIndex
+                                selEnd = hit
+                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                invalidate()
+                            }
                         }
                     }
                     DragMode.HANDLE_START -> {
@@ -627,7 +771,7 @@ class LensOverlayView(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (hasSelection()) {
+                if (hasSelection() && !multiSelectMode) {
                     val r = normalizedRange()
                     selStart = r.first
                     selEnd = r.last

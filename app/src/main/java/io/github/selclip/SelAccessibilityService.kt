@@ -3,6 +3,7 @@ package io.github.selclip
 import android.accessibilityservice.AccessibilityService
 import android.content.BroadcastReceiver
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -20,7 +21,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.util.Base64
 import android.util.TypedValue
+import android.view.Display
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
@@ -41,6 +44,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.EnumMap
@@ -58,7 +62,11 @@ class SelAccessibilityService : AccessibilityService() {
 
     private enum class PopupMode {
         ACTIONS,
+        COLLAPSED_PILL,
+        CLIP_HISTORY,
         MARKDOWN_FOLDER,
+        REGEX_PIPE,
+        CUSTOM_FOLDER,
         QR_CODE,
         MAGNET,
         DEFINE_WORD,
@@ -81,6 +89,7 @@ class SelAccessibilityService : AccessibilityService() {
 
     private var popupView: View? = null
     private var popupParams: WindowManager.LayoutParams? = null
+    private var headerBarView: LinearLayout? = null
     private var statsLabelView: TextView? = null
     private var reorderToggleBtn: TextView? = null
     private var bodyContainer: LinearLayout? = null
@@ -88,12 +97,18 @@ class SelAccessibilityService : AccessibilityService() {
     private var screenGrabOverlayView: View? = null
 
     private var currentMode: PopupMode = PopupMode.ACTIONS
+    private var activeCustomFolder: String = ""
     private var currentNode: AccessibilityNodeInfo? = null
     private var selectedText: String = ""
     private var lastClipboardTime = 0L
     private var lastWebAutoCopyTime = 0L
     private var lastShownTime = 0L
     private var activePackage: String = ""
+
+    // In-Place Undo State
+    private var undoOriginalFullText: String? = null
+    private var undoNode: AccessibilityNodeInfo? = null
+    private var undoTimestamp: Long = 0L
 
     private val delayedHideRunnable = Runnable { hidePalette() }
     private var pendingWebCopyRunnable: Runnable? = null
@@ -145,6 +160,7 @@ class SelAccessibilityService : AccessibilityService() {
             val now = System.currentTimeMillis()
             if (now - lastClipboardTime < 650) return@addPrimaryClipChangedListener
             if (screenGrabOverlayView != null) return@addPrimaryClipChangedListener
+            if (ToolPrefs.isAppBlacklisted(this, activePackage)) return@addPrimaryClipChangedListener
             readClipboardAndShowPalette()
         }
     }
@@ -171,6 +187,7 @@ class SelAccessibilityService : AccessibilityService() {
     fun showFromExternalText(text: String) {
         mainHandler.post {
             if (text.isNotBlank()) {
+                ToolPrefs.addClipToHistory(this, text)
                 mainHandler.removeCallbacks(delayedHideRunnable)
                 selectedText = text
                 currentMode = PopupMode.ACTIONS
@@ -182,22 +199,143 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * Google Lens-style Plain-Text Screen Grabber:
-     * Harvests all visible leaf text nodes on screen and launches LensOverlayView
-     * so you can tap words, drag across phrases, or adjust `[` and `]` handles directly on screen.
-     */
     fun triggerScreenGrab(delayMs: Long = 120L) {
         hidePalette()
         hideScreenGrabOverlay()
         mainHandler.postDelayed({
             val blocks = harvestAllScreenText()
             if (blocks.isEmpty()) {
-                Toast.makeText(this, "[sel] No readable text nodes found on screen", Toast.LENGTH_SHORT).show()
+                // True fallback for images/canvases with zero Accessibility text nodes
+                captureScreenshotFallback()
             } else {
                 showLensGrabOverlay(blocks)
             }
         }, delayMs)
+    }
+
+    private fun captureScreenshotFallback() {
+        hideScreenGrabOverlay()
+        if (Build.VERSION.SDK_INT >= 30) {
+            Toast.makeText(this, "[sel] Capturing screen image…", Toast.LENGTH_SHORT).show()
+            runCatching {
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshotResult: ScreenshotResult) {
+                            val hwBuffer = screenshotResult.hardwareBuffer
+                            val colorSpace = screenshotResult.colorSpace
+                            val bmp = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                            hwBuffer.close()
+                            if (bmp != null) {
+                                val softBmp = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                                bmp.recycle()
+                                if (softBmp != null) {
+                                    showScreenshotPreviewDialog(softBmp)
+                                    return
+                                }
+                            }
+                            Toast.makeText(this@SelAccessibilityService, "Screenshot captured", Toast.LENGTH_SHORT).show()
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Toast.makeText(
+                                this@SelAccessibilityService,
+                                "[sel] No text nodes or screenshot available (err $errorCode)",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                )
+            }
+        } else {
+            Toast.makeText(this, "[sel] No readable text nodes found on screen", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showScreenshotPreviewDialog(bitmap: Bitmap) {
+        val dm = resources.displayMetrics
+        val dp = { v: Int -> (v * dm.density).toInt() }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0A0A0A"))
+                setStroke(dp(1), Color.parseColor("#00FF66"))
+                cornerRadius = dp(4).toFloat()
+            }
+        }
+
+        card.addView(TextView(this).apply {
+            text = "📸 SCREENSHOT CAPTURED (${bitmap.width}×${bitmap.height})"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextColor(Color.parseColor("#00FF66"))
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        val previewH = (dm.heightPixels * 0.34f).toInt()
+        val previewW = (previewH * (bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1))).toInt()
+        card.addView(ImageView(this).apply {
+            setImageBitmap(bitmap)
+            this.layoutParams = LinearLayout.LayoutParams(previewW, previewH).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+        })
+
+        card.addView(TextView(this).apply {
+            text = "No raw Accessibility text nodes on this canvas/image."
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setTextColor(Color.parseColor("#AAAAAA"))
+            setPadding(0, dp(8), 0, dp(6))
+        })
+
+        val retryLensBtn = TextView(this).apply {
+            text = "[ ⊞ RE-SCAN ACCESSIBILITY NODES ]"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Color.parseColor("#00FF66"))
+            setPadding(0, dp(6), 0, dp(4))
+            setOnClickListener {
+                hideScreenGrabOverlay()
+                val blocks = harvestAllScreenText()
+                if (blocks.isNotEmpty()) {
+                    showLensGrabOverlay(blocks)
+                } else {
+                    Toast.makeText(this@SelAccessibilityService, "Still 0 text nodes on screen", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        val closeBtn = TextView(this).apply {
+            text = "[ × CLOSE ]"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Color.parseColor("#FF5555"))
+            setPadding(0, dp(6), 0, 0)
+            setOnClickListener {
+                hideScreenGrabOverlay()
+            }
+        }
+
+        card.addView(retryLensBtn)
+        card.addView(closeBtn)
+
+        screenGrabOverlayView = card
+        runCatching { windowManager.addView(screenGrabOverlayView, params) }
     }
 
     private fun harvestAllScreenText(): List<LensBlock> {
@@ -245,12 +383,11 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
-        if (node.isVisibleToUser) {
+        if (node.isVisibleToUser && !node.isPassword) {
             val rawText = node.text?.toString()?.trim()
             val descText = node.contentDescription?.toString()?.trim()
             val candidate = when {
                 !rawText.isNullOrBlank() -> rawText
-                // Only fall back to contentDescription if no child node already supplied text
                 !childHadText && !descText.isNullOrBlank() && descText.length > 1 -> descText
                 else -> null
             }
@@ -282,8 +419,8 @@ class SelAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -298,6 +435,36 @@ class SelAccessibilityService : AccessibilityService() {
                 smoothCopyText(chosen)
                 hideScreenGrabOverlay()
             },
+            onSmartAction = { actionId, chosen ->
+                hideScreenGrabOverlay()
+                selectedText = chosen
+                ToolPrefs.addClipToHistory(this, chosen)
+                when (actionId) {
+                    "magnet" -> {
+                        currentMode = PopupMode.MAGNET
+                        val dm = resources.displayMetrics
+                        showOrUpdatePalette(Rect(0, dm.heightPixels / 3, dm.widthPixels, dm.heightPixels / 2))
+                    }
+                    "clean_url" -> {
+                        smoothCopyText(cleanUrl(chosen), "⎘ Cleaned URL copied")
+                    }
+                    "open_url" -> {
+                        openUrl(chosen)
+                    }
+                    "dial" -> {
+                        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(chosen)}")).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        runCatching { startActivity(dialIntent) }
+                    }
+                    "define" -> {
+                        currentMode = PopupMode.DEFINE_WORD
+                        val dm = resources.displayMetrics
+                        showOrUpdatePalette(Rect(0, dm.heightPixels / 3, dm.widthPixels, dm.heightPixels / 2))
+                    }
+                    else -> showFromExternalText(chosen)
+                }
+            },
             onOpenInTools = { chosen ->
                 hideScreenGrabOverlay()
                 showFromExternalText(chosen)
@@ -305,6 +472,9 @@ class SelAccessibilityService : AccessibilityService() {
             onSearchText = { chosen ->
                 hideScreenGrabOverlay()
                 openUrl("https://duckduckgo.com/?q=${Uri.encode(chosen)}")
+            },
+            onCaptureScreenshot = {
+                captureScreenshotFallback()
             },
             onDismiss = {
                 hideScreenGrabOverlay()
@@ -325,12 +495,24 @@ class SelAccessibilityService : AccessibilityService() {
     private fun smoothCopyText(text: String, toastLabel: String? = null) {
         lastClipboardTime = System.currentTimeMillis()
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", text))
+        ToolPrefs.addClipToHistory(this, text)
         popupView?.let { runCatching { it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) } }
         val preview = text.replace("\n", " ").let { if (it.length > 26) it.take(25) + "…" else it }
         Toast.makeText(this, toastLabel ?: "⎘ Copied: \"$preview\"", Toast.LENGTH_SHORT).show()
     }
 
+    private fun isPrimaryClipSensitive(): Boolean {
+        if (Build.VERSION.SDK_INT >= 33) {
+            val desc = runCatching { clipboardManager.primaryClipDescription }.getOrNull()
+            val isSens = desc?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false) ?: false
+            if (isSens) return true
+        }
+        return false
+    }
+
     private fun readClipboardAndShowPalette() {
+        if (isPrimaryClipSensitive()) return
+
         val directClip = runCatching {
             clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
         }.getOrNull()
@@ -346,7 +528,7 @@ class SelAccessibilityService : AccessibilityService() {
             1,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -364,12 +546,16 @@ class SelAccessibilityService : AccessibilityService() {
 
         val tryRead = {
             if (!cleanedUp) {
-                val clip = runCatching {
-                    clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
-                }.getOrNull()
-                if (!clip.isNullOrBlank()) {
+                if (!isPrimaryClipSensitive()) {
+                    val clip = runCatching {
+                        clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+                    }.getOrNull()
+                    if (!clip.isNullOrBlank()) {
+                        cleanup()
+                        showFromExternalText(clip)
+                    }
+                } else {
                     cleanup()
-                    showFromExternalText(clip)
                 }
             }
         }
@@ -392,6 +578,11 @@ class SelAccessibilityService : AccessibilityService() {
         event ?: return
         if (screenGrabOverlayView != null) return
         val pkg = event.packageName?.toString() ?: ""
+
+        // Respect per-app blacklist for automatic popups
+        if (pkg.isNotEmpty() && ToolPrefs.isAppBlacklisted(this, pkg)) {
+            return
+        }
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> {
@@ -539,6 +730,7 @@ class SelAccessibilityService : AccessibilityService() {
 
         val source = event.source
         if (source != null) {
+            if (source.isPassword) return null
             extractFromNode(source, event.fromIndex, event.toIndex)?.let { return it }
             findSelectionInTree(source, 0)?.let { return it }
         }
@@ -575,6 +767,7 @@ class SelAccessibilityService : AccessibilityService() {
         evFrom: Int = -1,
         evTo: Int = -1
     ): SelectionResult? {
+        if (node.isPassword) return null
         val raw = node.text?.toString() ?: ""
         val hint = node.hintText?.toString() ?: ""
         if (raw.isEmpty() || (hint.isNotEmpty() && raw == hint)) return null
@@ -638,7 +831,7 @@ class SelAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // Dynamic autosizing vertical palette
+    // Dynamic autosizing vertical palette with Smart Anchor, Edge-Snap, and Collapse-to-Pill
     private fun showOrUpdatePalette(bounds: Rect) {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
@@ -652,22 +845,36 @@ class SelAccessibilityService : AccessibilityService() {
             return
         }
 
+        val snapLeft = ToolPrefs.isSnapLeftEdge(this)
+        val initialX = if (snapLeft) dp(10) else (dm.widthPixels - dp(236)).coerceAtLeast(dp(10))
+
+        // Smart Y positioning: if selection is in lower half (keyboard likely open), anchor above selection
+        val targetY = if (bounds.bottom > dm.heightPixels * 0.56f) {
+            (bounds.top - dp(260)).coerceIn(dp(64), (dm.heightPixels - dp(340)).coerceAtLeast(dp(72)))
+        } else {
+            (bounds.bottom + dp(14)).coerceIn(dp(64), (dm.heightPixels - dp(340)).coerceAtLeast(dp(72)))
+        }
+
         val windowParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = dp(12)
-            y = (bounds.bottom + dp(14)).coerceIn(dp(72), (dm.heightPixels - dp(340)).coerceAtLeast(dp(80)))
+            gravity = Gravity.TOP or Gravity.START
+            x = initialX
+            y = targetY
         }
 
         val rootCard = object : LinearLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                if (currentMode == PopupMode.COLLAPSED_PILL) {
+                    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+                    return
+                }
                 val maxW = if (currentMode != PopupMode.ACTIONS) {
                     dp(268)
                 } else {
@@ -675,7 +882,7 @@ class SelAccessibilityService : AccessibilityService() {
                 }
                 val cappedWidthSpec = MeasureSpec.makeMeasureSpec(maxW, MeasureSpec.AT_MOST)
                 super.onMeasure(cappedWidthSpec, heightMeasureSpec)
-                val minW = dp(168)
+                val minW = dp(172)
                 if (measuredWidth < minW) {
                     super.onMeasure(MeasureSpec.makeMeasureSpec(minW, MeasureSpec.EXACTLY), heightMeasureSpec)
                 }
@@ -725,7 +932,7 @@ class SelAccessibilityService : AccessibilityService() {
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(Color.parseColor("#777777"))
-            setPadding(0, 0, dp(8), 0)
+            setPadding(0, 0, dp(6), 0)
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -733,17 +940,30 @@ class SelAccessibilityService : AccessibilityService() {
             )
         }
 
-        // Quick 1-tap header Copy pill for ultra-smooth copying from anywhere in the popup
         val quickCopyHeaderBtn = TextView(this).apply {
             text = "[⎘]"
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             setTextColor(Color.parseColor("#00FF66"))
-            setPadding(dp(4), 0, dp(6), 0)
+            setPadding(dp(4), 0, dp(4), 0)
             setOnClickListener {
                 ToolPrefs.recordUse(this@SelAccessibilityService, "copy")
                 smoothCopyText(selectedText)
                 hidePalette()
+            }
+        }
+
+        // Collapse-to-pill button so you can peek at underlying text without losing your selection
+        val collapseBtn = TextView(this).apply {
+            text = "–"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(Color.parseColor("#888888"))
+            setPadding(dp(5), 0, dp(5), 0)
+            setOnClickListener {
+                lastShownTime = System.currentTimeMillis()
+                currentMode = PopupMode.COLLAPSED_PILL
+                renderPopupBody()
             }
         }
 
@@ -752,7 +972,7 @@ class SelAccessibilityService : AccessibilityService() {
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             setTextColor(Color.parseColor("#888888"))
-            setPadding(dp(6), 0, dp(6), 0)
+            setPadding(dp(5), 0, dp(5), 0)
             setOnClickListener {
                 lastShownTime = System.currentTimeMillis()
                 currentMode = if (currentMode == PopupMode.REORDER) PopupMode.ACTIONS else PopupMode.REORDER
@@ -765,15 +985,16 @@ class SelAccessibilityService : AccessibilityService() {
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(Color.parseColor("#888888"))
-            setPadding(dp(6), 0, dp(4), 0)
+            setPadding(dp(5), 0, dp(4), 0)
             setOnClickListener { hidePalette() }
         }
 
         header.addView(statsLabel)
         header.addView(quickCopyHeaderBtn)
+        header.addView(collapseBtn)
         header.addView(reorderBtn)
         header.addView(closeBtn)
-        enableDragOnHeader(header, rootCard, windowParams)
+        enableDragAndEdgeSnapOnHeader(header, rootCard, windowParams)
         rootCard.addView(header)
         rootCard.addView(makeHorizontalRule())
 
@@ -796,6 +1017,7 @@ class SelAccessibilityService : AccessibilityService() {
 
         popupView = rootCard
         popupParams = windowParams
+        headerBarView = header
         statsLabelView = statsLabel
         reorderToggleBtn = reorderBtn
         bodyContainer = container
@@ -808,13 +1030,19 @@ class SelAccessibilityService : AccessibilityService() {
         val container = bodyContainer ?: return
         container.removeAllViews()
 
+        headerBarView?.visibility = if (currentMode == PopupMode.COLLAPSED_PILL) View.GONE else View.VISIBLE
+
         reorderToggleBtn?.setTextColor(
             Color.parseColor(if (currentMode == PopupMode.REORDER) "#00FF66" else "#888888")
         )
 
         when (currentMode) {
             PopupMode.ACTIONS -> populateActionRows(container)
+            PopupMode.COLLAPSED_PILL -> populateCollapsedPill(container)
+            PopupMode.CLIP_HISTORY -> populateClipHistorySubmenu(container)
             PopupMode.MARKDOWN_FOLDER -> populateMarkdownSubmenu(container)
+            PopupMode.REGEX_PIPE -> populateRegexPipeSubmenu(container)
+            PopupMode.CUSTOM_FOLDER -> populateCustomFolderSubmenu(container, activeCustomFolder)
             PopupMode.QR_CODE -> populateQrView(container)
             PopupMode.MAGNET -> populateMagnetView(container)
             PopupMode.DEFINE_WORD -> populateDefineView(container)
@@ -831,17 +1059,24 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * Context-Aware Tool Filtering:
-     * Ensures tools only show when the selected text matches their context.
-     * - "magnet" (HASH -> MAGNET) ONLY shows when a valid 40/64-char hex or 32-char Base32 torrent info-hash (or magnet:?) is selected.
-     * - "clean_url" ONLY shows when the selection contains a URL with query/tracking parameters.
-     * - "define" ONLY shows for 1–4 words of text (not URLs, hashes, or pure numbers).
-     * - "sort" ONLY shows on multi-line selections (2+ lines).
-     * - "clean_text" ONLY shows when line breaks, tabs, double spaces, or zero-width characters exist.
-     * - "extract" ONLY shows when URLs, emails, phone numbers, or #tags/@handles exist inside the selection.
-     * - "case" ONLY shows when letters exist and selection is not a bare URL or hash.
-     */
+    private fun populateCollapsedPill(container: LinearLayout) {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val pill = TextView(this).apply {
+            text = "[sel_ ▸]"
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(Color.parseColor("#00FF66"))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                lastShownTime = System.currentTimeMillis()
+                currentMode = PopupMode.ACTIONS
+                renderPopupBody()
+            }
+        }
+        container.addView(pill)
+    }
+
     private fun isToolRelevantForSelection(toolId: String, rawText: String): Boolean {
         val trimmed = rawText.trim()
         if (trimmed.isEmpty()) return false
@@ -865,6 +1100,7 @@ class SelAccessibilityService : AccessibilityService() {
                 Regex("[\\u200B-\\u200D\\uFEFF]").containsMatchIn(rawText)
             "extract" -> hasExtractableEntities(trimmed) && !isSingleTokenUrl
             "case" -> trimmed.any { it.isLetter() } && !isSingleTokenUrl && !isHash
+            "clip_history" -> ToolPrefs.getClipHistory(this).isNotEmpty()
             else -> true
         }
     }
@@ -880,7 +1116,28 @@ class SelAccessibilityService : AccessibilityService() {
     private fun populateActionRows(list: LinearLayout) {
         val pinnedIds = HashSet<String>()
 
-        // 1. Instant Math Evaluator (only if selection is a math expression)
+        // 0. 1-Tap In-Place Undo row if a recent text replacement occurred in the last 45s
+        val prevText = undoOriginalFullText
+        val uNode = undoNode
+        if (prevText != null && uNode != null && System.currentTimeMillis() - undoTimestamp < 45000L) {
+            list.addView(makeRow("↶", "UNDO LAST EDIT", null) {
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, prevText)
+                }
+                val ok = runCatching { uNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+                undoOriginalFullText = null
+                undoNode = null
+                Toast.makeText(
+                    this,
+                    if (ok) "↶ Restored original text" else "⎘ Copied original text",
+                    Toast.LENGTH_SHORT
+                ).show()
+                if (!ok) smoothCopyText(prevText)
+                hidePalette()
+            })
+        }
+
+        // 1. Instant Math Evaluator
         evalSimpleMath(selectedText)?.let { ans ->
             list.addView(makeRow("∑", "= $ans", null) {
                 ToolPrefs.recordUse(this, "math")
@@ -888,7 +1145,7 @@ class SelAccessibilityService : AccessibilityService() {
             })
         }
 
-        // 2. Instant Unit & Hex/Dec Converter (only if selection is a unit/hex value)
+        // 2. Instant Unit & Hex/Dec Converter
         evalUnitConversion(selectedText)?.let { conv ->
             list.addView(makeRow("⇄", conv, null) {
                 ToolPrefs.recordUse(this, "unit_conv")
@@ -896,7 +1153,7 @@ class SelAccessibilityService : AccessibilityService() {
             })
         }
 
-        // 2b. Context-Aware Unix Timestamp Decoder (only if selection is a 10 or 13 digit epoch)
+        // 2b. Context-Aware Unix Timestamp Decoder
         evalTimestamp(selectedText)?.let { formattedDate ->
             list.addView(makeRow("🕒", formattedDate, null) {
                 ToolPrefs.recordUse(this, "epoch_conv")
@@ -904,7 +1161,7 @@ class SelAccessibilityService : AccessibilityService() {
             })
         }
 
-        // 2c. Context-Aware Base64 Decoder (only if selection decodes to clean printable UTF-8)
+        // 2c. Context-Aware Base64 Decoder
         evalBase64Decode(selectedText)?.let { decoded ->
             val preview = decoded.replace("\n", " ").let { if (it.length > 20) it.take(19) + "…" else it }
             list.addView(makeRow("🔓", "B64 → $preview", null) {
@@ -949,6 +1206,90 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
+    // Ring-Buffer Clipboard History Submenu inside the popup
+    private fun populateClipHistorySubmenu(container: LinearLayout) {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+
+        container.addView(makeRow("←", "BACK TO TOOLS", null) {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = PopupMode.ACTIONS
+            renderPopupBody()
+        })
+        container.addView(makeRow("🧹", "CLEAR UNPINNED", null) {
+            ToolPrefs.clearUnpinnedClips(this)
+            renderPopupBody()
+        })
+        container.addView(makeHorizontalRule())
+
+        val clips = ToolPrefs.getClipHistory(this)
+        if (clips.isEmpty()) {
+            container.addView(TextView(this).apply {
+                text = "Clipboard history is empty."
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextColor(Color.parseColor("#888888"))
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+            })
+            return
+        }
+
+        for (entry in clips) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(7), dp(8), dp(7))
+            }
+
+            val pinBtn = TextView(this).apply {
+                text = if (entry.pinned) "📌" else "·"
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextColor(Color.parseColor(if (entry.pinned) "#00FF66" else "#666666"))
+                setPadding(dp(4), dp(2), dp(8), dp(2))
+                setOnClickListener {
+                    ToolPrefs.togglePinClip(this@SelAccessibilityService, entry.text)
+                    renderPopupBody()
+                }
+            }
+
+            val textBtn = TextView(this).apply {
+                val preview = entry.text.replace("\n", " ↵ ").let {
+                    if (it.length > 24) it.take(23) + "…" else it
+                }
+                text = preview
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextColor(Color.parseColor("#F0F0F0"))
+                isSingleLine = true
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+                setOnClickListener {
+                    applyResult(entry.text)
+                }
+            }
+
+            val delBtn = TextView(this).apply {
+                text = "×"
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(Color.parseColor("#777777"))
+                setPadding(dp(6), dp(2), dp(2), dp(2))
+                setOnClickListener {
+                    ToolPrefs.deleteClip(this@SelAccessibilityService, entry.text)
+                    renderPopupBody()
+                }
+            }
+
+            row.addView(pinBtn)
+            row.addView(textBtn)
+            row.addView(delBtn)
+            container.addView(row)
+        }
+    }
+
     // Dedicated Markdown Folder Submenu inside the popup
     private fun populateMarkdownSubmenu(container: LinearLayout) {
         container.addView(makeRow("←", "BACK TO TOOLS", null) {
@@ -969,7 +1310,7 @@ class SelAccessibilityService : AccessibilityService() {
                 ToolPrefs.recordUse(this, "markdown_folder")
                 ToolPrefs.recordUse(this, mdTool.id)
                 if (mdTool.customTarget != null) {
-                    applyResult(mdTool.customTarget.replace("{text}", selectedText))
+                    applyResult(executeCustomTargetTransform(mdTool.customTarget, selectedText))
                 } else {
                     val formatted = when (mdTool.id) {
                         "md_bold" -> "**${selectedText.trim()}**"
@@ -982,6 +1323,7 @@ class SelAccessibilityService : AccessibilityService() {
                         "md_task" -> selectedText.lines().filter { it.isNotBlank() }.joinToString("\n") { "- [ ] ${it.trim()}" }
                         "md_h2" -> selectedText.lines().joinToString("\n") { "## ${it.trim()}" }
                         "md_spoiler" -> "||${selectedText.trim()}||"
+                        "md_table" -> "| Col 1 | Col 2 |\n| --- | --- |\n| ${selectedText.trim()} |  |"
                         else -> selectedText
                     }
                     applyResult(formatted)
@@ -990,16 +1332,114 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
+    // Dedicated Regex & Developer Pipe Submenu inside the popup
+    private fun populateRegexPipeSubmenu(container: LinearLayout) {
+        container.addView(makeRow("←", "BACK TO TOOLS", null) {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = PopupMode.ACTIONS
+            renderPopupBody()
+        })
+        container.addView(makeHorizontalRule())
+
+        val pipeTools = ToolPrefs.loadRegexPipeTools(this)
+        for (pTool in pipeTools) {
+            container.addView(makeRow(pTool.glyph, pTool.label, null) {
+                ToolPrefs.recordUse(this, "regex_pipe")
+                ToolPrefs.recordUse(this, pTool.id)
+                if (pTool.customTarget != null) {
+                    applyResult(executeCustomTargetTransform(pTool.customTarget, selectedText))
+                } else {
+                    val transformed = when (pTool.id) {
+                        "pipe_json_pretty" -> runCatching {
+                            val t = selectedText.trim()
+                            if (t.startsWith("[")) JSONArray(t).toString(2) else JSONObject(t).toString(2)
+                        }.getOrElse { selectedText }
+                        "pipe_json_min" -> runCatching {
+                            val t = selectedText.trim()
+                            if (t.startsWith("[")) JSONArray(t).toString() else JSONObject(t).toString()
+                        }.getOrElse { selectedText.lines().joinToString("") { it.trim() } }
+                        "pipe_url_enc" -> Uri.encode(selectedText)
+                        "pipe_url_dec" -> Uri.decode(selectedText)
+                        "pipe_b64_enc" -> Base64.encodeToString(selectedText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                        "pipe_sha256" -> sha256Hex(selectedText)
+                        "pipe_rot13" -> rot13(selectedText)
+                        "pipe_num_lines" -> selectedText.lines().mapIndexed { i, l -> "${i + 1}. $l" }.joinToString("\n")
+                        "pipe_strip_html" -> selectedText.replace(Regex("<[^>]+>"), "").trim()
+                        else -> selectedText
+                    }
+                    applyResult(transformed)
+                }
+            })
+        }
+    }
+
+    // Custom User-Defined Folder Submenu (from FOLDER/LABEL rules in rules.txt)
+    private fun populateCustomFolderSubmenu(container: LinearLayout, folderName: String) {
+        container.addView(makeRow("←", "BACK ($folderName)", null) {
+            lastShownTime = System.currentTimeMillis()
+            currentMode = PopupMode.ACTIONS
+            renderPopupBody()
+        })
+        container.addView(makeHorizontalRule())
+
+        val items = ToolPrefs.loadCustomFolderTools(this, folderName)
+        for (item in items) {
+            container.addView(makeRow(item.glyph, item.label, null) {
+                ToolPrefs.recordUse(this, "folder_custom_$folderName")
+                executeTool(item)
+            })
+        }
+    }
+
+    private fun executeCustomTargetTransform(target: String, input: String): String {
+        val trimmedTarget = target.trim()
+        // Support sed-style s/pattern/replacement/flags regex rules!
+        if (trimmedTarget.startsWith("s/") && trimmedTarget.count { it == '/' } >= 3) {
+            return runCatching {
+                val firstSlash = 1
+                val secondSlash = trimmedTarget.indexOf('/', firstSlash + 1)
+                val lastSlash = trimmedTarget.lastIndexOf('/')
+                if (secondSlash > firstSlash && lastSlash > secondSlash) {
+                    val pattern = trimmedTarget.substring(firstSlash + 1, secondSlash)
+                    val replacement = trimmedTarget.substring(secondSlash + 1, lastSlash)
+                        .replace("\\n", "\n")
+                        .replace("\\t", "\t")
+                    val flags = trimmedTarget.substring(lastSlash + 1)
+                    val opts = mutableSetOf<RegexOption>()
+                    if (flags.contains('i', ignoreCase = true)) opts.add(RegexOption.IGNORE_CASE)
+                    if (flags.contains('m', ignoreCase = true)) opts.add(RegexOption.MULTILINE)
+                    val regex = Regex(pattern, opts)
+                    if (flags.contains('g', ignoreCase = true)) {
+                        regex.replace(input, replacement)
+                    } else {
+                        regex.replaceFirst(input, replacement)
+                    }
+                } else {
+                    input
+                }
+            }.getOrDefault(input)
+        }
+        return trimmedTarget.replace("{text}", input)
+    }
+
     private fun executeTool(tool: ToolSpec) {
         val trimmed = selectedText.trim()
         val encoded = Uri.encode(trimmed)
 
+        if (tool.folderName != null && tool.customTarget == null) {
+            lastShownTime = System.currentTimeMillis()
+            activeCustomFolder = tool.folderName
+            currentMode = PopupMode.CUSTOM_FOLDER
+            renderPopupBody()
+            return
+        }
+
         if (tool.customTarget != null) {
-            val target = tool.customTarget
-            if (target.startsWith("http")) {
+            val target = tool.customTarget.trim()
+            if (target.startsWith("http://", ignoreCase = true) || target.startsWith("https://", ignoreCase = true)) {
                 openUrl(target.replace("{text}", encoded))
             } else {
-                applyResult(target.replace("{text}", selectedText))
+                applyResult(executeCustomTargetTransform(target, selectedText))
             }
             return
         }
@@ -1012,9 +1452,19 @@ class SelAccessibilityService : AccessibilityService() {
             "screen_grab" -> {
                 triggerScreenGrab(delayMs = 110L)
             }
+            "clip_history" -> {
+                lastShownTime = System.currentTimeMillis()
+                currentMode = PopupMode.CLIP_HISTORY
+                renderPopupBody()
+            }
             "markdown_folder" -> {
                 lastShownTime = System.currentTimeMillis()
                 currentMode = PopupMode.MARKDOWN_FOLDER
+                renderPopupBody()
+            }
+            "regex_pipe" -> {
+                lastShownTime = System.currentTimeMillis()
+                currentMode = PopupMode.REGEX_PIPE
                 renderPopupBody()
             }
             "define" -> {
@@ -1089,7 +1539,7 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Inline Torrent Hash -> Magnet result view inside the popup with Copy, Paste/Replace, and Open options
+    // Inline Torrent Hash -> Magnet result view inside the popup
     private fun populateMagnetView(container: LinearLayout) {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
 
@@ -1362,7 +1812,7 @@ class SelAccessibilityService : AccessibilityService() {
                 connectTimeout = 4500
                 readTimeout = 4500
                 requestMethod = "GET"
-                setRequestProperty("User-Agent", "sel-android/1.6")
+                setRequestProperty("User-Agent", "sel-android/1.7")
             }
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -1468,7 +1918,7 @@ class SelAccessibilityService : AccessibilityService() {
         }.getOrDefault("Translation unavailable.")
     }
 
-    // Inline Entity Extractor (URLs, Emails, Numbers, Handles) inside the popup
+    // Inline Entity Extractor inside the popup
     private fun populateExtractView(container: LinearLayout) {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
 
@@ -1502,7 +1952,7 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Inline Drag-and-Drop Reorder & Show/Hide view inside the popup
+    // Inline Drag-and-Drop Reorder + Per-App Blacklist Toggle inside the popup
     private fun populateReorderView(container: LinearLayout) {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
 
@@ -1522,6 +1972,27 @@ class SelAccessibilityService : AccessibilityService() {
                 renderPopupBody()
             }
         )
+
+        if (activePackage.isNotBlank() && activePackage != packageName) {
+            val isMuted = ToolPrefs.isAppBlacklisted(this, activePackage)
+            val shortPkg = activePackage.substringAfterLast('.').uppercase()
+            container.addView(
+                makeRow(
+                    "⊘",
+                    if (isMuted) "UNMUTE IN $shortPkg" else "MUTE IN $shortPkg",
+                    null
+                ) {
+                    ToolPrefs.setAppBlacklisted(this, activePackage, !isMuted)
+                    Toast.makeText(
+                        this,
+                        if (!isMuted) "Muted auto-popup in $activePackage" else "Unmuted $activePackage",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    if (!isMuted) hidePalette() else renderPopupBody()
+                }
+            )
+        }
+
         container.addView(makeHorizontalRule())
 
         val dragList = LinearLayout(this).apply {
@@ -1667,14 +2138,21 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun enableDragOnHeader(header: View, rootView: View, params: WindowManager.LayoutParams) {
+    // Header Drag + Magnetic Edge-Snap on release
+    private fun enableDragAndEdgeSnapOnHeader(
+        header: View,
+        rootView: View,
+        params: WindowManager.LayoutParams
+    ) {
         var initialX = 0
         var initialY = 0
         var touchX = 0f
         var touchY = 0f
 
-        header.setOnTouchListener { _, event ->
+        header.setOnTouchListener { v, event ->
             runCatching {
+                val dm = resources.displayMetrics
+                val dp = { d: Int -> (d * dm.density).toInt() }
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         mainHandler.removeCallbacks(delayedHideRunnable)
@@ -1685,10 +2163,30 @@ class SelAccessibilityService : AccessibilityService() {
                         true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX - (event.rawX - touchX).toInt()
-                        params.y = initialY + (event.rawY - touchY).toInt()
+                        params.x = (initialX + (event.rawX - touchX).toInt())
+                            .coerceIn(dp(6), (dm.widthPixels - rootView.width - dp(6)).coerceAtLeast(dp(6)))
+                        params.y = (initialY + (event.rawY - touchY).toInt())
+                            .coerceIn(dp(36), (dm.heightPixels - dp(80)).coerceAtLeast(dp(40)))
                         if (rootView.isAttachedToWindow) {
                             windowManager.updateViewLayout(rootView, params)
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        // Snap to nearest horizontal screen edge if dragged more than 8dp
+                        if (kotlin.math.abs(event.rawX - touchX) > dp(8)) {
+                            val centerX = params.x + rootView.width / 2
+                            val snapLeft = centerX < dm.widthPixels / 2
+                            ToolPrefs.setSnapLeftEdge(this@SelAccessibilityService, snapLeft)
+                            params.x = if (snapLeft) {
+                                dp(10)
+                            } else {
+                                (dm.widthPixels - rootView.width - dp(10)).coerceAtLeast(dp(10))
+                            }
+                            if (rootView.isAttachedToWindow) {
+                                windowManager.updateViewLayout(rootView, params)
+                            }
+                            runCatching { v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
                         }
                         true
                     }
@@ -1701,6 +2199,7 @@ class SelAccessibilityService : AccessibilityService() {
     private fun applyResult(newText: String) {
         lastClipboardTime = System.currentTimeMillis()
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", newText))
+        ToolPrefs.addClipToHistory(this, newText)
 
         var replaced = false
         val node = currentNode
@@ -1711,6 +2210,11 @@ class SelAccessibilityService : AccessibilityService() {
             val start = minOf(s, e)
             val end = maxOf(s, e)
             if (start >= 0 && end > start && end <= full.length) {
+                // Save Undo snapshot before replacing in-place
+                undoOriginalFullText = full
+                undoNode = node
+                undoTimestamp = System.currentTimeMillis()
+
                 val updated = full.replaceRange(start, end, newText)
                 val args = Bundle().apply {
                     putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
@@ -1724,6 +2228,26 @@ class SelAccessibilityService : AccessibilityService() {
             Toast.makeText(this, "⎘ Copied: ${newText.take(28)}", Toast.LENGTH_SHORT).show()
         }
         hidePalette()
+    }
+
+    private fun sha256Hex(input: String): String {
+        return runCatching {
+            val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+            digest.joinToString("") { "%02x".format(it) }
+        }.getOrDefault(input)
+    }
+
+    private fun rot13(input: String): String {
+        val sb = StringBuilder(input.length)
+        for (c in input) {
+            val out = when (c) {
+                in 'a'..'m', in 'A'..'M' -> c + 13
+                in 'n'..'z', in 'N'..'Z' -> c - 13
+                else -> c
+            }
+            sb.append(out)
+        }
+        return sb.toString()
     }
 
     private fun extractTorrentHash(input: String): String? {
@@ -1811,7 +2335,6 @@ class SelAccessibilityService : AccessibilityService() {
         if (!Regex("^\\d{10}(\\d{3})?$").matches(trimmed)) return null
         val raw = trimmed.toLongOrNull() ?: return null
         val ms = if (trimmed.length == 10) raw * 1000L else raw
-        // Reasonable range: 2000-01-01 to 2100-01-01
         if (ms < 946684800000L || ms > 4102444800000L) return null
         return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(ms))
     }
@@ -1822,7 +2345,7 @@ class SelAccessibilityService : AccessibilityService() {
         if (!Regex("^[A-Za-z0-9+/]+={0,2}$").matches(trimmed)) return null
         if (extractTorrentHash(trimmed) != null) return null
         return runCatching {
-            val bytes = android.util.Base64.decode(trimmed, android.util.Base64.DEFAULT)
+            val bytes = Base64.decode(trimmed, Base64.DEFAULT)
             if (bytes.isEmpty() || bytes.size > 4096) return null
             val str = String(bytes, Charsets.UTF_8)
             val printable = str.all { it == '\n' || it == '\r' || it == '\t' || it.code in 32..126 }
@@ -1843,6 +2366,7 @@ class SelAccessibilityService : AccessibilityService() {
         }
         popupView = null
         popupParams = null
+        headerBarView = null
         statsLabelView = null
         reorderToggleBtn = null
         bodyContainer = null
