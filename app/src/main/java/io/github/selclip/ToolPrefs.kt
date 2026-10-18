@@ -6,6 +6,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.LinearLayout
 import java.io.File
+import kotlin.math.roundToInt
 
 data class ToolSpec(
     val id: String,
@@ -23,6 +24,7 @@ object ToolPrefs {
 
     val builtInTools = listOf(
         ToolSpec("copy", "⎘", "COPY TEXT"),
+        ToolSpec("screen_grab", "⊞", "GRAB SCREEN"),
         ToolSpec("define", "📖", "DEFINE WORD"),
         ToolSpec("translate", "🌐", "TRANSLATE"),
         ToolSpec("qr", "▣", "QR CODE"),
@@ -145,7 +147,6 @@ object ToolPrefs {
         val editor = prefs.edit()
         editor.putString(KEY_ORDER, orderedIds.joinToString(","))
 
-        // If Most-Used sorting is enabled, align usage counts monotonically so the user's dragged order sticks immediately
         if (isSortMostUsed(context) && orderedIds.isNotEmpty()) {
             var runningMax = 0
             for (i in orderedIds.indices.reversed()) {
@@ -161,81 +162,92 @@ object ToolPrefs {
         editor.apply()
     }
 
-    // Attaches smooth 60fps touch drag-and-drop reordering to a handle view inside a vertical LinearLayout
+    /**
+     * Crash-proof drag-and-drop:
+     * Never detaches or removes views during MotionEvent.ACTION_MOVE (which corrupts Android ViewGroup TouchTargets).
+     * Instead, shifts sibling rows via translationY during the drag and commits the new order on ACTION_UP via post{}.
+     */
     fun attachDragHandle(
         handleView: View,
         rowView: View,
         container: LinearLayout,
         onOrderSaved: (List<String>) -> Unit
     ) {
-        var lastRawY = 0f
+        var downRawY = 0f
+        var origIndex = -1
+        var targetIndex = -1
+        var rowHeight = 1
 
         handleView.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    rowView.parent?.requestDisallowInterceptTouchEvent(true)
-                    lastRawY = event.rawY
-                    rowView.setBackgroundColor(Color.parseColor("#1F3324"))
-                    rowView.alpha = 0.92f
-                    rowView.translationZ = 12f
-                    true
-                }
+            runCatching {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        container.requestDisallowInterceptTouchEvent(true)
+                        container.parent?.requestDisallowInterceptTouchEvent(true)
+                        downRawY = event.rawY
+                        origIndex = container.indexOfChild(rowView)
+                        targetIndex = origIndex
+                        rowHeight = rowView.height.coerceAtLeast(1)
+                        rowView.setBackgroundColor(Color.parseColor("#1F3324"))
+                        rowView.alpha = 0.94f
+                        rowView.translationZ = 10f
+                        true
+                    }
 
-                MotionEvent.ACTION_MOVE -> {
-                    rowView.parent?.requestDisallowInterceptTouchEvent(true)
-                    val dy = event.rawY - lastRawY
-                    rowView.translationY += dy
-                    lastRawY = event.rawY
+                    MotionEvent.ACTION_MOVE -> {
+                        if (origIndex < 0 || origIndex >= container.childCount) return@runCatching false
+                        container.requestDisallowInterceptTouchEvent(true)
+                        container.parent?.requestDisallowInterceptTouchEvent(true)
 
-                    val currentIndex = container.indexOfChild(rowView)
-                    if (currentIndex >= 0) {
-                        val draggedCenterY = rowView.top + rowView.height / 2f + rowView.translationY
+                        val dy = event.rawY - downRawY
+                        rowView.translationY = dy
 
-                        if (currentIndex > 0) {
-                            val above = container.getChildAt(currentIndex - 1)
-                            val aboveMid = above.top + above.height / 2f
-                            if (draggedCenterY < aboveMid) {
-                                val step = above.height.toFloat()
-                                container.removeViewAt(currentIndex)
-                                container.addView(rowView, currentIndex - 1)
-                                rowView.translationY += step
+                        val shiftSlots = (dy / rowHeight.toFloat()).roundToInt()
+                        targetIndex = (origIndex + shiftSlots).coerceIn(0, container.childCount - 1)
+
+                        for (i in 0 until container.childCount) {
+                            if (i == origIndex) continue
+                            val child = container.getChildAt(i) ?: continue
+                            child.translationY = when {
+                                origIndex < targetIndex && i in (origIndex + 1)..targetIndex -> -rowHeight.toFloat()
+                                origIndex > targetIndex && i in targetIndex until origIndex -> rowHeight.toFloat()
+                                else -> 0f
                             }
                         }
+                        true
+                    }
 
-                        if (currentIndex < container.childCount - 1) {
-                            val below = container.getChildAt(currentIndex + 1)
-                            val belowMid = below.top + below.height / 2f
-                            if (draggedCenterY > belowMid) {
-                                val step = below.height.toFloat()
-                                container.removeViewAt(currentIndex)
-                                container.addView(rowView, currentIndex + 1)
-                                rowView.translationY -= step
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        for (i in 0 until container.childCount) {
+                            val child = container.getChildAt(i) ?: continue
+                            child.translationY = 0f
+                            child.alpha = 1.0f
+                            child.translationZ = 0f
+                            child.setBackgroundColor(Color.TRANSPARENT)
+                        }
+
+                        val count = container.childCount
+                        if (origIndex in 0 until count && targetIndex in 0 until count) {
+                            val ids = mutableListOf<String>()
+                            for (i in 0 until count) {
+                                val tagId = container.getChildAt(i)?.tag as? String
+                                if (tagId != null) ids.add(tagId)
+                            }
+                            if (ids.size == count && origIndex != targetIndex) {
+                                val movedId = ids.removeAt(origIndex)
+                                ids.add(targetIndex, movedId)
+                                saveExactOrder(rowView.context, ids)
+                                container.post { onOrderSaved(ids) }
                             }
                         }
+                        origIndex = -1
+                        targetIndex = -1
+                        true
                     }
-                    true
+
+                    else -> false
                 }
-
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    rowView.translationY = 0f
-                    rowView.alpha = 1.0f
-                    rowView.translationZ = 0f
-                    rowView.setBackgroundColor(Color.TRANSPARENT)
-
-                    val ids = mutableListOf<String>()
-                    for (i in 0 until container.childCount) {
-                        val tagId = container.getChildAt(i).tag as? String
-                        if (tagId != null) ids.add(tagId)
-                    }
-                    if (ids.isNotEmpty()) {
-                        saveExactOrder(rowView.context, ids)
-                        onOrderSaved(ids)
-                    }
-                    true
-                }
-
-                else -> false
-            }
+            }.getOrDefault(false)
         }
     }
 }

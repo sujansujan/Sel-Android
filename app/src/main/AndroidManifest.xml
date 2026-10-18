@@ -45,6 +45,41 @@
             </intent-filter>
         </activity>
 
+        <!-- 3rd-Party Automation / Gesture Trigger for Universal Screen Text Extraction Mode -->
+        <activity
+            android:name=".ScreenGrabTriggerActivity"
+            android:exported="true"
+            android:label="[sel] Grab Screen Text"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleInstance">
+            <intent-filter>
+                <action android:name="io.github.selclip.ACTION_GRAB_SCREEN" />
+                <action android:name="io.github.selclip.EXTRACT_SCREEN_TEXT" />
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sel" android:host="grab" />
+            </intent-filter>
+        </activity>
+
+        <!-- Quick Settings Tile to trigger Screen Text Extraction from Notification Shade -->
+        <service
+            android:name=".SelTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_launcher_foreground"
+            android:label="[sel] Grab Text"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".SelAccessibilityService"
             android:exported="false"

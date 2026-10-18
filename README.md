@@ -3,15 +3,12 @@
 A minimal, zero-bloat (<1 MB) PopClip alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`.
 
 ## Features
-- **Instant Browser & App Overlay:** Automatically spawns the vertical palette across native apps, Google Keep, Twitter/X, and Browsers (via deep Accessibility tree inspection, automatic WebView `ACTION_COPY` extraction, and `ACTION_PROCESS_TEXT` fallback).
-- **Touch Drag-and-Drop Reordering (`≡`):** Grab and slide the `≡` handle to reorder tools in real time (or toggle `[✓]` to hide tools you don't need), plus automatic **Most-Used on Top** sorting.
-- **In-Popup Power Tools:**
-  - `🧲 HASH → MAGNET` — Converts 40/64-char hex or 32-char Base32 torrent info-hashes into magnet links (with tracker list & 1-tap client launch).
-  - `▣ QR CODE` — Scannable QR code rendered directly inside the popup.
-  - `📖 DEFINE WORD` — Dictionary phonetics & definitions (with Wikipedia fallback) inside the popup.
-  - `🌐 TRANSLATE` — Instant in-popup translation with 1-tap replace/copy.
-  - `🔊 SPEAK ALOUD` — Native offline TTS readout of selected text.
-  - `＠ EXTRACT LINKS` — Pulls all URLs, emails, phone numbers, and `#tags` from messy selections.
-  - `🧹 CLEAN TEXT` — Unwraps hard line breaks and strips invisible characters.
-  - `⇄ UNIT CONVERTER` — Contextual auto-conversion for `km/mi`, `kg/lb`, `°C/°F`, `cm/in`, `ft/m`, and `0xHEX`.
-  - `▶ YOUTUBE` (`▶d TODAY`, `▶w LAST WEEK`, `▶m MONTH`) & `🕵 INCOGNITO` browser.
+- **Universal X-Ray Screen Text Grabber (`⊞ GRAB SCREEN`):** Select and extract text on any screen even when `textIsSelectable="false"`. Triggerable via 3rd-party Intent (`io.github.selclip.ACTION_GRAB_SCREEN`), Deep Link (`sel://grab`), Quick Settings Tile (`[sel] Grab Text`), or Assist shortcut.
+- **In-Popup Magnet Converter (`🧲 HASH → MAGNET`):** Displays the generated `magnet:?xt=urn:btih:...` link directly inside the popup with `[ ⎘ COPY MAGNET ]`, `[ 📋 PASTE / REPLACE ]`, and `[ ⚡ OPEN IN TORRENT APP ]` options.
+- **Crash-Free Touch Drag-and-Drop Reordering (`≡`):** Smooth translation-based drag-and-drop sorting that never detaches views mid-gesture.
+
+## 3rd-Party Intent for Screen Text Extraction
+- **Action:** `io.github.selclip.ACTION_GRAB_SCREEN`
+- **Package:** `io.github.selclip`
+- **Activity Component:** `io.github.selclip/io.github.selclip.ScreenGrabTriggerActivity`
+- **Deep Link URI:** `sel://grab`

@@ -1,6 +1,8 @@
 package io.github.selclip
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -44,7 +46,7 @@ class MainActivity : Activity() {
         }
 
         container.addView(label("[sel_] // PLAIN-TEXT PALETTE", 16f, "#F0F0F0"))
-        container.addView(label("v1.4 · drag-and-drop · magnet converter · instant browser overlay", 11f, "#666666"))
+        container.addView(label("v1.5 · x-ray screen grab · in-popup magnet · drag-sort", 11f, "#666666"))
 
         container.addView(label("\n01 // PERMISSION", 12f, "#888888"))
         container.addView(label("[ ENABLE IN ACCESSIBILITY SETTINGS ↗ ]", 13.5f, "#00FF66").apply {
@@ -54,7 +56,50 @@ class MainActivity : Activity() {
             }
         })
 
-        container.addView(label("02 // SANDBOX (SELECT WORD, UNIT, MATH, OR URL BELOW)", 12f, "#888888"))
+        container.addView(label("02 // UNIVERSAL SCREEN TEXT GRABBER (3RD-PARTY INTENT)", 12f, "#888888"))
+        val intentInfo = """
+            Action:    io.github.selclip.ACTION_GRAB_SCREEN
+            Package:   io.github.selclip
+            Activity:  io.github.selclip.ScreenGrabTriggerActivity
+            Deep Link: sel://grab
+        """.trimIndent()
+
+        val intentBox = TextView(this).apply {
+            text = intentInfo
+            typeface = Typeface.MONOSPACE
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#CCCCCC"))
+            setBackgroundColor(Color.parseColor("#141414"))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        container.addView(intentBox)
+
+        val intentBtnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, dp(14))
+        }
+
+        val testGrabBtn = label("[ ⊞ TEST SCREEN GRAB NOW ]", 12f, "#00FF66").apply {
+            setPadding(0, dp(4), dp(16), dp(4))
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, ScreenGrabTriggerActivity::class.java))
+            }
+        }
+
+        val copyIntentBtn = label("[ ⎘ COPY INTENT ]", 12f, "#CCCCCC").apply {
+            setPadding(0, dp(4), 0, dp(4))
+            setOnClickListener {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("sel_intent", "io.github.selclip.ACTION_GRAB_SCREEN"))
+                Toast.makeText(this@MainActivity, "Copied action: io.github.selclip.ACTION_GRAB_SCREEN", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        intentBtnRow.addView(testGrabBtn)
+        intentBtnRow.addView(copyIntentBtn)
+        container.addView(intentBtnRow)
+
+        container.addView(label("03 // SANDBOX (SELECT WORD, HASH, UNIT, OR URL BELOW)", 12f, "#888888"))
         val sandbox = EditText(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 13f
@@ -65,7 +110,7 @@ class MainActivity : Activity() {
         }
         container.addView(sandbox)
 
-        container.addView(label("\n03 // TOOL ORDER (DRAG ≡ HANDLE TO REORDER, TAP [✓] TO HIDE)", 12f, "#888888"))
+        container.addView(label("\n04 // TOOL ORDER (DRAG ≡ HANDLE TO REORDER, TAP [✓] TO HIDE)", 12f, "#888888"))
         val sortControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(6), 0, dp(6))
@@ -100,7 +145,7 @@ class MainActivity : Activity() {
         }
         container.addView(reorderListContainer)
 
-        container.addView(label("\n04 // CUSTOM ACTIONS (GLYPH | LABEL | TARGET)", 12f, "#888888"))
+        container.addView(label("\n05 // CUSTOM ACTIONS (GLYPH | LABEL | TARGET)", 12f, "#888888"))
         rulesView = EditText(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 12f
@@ -120,7 +165,7 @@ class MainActivity : Activity() {
             }
         })
 
-        container.addView(label("05 // SCRATCHPAD LOG (⊕ APPEND LOG)", 12f, "#888888"))
+        container.addView(label("06 // SCRATCHPAD LOG (⊕ APPEND LOG)", 12f, "#888888"))
         container.addView(label("[ CLEAR LOG ]", 12f, "#FF5555").apply {
             setPadding(0, dp(6), 0, dp(8))
             setOnClickListener {
