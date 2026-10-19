@@ -584,7 +584,7 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "2.0.0")
+        root.put("version", "2.1.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))
@@ -796,38 +796,36 @@ object FaviconManager {
         return extractDomain(tool.customTarget) != null
     }
 
+    private val fallbackCache = object : LruCache<String, Bitmap>(64) {}
+
     fun bindFavicon(context: Context, imageView: ImageView, rawUrl: String, fallbackGlyph: String, sizePx: Int) {
         val domain = extractDomain(rawUrl)
         if (domain == null) {
-            imageView.setImageBitmap(createMonogramBitmap(fallbackGlyph, "#141414", "#00FF66", sizePx))
+            val key = "glyph_${fallbackGlyph}_$sizePx"
+            val cached = fallbackCache.get(key) ?: createMonogramBitmap(fallbackGlyph, "#141414", "#00FF66", sizePx).also {
+                fallbackCache.put(key, it)
+            }
+            imageView.setImageBitmap(cached)
             return
         }
 
         imageView.tag = domain
 
-        // 1. Instant Memory Cache hit
+        // 1. Instant Memory Cache hit (0 disk I/O on UI thread)
         val memBmp = memoryCache.get(domain)
         if (memBmp != null) {
             imageView.setImageBitmap(memBmp)
             return
         }
 
-        // 2. Instant Disk Cache hit
-        val diskFile = getDiskCacheFile(context, domain)
-        if (diskFile.exists() && diskFile.length() > 64) {
-            val diskBmp = runCatching { BitmapFactory.decodeFile(diskFile.absolutePath) }.getOrNull()
-            if (diskBmp != null) {
-                val rounded = makeRoundedIcon(diskBmp, sizePx)
-                memoryCache.put(domain, rounded)
-                imageView.setImageBitmap(rounded)
-                return
-            }
+        // 2. Instant cached brand monogram placeholder on UI thread
+        val fbKey = "${domain}_$sizePx"
+        val fbBmp = fallbackCache.get(fbKey) ?: createBrandFallbackBitmap(domain, fallbackGlyph, sizePx).also {
+            fallbackCache.put(fbKey, it)
         }
+        imageView.setImageBitmap(fbBmp)
 
-        // 3. Show crisp branded placeholder immediately while fetching real favicon in background
-        imageView.setImageBitmap(createBrandFallbackBitmap(domain, fallbackGlyph, sizePx))
-
-        // 4. Async download & cache
+        // 3. Load from disk cache or network strictly on background thread
         fetchFaviconAsync(context.applicationContext, domain, sizePx) { fetched ->
             if (fetched != null && imageView.tag == domain) {
                 imageView.setImageBitmap(fetched)
@@ -875,6 +873,16 @@ object FaviconManager {
         executor.execute {
             var resultBmp: Bitmap? = null
             try {
+                // Check disk cache first on background thread
+                val diskFile = getDiskCacheFile(context, domain)
+                if (diskFile.exists() && diskFile.length() > 64) {
+                    val diskBmp = runCatching { BitmapFactory.decodeFile(diskFile.absolutePath) }.getOrNull()
+                    if (diskBmp != null) {
+                        val rounded = makeRoundedIcon(diskBmp, sizePx)
+                        resultBmp = rounded
+                        memoryCache.put(domain, rounded)
+                    }
+                }
                 val baseDomain = domain.removePrefix("www.")
                 val candidates = listOf(
                     "https://www.google.com/s2/favicons?domain=$domain&sz=64",
@@ -882,7 +890,7 @@ object FaviconManager {
                     "https://www.google.com/s2/favicons?domain=$baseDomain&sz=64",
                     "https://$domain/favicon.ico"
                 )
-                for (endpoint in candidates) {
+                if (resultBmp == null) for (endpoint in candidates) {
                     val bmp = downloadBitmap(endpoint)
                     if (bmp != null && bmp.width >= 8 && bmp.height >= 8) {
                         val rounded = makeRoundedIcon(bmp, sizePx)

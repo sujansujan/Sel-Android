@@ -111,6 +111,8 @@ class SelAccessibilityService : AccessibilityService() {
     private var lastDetectedToolbarRect: Rect = Rect()
     private var lastDetectedToolbarTime: Long = 0L
     private var currentSafeZone: Rect = Rect()
+    private var cachedVisibleBottom: Int = 0
+    private var lastMetricsCacheTime: Long = 0L
     private var dynamicMaxScrollHeight: Int = 600
     private var dynamicMaxPopupWidth: Int = 540
     private var dynamicMinPopupWidth: Int = 380
@@ -128,7 +130,6 @@ class SelAccessibilityService : AccessibilityService() {
 
     private val delayedHideRunnable = Runnable { hidePalette() }
     private var pendingWebCopyRunnable: Runnable? = null
-    private var toolbarRefinementRunnable: Runnable? = null
 
     private val grabReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -210,7 +211,7 @@ class SelAccessibilityService : AccessibilityService() {
                 mainHandler.removeCallbacks(delayedHideRunnable)
                 selectedText = text
                 currentMode = PopupMode.ACTIONS
-                currentNode = findSelectedOrFocusedNode(rootInActiveWindow)
+                currentNode = findSelectedOrFocusedNode()
                 lastShownTime = System.currentTimeMillis()
                 val now = System.currentTimeMillis()
                 val rawCandidate = when {
@@ -218,10 +219,9 @@ class SelAccessibilityService : AccessibilityService() {
                     currentNode != null -> Rect().also { currentNode?.getBoundsInScreen(it) }
                     else -> null
                 }
-                val safeZone = resolveBestScreenSelectionBounds(rawCandidate)
+                val safeZone = resolveBestScreenSelectionBounds(rawCandidate, forceRefresh = true)
                 currentSafeZone = Rect(safeZone)
                 showOrUpdatePalette(currentSafeZone)
-                scheduleToolbarRefinementCheck()
             }
         }
     }
@@ -623,7 +623,6 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> {
-                findNativeSelectionToolbarBounds()
                 val result = extractSelection(event)
                 if (result != null) {
                     pendingWebCopyRunnable?.let { mainHandler.removeCallbacks(it) }
@@ -638,10 +637,9 @@ class SelAccessibilityService : AccessibilityService() {
                     if (changedText && currentMode != PopupMode.ACTIONS && currentMode != PopupMode.REORDER) {
                         currentMode = PopupMode.ACTIONS
                     }
-                    val safeZone = resolveBestScreenSelectionBounds(result.bounds)
+                    val safeZone = resolveBestScreenSelectionBounds(result.bounds, forceRefresh = true)
                     currentSafeZone = Rect(safeZone)
                     showOrUpdatePalette(currentSafeZone)
-                    scheduleToolbarRefinementCheck()
                 } else if (event.fromIndex >= 0 && event.toIndex >= 0 && event.fromIndex != event.toIndex) {
                     event.source?.let { src ->
                         val r = Rect()
@@ -666,28 +664,10 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (popupView != null && !userManuallyDragged && System.currentTimeMillis() - lastShownTime < 1400L) {
-                    val liveBar = findNativeSelectionToolbarBounds()
-                    if (liveBar != null) {
-                        val cand = lastRawCandidateBounds.takeIf { !it.isEmpty }
-                        val updatedZone = resolveBestScreenSelectionBounds(cand)
-                        if (kotlin.math.abs(updatedZone.top - currentSafeZone.top) > 12 ||
-                            kotlin.math.abs(updatedZone.bottom - currentSafeZone.bottom) > 12
-                        ) {
-                            currentSafeZone = Rect(updatedZone)
-                            popupParams?.let { p ->
-                                applyStrictPlacementAndDynamicSize(currentSafeZone, p)
-                                popupView?.let { v ->
-                                    if (v.isAttachedToWindow) {
-                                        runCatching { windowManager.updateViewLayout(v, p) }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if (popupView == null && isBrowserOrWebApp(pkg)) {
+                // Only inspect when popup is NOT showing and user is in a browser/web app (throttled to 900ms)
+                if (popupView == null && isBrowserOrWebApp(pkg)) {
                     val now = System.currentTimeMillis()
-                    if (now - lastWebAutoCopyTime > 850 && hasActiveSelectionToolbar()) {
+                    if (now - lastWebAutoCopyTime > 900 && hasActiveSelectionToolbarFast()) {
                         scheduleBrowserWebViewExtract(event.source, pkg)
                     }
                 }
@@ -697,7 +677,6 @@ class SelAccessibilityService : AccessibilityService() {
                 if (popupView == null) {
                     val cls = event.className?.toString() ?: ""
                     if (isBrowserOrWebApp(pkg) && (cls.contains("Popup", ignoreCase = true) || cls.contains("Floating", ignoreCase = true))) {
-                        findNativeSelectionToolbarBounds()
                         scheduleBrowserWebViewExtract(event.source, pkg)
                     }
                     return
@@ -711,7 +690,6 @@ class SelAccessibilityService : AccessibilityService() {
                     cls.contains("Toast", ignoreCase = true) ||
                     cls.contains("Dialog", ignoreCase = true)
                 ) {
-                    scheduleToolbarRefinementCheck()
                     return
                 }
                 val elapsed = System.currentTimeMillis() - lastShownTime
@@ -720,39 +698,6 @@ class SelAccessibilityService : AccessibilityService() {
                 }
             }
         }
-    }
-
-    private fun scheduleToolbarRefinementCheck() {
-        toolbarRefinementRunnable?.let { mainHandler.removeCallbacks(it) }
-        val checkTask = Runnable {
-            if (popupView == null || userManuallyDragged) return@Runnable
-            val liveBar = findNativeSelectionToolbarBounds()
-            val cand = lastRawCandidateBounds.takeIf { !it.isEmpty && System.currentTimeMillis() - lastRawCandidateTime < 4000L }
-            if (liveBar != null || cand != null) {
-                val newZone = resolveBestScreenSelectionBounds(cand)
-                if (kotlin.math.abs(newZone.top - currentSafeZone.top) > 10 ||
-                    kotlin.math.abs(newZone.bottom - currentSafeZone.bottom) > 10
-                ) {
-                    currentSafeZone = Rect(newZone)
-                    popupParams?.let { p ->
-                        applyStrictPlacementAndDynamicSize(currentSafeZone, p)
-                        val words = selectedText.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.size
-                        val chars = selectedText.length
-                        val posGlyph = if (anchoredAboveSelection) "▲" else "▼"
-                        statsLabelView?.text = "${words}W·${chars}C $posGlyph"
-                        popupView?.requestLayout()
-                        popupView?.let { v ->
-                            if (v.isAttachedToWindow) {
-                                runCatching { windowManager.updateViewLayout(v, p) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        toolbarRefinementRunnable = checkTask
-        mainHandler.postDelayed(checkTask, 95L)
-        mainHandler.postDelayed(checkTask, 220L)
     }
 
     private fun isBrowserOrWebApp(pkg: String): Boolean {
@@ -772,33 +717,32 @@ class SelAccessibilityService : AccessibilityService() {
             p.contains("reddit")
     }
 
-    private fun hasActiveSelectionToolbar(): Boolean {
-        return findNativeSelectionToolbarBounds() != null
+    private fun hasActiveSelectionToolbarFast(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val copyNodes = runCatching { root.findAccessibilityNodeInfosByText("Copy") }.getOrNull()
+        return !copyNodes.isNullOrEmpty() && copyNodes.any { it.isVisibleToUser && (it.isClickable || it.parent?.isClickable == true) }
     }
 
     private fun scheduleBrowserWebViewExtract(sourceNode: AccessibilityNodeInfo?, pkg: String) {
         pendingWebCopyRunnable?.let { mainHandler.removeCallbacks(it) }
-        // Capture toolbar bounds immediately if already visible
-        findNativeSelectionToolbarBounds()
         val runnable = Runnable {
             val now = System.currentTimeMillis()
-            if (now - lastWebAutoCopyTime < 600) return@Runnable
+            if (now - lastWebAutoCopyTime < 650) return@Runnable
             activePackage = pkg
 
-            // Capture native "Copy | Select all" toolbar BEFORE ACTION_COPY potentially dismisses it!
-            findNativeSelectionToolbarBounds()
+            // Capture floating "Copy" toolbar bounds BEFORE ACTION_COPY dismisses it
+            refreshScreenMetricsCache(force = true)
 
-            val treeResult = findSelectionInTree(rootInActiveWindow, 0)
+            val treeResult = findSelectionInTreeBounded(sourceNode ?: rootInActiveWindow)
             if (treeResult != null) {
                 selectedText = treeResult.text
                 currentNode = treeResult.node
                 lastShownTime = System.currentTimeMillis()
                 lastRawCandidateBounds = Rect(treeResult.bounds)
                 lastRawCandidateTime = lastShownTime
-                val safeZone = resolveBestScreenSelectionBounds(treeResult.bounds)
+                val safeZone = resolveBestScreenSelectionBounds(treeResult.bounds, forceRefresh = false)
                 currentSafeZone = Rect(safeZone)
                 showOrUpdatePalette(currentSafeZone)
-                scheduleToolbarRefinementCheck()
                 return@Runnable
             }
 
@@ -814,7 +758,13 @@ class SelAccessibilityService : AccessibilityService() {
                 copied = runCatching { sourceNode.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)
             }
             if (!copied) {
-                copied = performCopyInTree(rootInActiveWindow, 0)
+                val focused = runCatching { rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+                if (focused != null) {
+                    copied = runCatching { focused.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)
+                }
+            }
+            if (!copied) {
+                copied = performCopyInTreeBounded(rootInActiveWindow, 0)
             }
             if (copied) {
                 mainHandler.postDelayed({ readClipboardAndShowPalette() }, 45)
@@ -824,16 +774,16 @@ class SelAccessibilityService : AccessibilityService() {
         mainHandler.postDelayed(runnable, 110)
     }
 
-    private fun performCopyInTree(root: AccessibilityNodeInfo?, depth: Int): Boolean {
-        if (root == null || depth > 14) return false
+    private fun performCopyInTreeBounded(root: AccessibilityNodeInfo?, depth: Int): Boolean {
+        if (root == null || depth > 6) return false
         val cls = root.className?.toString() ?: ""
         if (cls.contains("WebView", ignoreCase = true) || root.isFocused) {
             if (runCatching { root.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) return true
         }
-        val count = root.childCount
+        val count = minOf(root.childCount, 8)
         for (i in 0 until count) {
             val child = runCatching { root.getChild(i) }.getOrNull() ?: continue
-            if (performCopyInTree(child, depth + 1)) return true
+            if (performCopyInTreeBounded(child, depth + 1)) return true
         }
         return false
     }
@@ -844,39 +794,40 @@ class SelAccessibilityService : AccessibilityService() {
             return null
         }
 
+        // 1. O(1) direct check on event.source (zero tree walk!)
         val source = event.source
         if (source != null) {
             if (source.isPassword) return null
-            findSelectionInTree(source, 0)?.let { return it }
             extractFromNode(source, event.fromIndex, event.toIndex)?.let { return it }
         }
 
-        findSelectionInTree(rootInActiveWindow, 0)?.let { return it }
-
-        runCatching {
-            for (win in windows) {
-                if (win.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
-                findSelectionInTree(win.root, 0)?.let { return it }
+        // 2. O(1) direct check on event.text with fromIndex..toIndex (zero IPC!)
+        val eventText = event.text.joinToString("")
+        if (eventText.isNotBlank() && event.fromIndex >= 0 && event.toIndex >= 0 && event.fromIndex != event.toIndex) {
+            val start = minOf(event.fromIndex, event.toIndex)
+            val end = maxOf(event.fromIndex, event.toIndex)
+            if (end <= eventText.length) {
+                val sub = eventText.substring(start, end)
+                if (sub.isNotBlank()) {
+                    val rect = if (source != null) {
+                        resolveExactSelectionBounds(source, eventText, start, end)
+                    } else {
+                        Rect(0, 400, 1000, 520)
+                    }
+                    return SelectionResult(sub, source, rect)
+                }
             }
         }
 
-        val eventText = event.text.joinToString("")
-        if (eventText.isNotBlank()) {
-            if (event.fromIndex >= 0 && event.toIndex >= 0 && event.fromIndex != event.toIndex) {
-                val start = minOf(event.fromIndex, event.toIndex)
-                val end = maxOf(event.fromIndex, event.toIndex)
-                if (end <= eventText.length) {
-                    val sub = eventText.substring(start, end)
-                    if (sub.isNotBlank()) {
-                        val rect = if (source != null) {
-                            resolveExactSelectionBounds(source, eventText, start, end)
-                        } else {
-                            Rect(0, 400, 1000, 520)
-                        }
-                        return SelectionResult(sub, source, rect)
-                    }
-                }
-            }
+        // 3. O(1) check on focused input node
+        val focused = findSelectedOrFocusedNode()
+        if (focused != null && focused != source) {
+            extractFromNode(focused)?.let { return it }
+        }
+
+        // 4. Strictly bounded shallow check (max 24 nodes total, never blocks UI thread)
+        if (source != null) {
+            findSelectionInTreeBounded(source)?.let { return it }
         }
 
         return null
@@ -906,174 +857,147 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Returns the usable bottom Y of the screen above any open soft keyboard (IME)
-     * and above the bottom system/browser navigation bar.
+     * Single lightweight cached check (runs at most once per 400ms on selection) that updates:
+     * 1. `cachedVisibleBottom` (detecting open `TYPE_INPUT_METHOD` soft keyboard)
+     * 2. `lastDetectedToolbarRect` (detecting native `"Copy"` / `"Cut"` selection bar while excluding
+     *    keyboard suggestion strips and browser bottom URL bar `"Share"` buttons).
+     * All layout passes (`applyStrictPlacementAndDynamicSize`, `renderPopupBody`, `OnLayoutChangeListener`)
+     * read `cachedVisibleBottom` in O(1) memory without making any Binder IPC calls!
      */
-    private fun getVisibleScreenBottom(): Int {
+    private fun refreshScreenMetricsCache(force: Boolean = false) {
+        val now = System.currentTimeMillis()
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
         val realH = getRealScreenHeight()
-        var visibleBottom = realH - dp(68)
+
+        if (!force && now - lastMetricsCacheTime < 400L && cachedVisibleBottom > 0) {
+            return
+        }
+        lastMetricsCacheTime = now
+
+        var visBottom = realH - dp(68)
+        val candidateButtons = mutableListOf<Rect>()
+
+        val scanForCopyButtons = { root: AccessibilityNodeInfo?, maxBottom: Int ->
+            val pkg = root?.packageName?.toString() ?: ""
+            if (root != null && pkg != packageName && !isImePackage(pkg) && pkg != "com.android.systemui") {
+                // Only query "Copy" (and "Cut" if "Copy" wasn't found) — max 1-2 fast IPC calls, never "Share"!
+                for (kw in listOf("Copy", "Cut")) {
+                    val matches = runCatching { root.findAccessibilityNodeInfosByText(kw) }.getOrNull()
+                    if (!matches.isNullOrEmpty()) {
+                        for (m in matches) {
+                            if (!m.isVisibleToUser) continue
+                            val t1 = m.text?.toString()?.trim().orEmpty()
+                            val t2 = m.contentDescription?.toString()?.trim().orEmpty()
+                            val txt = t1.ifEmpty { t2 }
+                            if (!txt.equals(kw, ignoreCase = true)) continue
+                            if (!m.isClickable && m.parent?.isClickable != true) continue
+
+                            val r = Rect()
+                            m.getBoundsInScreen(r)
+                            if (r.width() in dp(20)..dp(220) &&
+                                r.height() in dp(16)..dp(80) &&
+                                r.top >= dp(28) &&
+                                r.bottom <= maxBottom - dp(12) &&
+                                r.top <= realH - dp(96)
+                            ) {
+                                candidateButtons.add(Rect(r))
+                            }
+                        }
+                        if (candidateButtons.isNotEmpty()) break
+                    }
+                }
+            }
+        }
 
         runCatching {
             val winList = windows
             if (!winList.isNullOrEmpty()) {
+                // Pass 1: find open IME keyboard window first so we know visBottom
                 for (w in winList) {
-                    val rootPkg = w.root?.packageName?.toString() ?: ""
-                    val isIme = w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD || isImePackage(rootPkg)
-                    if (isIme) {
+                    if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                         val imeRect = Rect()
                         w.getBoundsInScreen(imeRect)
                         if (imeRect.height() > dp(80) && imeRect.top in (realH / 4)..(realH - dp(70))) {
-                            visibleBottom = minOf(visibleBottom, imeRect.top - dp(10))
+                            visBottom = minOf(visBottom, imeRect.top - dp(10))
                         }
                     }
                 }
-            }
-        }
-        return visibleBottom.coerceAtLeast(realH / 3)
-    }
-
-    /**
-     * Detects Android's or Chrome's floating selection toolbar ("Copy", "Select all", "Cut", "Paste")
-     * while strictly excluding:
-     * 1. Soft keyboard (IME) suggestion/clipboard strips (like `[Copy] [Cut]` above Gboard/Samsung Keyboard)
-     * 2. Browser bottom/top address bar `"Share"` buttons (by only matching core selection actions
-     *    and grouping candidate buttons by horizontal row `centerY`).
-     */
-    private fun findNativeSelectionToolbarBounds(): Rect? {
-        val dm = resources.displayMetrics
-        val dp = { v: Int -> (v * dm.density).toInt() }
-        val realH = getRealScreenHeight()
-        val visibleBottom = getVisibleScreenBottom()
-        // Never include standalone "Share" so browser URL bar Share buttons are never matched!
-        val primaryKeywords = listOf("Copy", "Select all", "Cut", "Paste")
-        val candidateButtons = mutableListOf<Rect>()
-
-        val scanRoot = { root: AccessibilityNodeInfo? ->
-            val pkg = root?.packageName?.toString() ?: ""
-            if (root != null && pkg != packageName && !isImePackage(pkg) && pkg != "com.android.systemui") {
-                for (kw in primaryKeywords) {
-                    val matches = runCatching { root.findAccessibilityNodeInfosByText(kw) }.getOrNull() ?: continue
-                    for (m in matches) {
-                        if (!m.isVisibleToUser) continue
-                        val t1 = m.text?.toString()?.trim().orEmpty()
-                        val t2 = m.contentDescription?.toString()?.trim().orEmpty()
-                        val txt = t1.ifEmpty { t2 }
-                        if (!txt.equals(kw, ignoreCase = true)) continue
-                        if (!m.isClickable && m.parent?.isClickable != true) continue
-
-                        val r = Rect()
-                        m.getBoundsInScreen(r)
-                        // Must be a compact button inside the usable content area (above keyboard and bottom bars)
-                        if (r.width() in dp(20)..dp(220) &&
-                            r.height() in dp(16)..dp(80) &&
-                            r.top >= dp(28) &&
-                            r.bottom <= visibleBottom - dp(12) &&
-                            r.top <= realH - dp(96)
-                        ) {
-                            candidateButtons.add(Rect(r))
-                        }
-                    }
-                }
-            }
-        }
-
-        runCatching {
-            val winList = windows
-            if (!winList.isNullOrEmpty()) {
+                // Pass 2: check active or small floating popup window for "Copy" button
                 for (w in winList) {
                     if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD ||
                         w.type == AccessibilityWindowInfo.TYPE_SYSTEM
                     ) {
                         continue
                     }
-                    scanRoot(w.root)
+                    val wRect = Rect()
+                    w.getBoundsInScreen(wRect)
+                    if (w.isActive || wRect.height() in dp(24)..dp(140)) {
+                        scanForCopyButtons(w.root, visBottom)
+                    }
                 }
             }
         }
+
+        cachedVisibleBottom = visBottom.coerceAtLeast(realH / 3)
+
         if (candidateButtons.isEmpty()) {
-            scanRoot(rootInActiveWindow)
+            scanForCopyButtons(rootInActiveWindow, cachedVisibleBottom)
         }
 
-        if (candidateButtons.isEmpty()) return null
-
-        // Group candidate buttons that lie on the same horizontal toolbar row (within 24dp centerY)
-        var bestRowUnion: Rect? = null
-        var bestRowCount = 0
-
-        for (anchor in candidateButtons) {
+        if (candidateButtons.isNotEmpty()) {
+            val anchor = candidateButtons.first()
             val rowUnion = Rect(anchor)
-            var count = 0
             for (other in candidateButtons) {
                 if (kotlin.math.abs(other.centerY() - anchor.centerY()) <= dp(24)) {
                     rowUnion.union(other)
-                    count++
                 }
             }
             if (rowUnion.height() <= dp(88)) {
-                if (count > bestRowCount || (count == bestRowCount && bestRowUnion != null && rowUnion.top < bestRowUnion!!.top)) {
-                    bestRowCount = count
-                    bestRowUnion = rowUnion
-                }
+                lastDetectedToolbarRect = rowUnion
+                lastDetectedToolbarTime = now
             }
         }
-
-        if (bestRowUnion != null) {
-            lastDetectedToolbarRect = Rect(bestRowUnion)
-            lastDetectedToolbarTime = System.currentTimeMillis()
-        }
-        return bestRowUnion
     }
 
-    /**
-     * Combines raw unexpanded selection candidate bounds with any visible native selection toolbar
-     * ("Copy | Select all" or "Cut | Copy") to return the exact forbidden vertical zone `[top, bottom]`.
-     * Idempotent: always takes raw candidate bounds, never a previously expanded safeZone.
-     */
-    private fun resolveBestScreenSelectionBounds(rawCandidate: Rect?): Rect {
+    private fun resolveBestScreenSelectionBounds(rawCandidate: Rect?, forceRefresh: Boolean = false): Rect {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
         val realH = getRealScreenHeight()
-        val visibleBottom = getVisibleScreenBottom()
+
+        refreshScreenMetricsCache(force = forceRefresh)
+        val visibleBottom = cachedVisibleBottom.takeIf { it > 0 } ?: (realH - dp(68))
 
         val now = System.currentTimeMillis()
-        val toolbarRect = findNativeSelectionToolbarBounds()
-            ?: lastDetectedToolbarRect.takeIf { !it.isEmpty && now - lastDetectedToolbarTime < 1800L }
+        val toolbarRect = lastDetectedToolbarRect.takeIf { !it.isEmpty && now - lastDetectedToolbarTime < 1600L }
 
-        val effectiveCandidate = if (rawCandidate != null && rawCandidate.width() > 0 && rawCandidate.height() in 1..dp(105)) {
-            rawCandidate
-        } else {
-            findBestTightNodeBoundsForText(selectedText) ?: rawCandidate
-        }
+        val isCompactCandidate = rawCandidate != null &&
+            rawCandidate.width() > 0 &&
+            rawCandidate.height() in 1..dp(105) &&
+            rawCandidate.top < visibleBottom
 
-        val isCompactCandidate = effectiveCandidate != null &&
-            effectiveCandidate.width() > 0 &&
-            effectiveCandidate.height() in 1..dp(105) &&
-            effectiveCandidate.top < visibleBottom
+        val isMediumCandidate = rawCandidate != null &&
+            rawCandidate.width() > 0 &&
+            rawCandidate.height() in 1..(realH * 0.36f).toInt() &&
+            rawCandidate.top < visibleBottom
 
-        val isMediumCandidate = effectiveCandidate != null &&
-            effectiveCandidate.width() > 0 &&
-            effectiveCandidate.height() in 1..(realH * 0.36f).toInt() &&
-            effectiveCandidate.top < visibleBottom
-
-        // Case 1: Compact single-line / sliced paragraph selection (e.g. "Hello" in 1000014052.jpg or sliced line in 1000014053.jpg)
-        if (isCompactCandidate && effectiveCandidate != null) {
-            var zoneTop = effectiveCandidate.top - dp(10)
-            var zoneBottom = effectiveCandidate.bottom + dp(18)
-            if (toolbarRect != null && kotlin.math.abs(toolbarRect.centerY() - effectiveCandidate.centerY()) < dp(150)) {
+        // Case 1: Compact single-line / sliced paragraph selection (e.g. "Hello" in 1000014052.jpg)
+        if (isCompactCandidate && rawCandidate != null) {
+            var zoneTop = rawCandidate.top - dp(10)
+            var zoneBottom = rawCandidate.bottom + dp(18)
+            if (toolbarRect != null && kotlin.math.abs(toolbarRect.centerY() - rawCandidate.centerY()) < dp(150)) {
                 zoneTop = minOf(zoneTop, toolbarRect.top - dp(10))
                 zoneBottom = maxOf(zoneBottom, toolbarRect.bottom + dp(14))
             }
             return Rect(
-                effectiveCandidate.left.coerceAtLeast(dp(12)),
+                rawCandidate.left.coerceAtLeast(dp(12)),
                 zoneTop.coerceIn(dp(48), (visibleBottom - dp(64)).coerceAtLeast(dp(48))),
-                effectiveCandidate.right.coerceAtMost(dm.widthPixels - dp(12)),
+                rawCandidate.right.coerceAtMost(dm.widthPixels - dp(12)),
                 zoneBottom.coerceIn(zoneTop + dp(32), visibleBottom - dp(8))
             )
         }
 
-        // Case 2: Browser WebView or tall paragraph where floating "Copy | Select all" bar IS known (1000014053.jpg)
+        // Case 2: Browser WebView or tall paragraph where floating "Copy | Select all" bar is known (1000014053.jpg)
         if (toolbarRect != null) {
             val zoneTop = (toolbarRect.top - dp(14)).coerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
             val zoneBottom = (toolbarRect.bottom + dp(66)).coerceIn(zoneTop + dp(44), visibleBottom - dp(8))
@@ -1085,23 +1009,26 @@ class SelAccessibilityService : AccessibilityService() {
             )
         }
 
-        // Case 3: Medium paragraph node when no floating toolbar was detected yet
-        if (isMediumCandidate && effectiveCandidate != null) {
-            val zoneTop = (effectiveCandidate.top - dp(10)).coerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
-            val zoneBottom = (effectiveCandidate.bottom + dp(20)).coerceIn(zoneTop + dp(36), visibleBottom - dp(8))
+        // Case 3: Medium paragraph node when no floating toolbar was detected
+        if (isMediumCandidate && rawCandidate != null) {
+            val zoneTop = (rawCandidate.top - dp(10)).coerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
+            val zoneBottom = (rawCandidate.bottom + dp(20)).coerceIn(zoneTop + dp(36), visibleBottom - dp(8))
             return Rect(
-                effectiveCandidate.left.coerceAtLeast(dp(12)),
+                rawCandidate.left.coerceAtLeast(dp(12)),
                 zoneTop,
-                effectiveCandidate.right.coerceAtMost(dm.widthPixels - dp(12)),
+                rawCandidate.right.coerceAtMost(dm.widthPixels - dp(12)),
                 zoneBottom
             )
         }
 
-        // Case 4: Fallback if rawCandidate was a full-screen WebView and no toolbar was detected yet
+        // Case 4: Fallback if rawCandidate was a full-screen WebView and no toolbar was detected
         val fallbackMidY = (visibleBottom * 0.36f).toInt().coerceIn(dp(96), visibleBottom - dp(96))
         return Rect(dp(16), fallbackMidY - dp(28), dm.widthPixels - dp(16), fallbackMidY + dp(36))
     }
 
+    /**
+     * Pure O(1) arithmetic bounds calculation — zero `refreshWithExtraData` blocking IPC!
+     */
     private fun resolveExactSelectionBounds(
         node: AccessibilityNodeInfo,
         raw: String,
@@ -1117,54 +1044,16 @@ class SelAccessibilityService : AccessibilityService() {
             nodeRect.set(dp(24), realH / 4, dm.widthPixels - dp(24), realH / 4 + dp(44))
         }
 
-        // 1. Try Android 8.0+ (API 26+) exact character screen bounds first
-        runCatching {
-            val safeStart = start.coerceIn(0, (raw.length - 1).coerceAtLeast(0))
-            val safeLen = (end - safeStart).coerceIn(1, 64)
-            val extrasArg = Bundle().apply {
-                putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_START_INDEX, safeStart)
-                putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_LENGTH, safeLen)
-            }
-            if (node.refreshWithExtraData(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, extrasArg)) {
-                @Suppress("DEPRECATION")
-                val parcelables = node.extras?.getParcelableArray(
-                    AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY
-                )
-                if (!parcelables.isNullOrEmpty()) {
-                    var minLeft = Float.MAX_VALUE
-                    var minTop = Float.MAX_VALUE
-                    var maxRight = -Float.MAX_VALUE
-                    var maxBottom = -Float.MAX_VALUE
-                    for (p in parcelables) {
-                        val rf = p as? RectF ?: continue
-                        if (!rf.isEmpty) {
-                            if (rf.left < minLeft) minLeft = rf.left
-                            if (rf.top < minTop) minTop = rf.top
-                            if (rf.right > maxRight) maxRight = rf.right
-                            if (rf.bottom > maxBottom) maxBottom = rf.bottom
-                        }
-                    }
-                    if (minTop < maxBottom && minLeft < maxRight) {
-                        return Rect(
-                            minLeft.toInt(),
-                            minTop.toInt(),
-                            maxRight.toInt(),
-                            maxBottom.toInt()
-                        )
-                    }
-                }
-            }
-        }
-
-        // 2. If the node is a medium multi-line container (e.g. EditText / paragraph 84dp..320dp tall),
-        // estimate the vertical line slice of [start..end] using conservative line height
-        if (nodeRect.height() in dp(84)..(realH * 0.38f).toInt() && raw.isNotEmpty()) {
+        // If the node is a multi-line container (e.g. EditText / paragraph > 84dp tall),
+        // estimate the vertical line slice of [start..end] using fast arithmetic (capped at 4000 chars)
+        if (nodeRect.height() in dp(84)..(realH * 0.45f).toInt() && raw.isNotEmpty()) {
             val avgCharsPerLine = ((nodeRect.width() / dp(7).coerceAtLeast(1))).coerceIn(22, 72)
             var currentLine = 0
             var startLine = 0
             var endLine = 0
             var col = 0
-            for (i in raw.indices) {
+            val limit = minOf(raw.length, 4000)
+            for (i in 0 until limit) {
                 if (i == start) startLine = currentLine
                 if (i == end) endLine = currentLine
                 val ch = raw[i]
@@ -1179,7 +1068,7 @@ class SelAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-            if (end >= raw.length) endLine = currentLine
+            if (end >= limit) endLine = currentLine
             val totalLines = (currentLine + 1).coerceAtLeast(1)
             val estLineH = (nodeRect.height().toFloat() / totalLines.toFloat()).coerceIn(dp(16).toFloat(), dp(25).toFloat())
             val bandTop = (nodeRect.top + startLine * estLineH).toInt().coerceIn(nodeRect.top, nodeRect.bottom - dp(28))
@@ -1230,91 +1119,45 @@ class SelAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findSelectionInTree(root: AccessibilityNodeInfo?, depth: Int): SelectionResult? {
-        if (root == null || depth > 16) return null
-        val count = root.childCount
-        for (i in 0 until count) {
-            val child = runCatching { root.getChild(i) }.getOrNull() ?: continue
-            val res = findSelectionInTree(child, depth + 1)
-            if (res != null) return res
+    /**
+     * Strictly bounded pre-order selection search (visits at most 24 nodes total so it never stalls UI thread).
+     */
+    private fun findSelectionInTreeBounded(root: AccessibilityNodeInfo?): SelectionResult? {
+        if (root == null) return null
+        var budget = 24
+
+        fun search(node: AccessibilityNodeInfo?, depth: Int): SelectionResult? {
+            if (node == null || depth > 7 || budget <= 0) return null
+            budget--
+            extractFromNode(node)?.let { return it }
+            val count = minOf(node.childCount, 8)
+            for (i in 0 until count) {
+                if (budget <= 0) break
+                val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
+                val res = search(child, depth + 1)
+                if (res != null) return res
+            }
+            return null
         }
-        return extractFromNode(root)
+
+        return search(root, 0)
     }
 
     /**
-     * Searches the active window's accessibility tree for the tightest visible node containing
-     * `queryText` (preferring focused/editable nodes or smallest-height leaf paragraph nodes)
-     * and slices out the exact line band when inside a multi-line paragraph.
-     * This guarantees exact screen coordinates even when triggered via WebView ACTION_COPY / Clipboard!
+     * O(1) lookup for the currently focused editable node via `findFocus(FOCUS_INPUT)`.
      */
-    private fun findBestTightNodeBoundsForText(queryText: String): Rect? {
-        val q = queryText.trim()
-        if (q.isEmpty()) return null
-        val dm = resources.displayMetrics
-        val dp = { v: Int -> (v * dm.density).toInt() }
-        val realH = getRealScreenHeight()
-        val visBottom = getVisibleScreenBottom()
-
-        var bestRect: Rect? = null
-        var bestScore = Int.MAX_VALUE
-
-        fun visit(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null || depth > 18) return
-            if (node.isVisibleToUser && !node.isPassword) {
-                val raw = node.text?.toString() ?: ""
-                if (raw.isNotEmpty()) {
-                    val matchIdx = raw.indexOf(q, ignoreCase = true)
-                    if (matchIdx >= 0) {
-                        val r = Rect()
-                        node.getBoundsInScreen(r)
-                        if (r.width() > dp(16) && r.height() in dp(12)..(realH * 0.42f).toInt() &&
-                            r.bottom > dp(36) && r.top < visBottom
-                        ) {
-                            val sliced = resolveExactSelectionBounds(node, raw, matchIdx, matchIdx + q.length)
-                            // Prefer focused/editable nodes or nodes with active selection, then smallest height
-                            val bonus = when {
-                                node.textSelectionStart >= 0 && node.textSelectionStart != node.textSelectionEnd -> -50000
-                                node.isFocused && node.isEditable -> -30000
-                                node.isFocused -> -10000
-                                else -> 0
-                            }
-                            val score = r.height() + bonus
-                            if (score < bestScore) {
-                                bestScore = score
-                                bestRect = sliced
-                            }
-                        }
-                    }
-                }
-            }
-            val count = node.childCount
-            for (i in 0 until count) {
-                val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
-                visit(child, depth + 1)
-            }
-        }
-
-        visit(rootInActiveWindow, 0)
-        return bestRect
-    }
-
-    private fun findSelectedOrFocusedNode(root: AccessibilityNodeInfo?, depth: Int = 0): AccessibilityNodeInfo? {
-        if (root == null || depth > 16) return null
-        if (root.isEditable && (root.isFocused || root.textSelectionStart != root.textSelectionEnd)) {
-            return root
-        }
-        val count = root.childCount
-        for (i in 0 until count) {
-            val child = runCatching { root.getChild(i) }.getOrNull() ?: continue
-            val found = findSelectedOrFocusedNode(child, depth + 1)
-            if (found != null) return found
-        }
+    private fun findSelectedOrFocusedNode(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        val inputFocused = runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+        if (inputFocused != null && inputFocused.isEditable) return inputFocused
+        val a11yFocused = runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY) }.getOrNull()
+        if (a11yFocused != null && a11yFocused.isEditable) return a11yFocused
         return null
     }
 
     /**
      * Computes strict ABOVE (`▲`) or BELOW (`▼`) placement in a single unified coordinate system (`Gravity.TOP`)
-     * while respecting open keyboards (`getVisibleScreenBottom()`) and never re-expanding `safeZone`.
+     * using O(1) cached screen metrics (`cachedVisibleBottom`) with zero Binder IPC calls.
      */
     private var currentMaxTotalHeight: Int = 700
 
@@ -1322,7 +1165,7 @@ class SelAccessibilityService : AccessibilityService() {
         val dm = resources.displayMetrics
         val dp = { v: Int -> (v * dm.density).toInt() }
         val realH = getRealScreenHeight()
-        val visibleBottom = getVisibleScreenBottom()
+        val visibleBottom = cachedVisibleBottom.takeIf { it > 0 } ?: (realH - dp(68))
 
         currentSafeZone = Rect(safeZone)
 
@@ -1363,20 +1206,13 @@ class SelAccessibilityService : AccessibilityService() {
                 (dm.widthPixels - dynamicMaxPopupWidth - dp(10)).coerceAtLeast(dp(10))
             }
 
-            val v = popupView
-            val measuredH = if (v != null) {
-                val wSpec = View.MeasureSpec.makeMeasureSpec(dynamicMaxPopupWidth, View.MeasureSpec.AT_MOST)
-                val hSpec = View.MeasureSpec.makeMeasureSpec(currentMaxTotalHeight, View.MeasureSpec.AT_MOST)
-                v.measure(wSpec, hSpec)
-                v.measuredHeight.coerceIn(dp(80), currentMaxTotalHeight)
-            } else {
-                currentMaxTotalHeight
-            }
+            val estH = popupView?.height?.takeIf { it > dp(60) }?.coerceAtMost(currentMaxTotalHeight)
+                ?: currentMaxTotalHeight
 
             if (placeAbove) {
-                params.y = (safeZone.top - gap - measuredH).coerceAtLeast(topSafe)
+                params.y = (safeZone.top - gap - estH).coerceAtLeast(topSafe)
             } else {
-                val maxTopY = (visibleBottom - measuredH).coerceAtLeast(topSafe)
+                val maxTopY = (visibleBottom - estH).coerceAtLeast(topSafe)
                 params.y = (safeZone.bottom + gap).coerceIn(topSafe, maxTopY)
             }
         }
@@ -1433,21 +1269,21 @@ class SelAccessibilityService : AccessibilityService() {
                 setStroke(dp(2), Color.parseColor("#444444"))
                 cornerRadius = dp(2).toFloat()
             }
-            // Keep popup strictly above selection (when ▲) and strictly above open keyboard (when ▼)
+            // Keep popup strictly above selection (when ▲) and strictly above open keyboard (when ▼) with 0 IPC calls
             addOnLayoutChangeListener { v, _, top, _, bottom, _, _, _, _ ->
                 val actualH = bottom - top
                 val p = popupParams
                 if (actualH > 0 && p != null && !userManuallyDragged && !currentSafeZone.isEmpty) {
                     val topSafe = dp(50)
                     val gap = dp(14)
-                    val visBottom = getVisibleScreenBottom()
+                    val visBottom = cachedVisibleBottom.takeIf { it > 0 } ?: (getRealScreenHeight() - dp(68))
                     val desiredY = if (anchoredAboveSelection) {
                         (currentSafeZone.top - gap - actualH).coerceAtLeast(topSafe)
                     } else {
                         val maxTop = (visBottom - actualH).coerceAtLeast(topSafe)
                         (currentSafeZone.bottom + gap).coerceIn(topSafe, maxTop)
                     }
-                    if (kotlin.math.abs(p.y - desiredY) > 2) {
+                    if (kotlin.math.abs(p.y - desiredY) > dp(3)) {
                         p.y = desiredY
                         if (v.isAttachedToWindow) {
                             mainHandler.post {
@@ -1490,7 +1326,7 @@ class SelAccessibilityService : AccessibilityService() {
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, 0, dp(4), 0)
             this.layoutParams = LinearLayout.LayoutParams(
-                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f
             )
@@ -1619,9 +1455,6 @@ class SelAccessibilityService : AccessibilityService() {
         bodyContainer = container
 
         renderPopupBody()
-        applyStrictPlacementAndDynamicSize(currentSafeZone, windowParams)
-        val updatedGlyph = if (anchoredAboveSelection) "▲" else "▼"
-        statsLabelView?.text = "${words}W·${chars}C $updatedGlyph"
         runCatching { windowManager.addView(popupView, windowParams) }
     }
 
@@ -3088,7 +2921,6 @@ class SelAccessibilityService : AccessibilityService() {
     private fun hidePalette() {
         mainHandler.removeCallbacks(delayedHideRunnable)
         pendingWebCopyRunnable?.let { mainHandler.removeCallbacks(it) }
-        toolbarRefinementRunnable?.let { mainHandler.removeCallbacks(it) }
         popupView?.let {
             runCatching { windowManager.removeView(it) }
         }

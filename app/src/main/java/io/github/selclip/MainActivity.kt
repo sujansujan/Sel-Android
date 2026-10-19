@@ -87,7 +87,7 @@ class MainActivity : Activity() {
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
-        topHeader.addView(label("+── v2.0 · IME-aware bounds · web & yt folders · live favicons ──+", 10.5f, "#777777"))
+        topHeader.addView(label("+── v2.1 · zero-lag popup · IME-aware bounds · live favicons ──+", 10.5f, "#777777"))
         root.addView(topHeader)
 
         // 2. Horizontal Terminal Tab Bar
