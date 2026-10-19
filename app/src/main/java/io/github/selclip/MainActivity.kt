@@ -87,7 +87,7 @@ class MainActivity : Activity() {
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
-        topHeader.addView(label("+── v2.1 · zero-lag popup · IME-aware bounds · live favicons ──+", 10.5f, "#777777"))
+        topHeader.addView(label("+── v2.2 · +977/98 call·sms·wa·w4b · 4-icon edit bar · 2-col grid ──+", 10.5f, "#777777"))
         root.addView(topHeader)
 
         // 2. Horizontal Terminal Tab Bar
@@ -248,7 +248,8 @@ class MainActivity : Activity() {
                 setBackgroundColor(Color.parseColor("#141414"))
                 setPadding(dp(12), dp(12), dp(12), dp(12))
                 setText(
-                    "Word (Define): serendipity\n" +
+                    "Nepal Phone (Call/SMS/WA/W4B): 9841234567  or  +977 9801234567\n" +
+                        "Word (Define): serendipity\n" +
                         "Torrent Hash (Magnet): dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\n" +
                         "Math / Unit: 145 * 12   or   72 F   or   0xFF\n" +
                         "Unix Timestamp: 1730000000\n" +

@@ -50,6 +50,7 @@ object ToolPrefs {
     private const val KEY_ORDER = "manual_order"
     private const val KEY_SORT_MOST_USED = "sort_most_used"
     private const val KEY_EDGE_LEFT = "snap_edge_left"
+    private const val KEY_GRID_COLUMNS = "grid_two_columns"
     private const val KEY_BLACKLIST = "blacklisted_pkgs"
     private const val KEY_CLIP_HISTORY = "clip_history_json"
     private const val PREFIX_COUNT = "use_count_"
@@ -490,6 +491,18 @@ object ToolPrefs {
             .apply()
     }
 
+    fun isTwoColumnGrid(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_GRID_COLUMNS, false)
+    }
+
+    fun setTwoColumnGrid(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_GRID_COLUMNS, enabled)
+            .apply()
+    }
+
     fun isSortMostUsed(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getBoolean(KEY_SORT_MOST_USED, true)
@@ -584,7 +597,7 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "2.1.0")
+        root.put("version", "2.2.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))

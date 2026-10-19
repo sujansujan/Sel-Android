@@ -87,6 +87,12 @@ class SelAccessibilityService : AccessibilityService() {
         val bounds: Rect
     )
 
+    private data class NepalPhone(
+        val display: String,
+        val dialNumber: String,
+        val waDigits: String
+    )
+
     private lateinit var windowManager: WindowManager
     private lateinit var clipboardManager: ClipboardManager
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -97,6 +103,7 @@ class SelAccessibilityService : AccessibilityService() {
     private var popupParams: WindowManager.LayoutParams? = null
     private var headerBarView: LinearLayout? = null
     private var statsLabelView: TextView? = null
+    private var gridToggleBtn: TextView? = null
     private var reorderToggleBtn: TextView? = null
     private var bodyContainer: LinearLayout? = null
 
@@ -1191,8 +1198,15 @@ class SelAccessibilityService : AccessibilityService() {
 
         val tightVertical = chosenSpace < dp(220)
         dynamicMinPopupWidth = if (tightVertical) dp(228) else dp(220)
+        val twoColGrid = ToolPrefs.isTwoColumnGrid(this) && currentMode == PopupMode.ACTIONS
+        dynamicMinPopupWidth = when {
+            twoColGrid -> dp(266)
+            tightVertical -> dp(228)
+            else -> dp(220)
+        }
         dynamicMaxPopupWidth = when {
             currentMode != PopupMode.ACTIONS -> dp(292)
+            twoColGrid -> dp(288)
             tightVertical -> dp(272)
             else -> dp(260)
         }.coerceAtMost(dm.widthPixels - dp(20))
@@ -1384,10 +1398,15 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
-        val quickCopyHeaderBtn = makeHeaderBoxBtn("⎘", "#00FF66", "#101E15", "#295238") {
-            ToolPrefs.recordUse(this@SelAccessibilityService, "copy")
-            smoothCopyText(selectedText)
-            hidePalette()
+        val twoColInitial = ToolPrefs.isTwoColumnGrid(this)
+        val gridBtn = makeHeaderBoxBtn(
+            textStr = if (twoColInitial) "☷" else "⊞",
+            fgHex = if (twoColInitial) "#00FF66" else "#CCCCCC"
+        ) {
+            lastShownTime = System.currentTimeMillis()
+            val next = !ToolPrefs.isTwoColumnGrid(this@SelAccessibilityService)
+            ToolPrefs.setTwoColumnGrid(this@SelAccessibilityService, next)
+            renderPopupBody()
         }
 
         val collapseBtn = makeHeaderBoxBtn("–", "#CCCCCC") {
@@ -1420,7 +1439,7 @@ class SelAccessibilityService : AccessibilityService() {
         }
 
         header.addView(statsLabel)
-        header.addView(quickCopyHeaderBtn)
+        header.addView(gridBtn)
         header.addView(collapseBtn)
         header.addView(reorderBtn)
         header.addView(closeBtn)
@@ -1451,6 +1470,7 @@ class SelAccessibilityService : AccessibilityService() {
         popupParams = windowParams
         headerBarView = header
         statsLabelView = statsLabel
+        gridToggleBtn = gridBtn
         reorderToggleBtn = reorderBtn
         bodyContainer = container
 
@@ -1463,6 +1483,10 @@ class SelAccessibilityService : AccessibilityService() {
         container.removeAllViews()
 
         headerBarView?.visibility = if (currentMode == PopupMode.COLLAPSED_PILL) View.GONE else View.VISIBLE
+
+        val twoCol = ToolPrefs.isTwoColumnGrid(this)
+        gridToggleBtn?.text = if (twoCol) "☷" else "⊞"
+        gridToggleBtn?.setTextColor(Color.parseColor(if (twoCol) "#00FF66" else "#CCCCCC"))
 
         reorderToggleBtn?.setTextColor(
             Color.parseColor(if (currentMode == PopupMode.REORDER) "#00FF66" else "#CCCCCC")
@@ -1579,6 +1603,17 @@ class SelAccessibilityService : AccessibilityService() {
             })
         }
 
+        // 0b. Context-Aware Phone Bar (Call, SMS, WhatsApp, WhatsApp Business) for numbers starting with 98, 97, or +977
+        extractNepalPhone(selectedText)?.let { phone ->
+            list.addView(makeNepalPhoneActionRow(phone))
+        }
+
+        // 0c. Single-Line Icon-Only Edit Strip: [ ⎘ Copy ] [ 📋 Paste ] [ ✂ Cut ] [ ⬚ Select All ]
+        if (!ToolPrefs.isToolHidden(this, "copy")) {
+            pinnedIds.add("copy")
+            list.addView(makeIconOnlyEditStrip())
+        }
+
         // 1. Instant Math Evaluator
         evalSimpleMath(selectedText)?.let { ans ->
             list.addView(makeRow("∑", "= $ans", null) {
@@ -1632,23 +1667,620 @@ class SelAccessibilityService : AccessibilityService() {
             })
         }
 
-        // 5. Context-filtered, Reorderable & Most-Used-on-Top Tools
-        val orderedTools = ToolPrefs.getSortedToolsForPopup(this)
+        // 5. Context-filtered, Reorderable & Most-Used-on-Top Tools (supports 1-Column List or 2-Column Compact Grid!)
+        val orderedTools = ToolPrefs.getSortedToolsForPopup(this).filter {
+            it.id !in pinnedIds && isToolRelevantForSelection(it.id, selectedText)
+        }
         val showCounts = ToolPrefs.isSortMostUsed(this)
-        for (tool in orderedTools) {
-            if (tool.id in pinnedIds) continue
-            if (!isToolRelevantForSelection(tool.id, selectedText)) continue
+        val useTwoCol = ToolPrefs.isTwoColumnGrid(this)
 
-            val count = ToolPrefs.getUseCount(this, tool.id)
-            val badge = if (showCounts && count > 0) "$count" else null
+        if (useTwoCol) {
+            var i = 0
+            while (i < orderedTools.size) {
+                val t1 = orderedTools[i]
+                val t2 = orderedTools.getOrNull(i + 1)
+                if (t2 != null) {
+                    list.addView(makeTwoColumnPairRow(t1, t2, showCounts))
+                    i += 2
+                } else {
+                    val c1 = ToolPrefs.getUseCount(this, t1.id)
+                    val b1 = if (showCounts && c1 > 0) "$c1" else null
+                    val fav1 = t1.faviconUrl ?: t1.customTarget?.takeIf {
+                        it.startsWith("http://", true) || it.startsWith("https://", true)
+                    }
+                    list.addView(makeRow(t1.glyph, t1.label, b1, fav1, onLongClick = { executeToolLongPress(t1) }) {
+                        ToolPrefs.recordUse(this, t1.id)
+                        executeTool(t1)
+                    })
+                    i += 1
+                }
+            }
+        } else {
+            for (tool in orderedTools) {
+                val count = ToolPrefs.getUseCount(this, tool.id)
+                val badge = if (showCounts && count > 0) "$count" else null
+                val favUrl = tool.faviconUrl ?: tool.customTarget?.takeIf {
+                    it.startsWith("http://", true) || it.startsWith("https://", true)
+                }
+                list.addView(makeRow(tool.glyph, tool.label, badge, favUrl, onLongClick = { executeToolLongPress(tool) }) {
+                    ToolPrefs.recordUse(this, tool.id)
+                    executeTool(tool)
+                })
+            }
+        }
+    }
+
+    /**
+     * Single-line icon-only bar for Copy (`⎘`), Paste (`📋`), Cut (`✂`), and Select All (`⬚`).
+     * Short-tap executes immediately; long-press shows tooltip or executes power action (+Copy append / Clip History).
+     */
+    private fun makeIconOnlyEditStrip(): View {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(2)
+            }
+        }
+
+        fun makeIconCell(
+            iconGlyph: String,
+            fgHex: String,
+            borderHex: String,
+            marginEndDp: Int,
+            onLongPress: () -> Unit,
+            onTap: () -> Unit
+        ): TextView {
+            return TextView(this).apply {
+                text = iconGlyph
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                setTextColor(Color.parseColor(fgHex))
+                gravity = Gravity.CENTER
+                minimumHeight = dp(42)
+                setPadding(dp(4), dp(9), dp(4), dp(9))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
+                    marginEnd = dp(marginEndDp)
+                }
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#1D2620"))
+                            setStroke(dp(1), Color.parseColor("#00FF66"))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#111111"))
+                            setStroke(dp(1), Color.parseColor(borderHex))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                }
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    onTap()
+                }
+                setOnLongClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                    onLongPress()
+                    true
+                }
+            }
+        }
+
+        // 1. COPY (⎘) — Tap: Copy | Long-press: Append to current clipboard (+⎘)
+        strip.addView(
+            makeIconCell(
+                iconGlyph = "⎘",
+                fgHex = "#00FF66",
+                borderHex = "#295238",
+                marginEndDp = 4,
+                onLongPress = {
+                    val existing = runCatching {
+                        clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+                    }.getOrNull().orEmpty()
+                    val combined = if (existing.isNotBlank()) "$existing\n$selectedText" else selectedText
+                    smoothCopyText(combined, "+⎘ Appended to clipboard")
+                    hidePalette()
+                },
+                onTap = {
+                    ToolPrefs.recordUse(this, "copy")
+                    smoothCopyText(selectedText)
+                    hidePalette()
+                }
+            )
+        )
+
+        // 2. PASTE (📋) — Tap: Paste into active field | Long-press: Open Clipboard History
+        strip.addView(
+            makeIconCell(
+                iconGlyph = "📋",
+                fgHex = "#F0F0F0",
+                borderHex = "#2A2A2A",
+                marginEndDp = 4,
+                onLongPress = {
+                    lastShownTime = System.currentTimeMillis()
+                    currentMode = PopupMode.CLIP_HISTORY
+                    renderPopupBody()
+                },
+                onTap = {
+                    performPasteAction()
+                }
+            )
+        )
+
+        // 3. CUT (✂) — Tap: Copy & remove selected text from editable field
+        strip.addView(
+            makeIconCell(
+                iconGlyph = "✂",
+                fgHex = "#FFB84D",
+                borderHex = "#2A2A2A",
+                marginEndDp = 4,
+                onLongPress = {
+                    Toast.makeText(this, "✂ Cut selection", Toast.LENGTH_SHORT).show()
+                },
+                onTap = {
+                    performCutAction()
+                }
+            )
+        )
+
+        // 4. SELECT ALL (⬚) — Tap: Select all text in active field / node
+        strip.addView(
+            makeIconCell(
+                iconGlyph = "⬚",
+                fgHex = "#66CCFF",
+                borderHex = "#2A2A2A",
+                marginEndDp = 0,
+                onLongPress = {
+                    Toast.makeText(this, "⬚ Select All", Toast.LENGTH_SHORT).show()
+                },
+                onTap = {
+                    performSelectAllAction()
+                }
+            )
+        )
+
+        return strip
+    }
+
+    private fun performPasteAction() {
+        val clipText = runCatching {
+            clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+        }.getOrNull().orEmpty()
+
+        val targetNode = currentNode?.takeIf { it.isEditable } ?: findSelectedOrFocusedNode()
+        if (targetNode != null) {
+            val full = targetNode.text?.toString() ?: ""
+            undoOriginalFullText = full
+            undoNode = targetNode
+            undoTimestamp = System.currentTimeMillis()
+
+            var ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE) }.getOrDefault(false)
+            if (!ok && clipText.isNotEmpty()) {
+                val s = targetNode.textSelectionStart
+                val e = targetNode.textSelectionEnd
+                val start = minOf(s, e).coerceAtLeast(0)
+                val end = maxOf(s, e).coerceAtMost(full.length)
+                val updated = if (end >= start && start <= full.length) {
+                    full.replaceRange(start, end, clipText)
+                } else {
+                    full + clipText
+                }
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
+                }
+                ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+            }
+            Toast.makeText(
+                this,
+                if (ok) "📋 Pasted from clipboard" else "📋 Clipboard ready to paste",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            Toast.makeText(this, "📋 Focus a text box to paste", Toast.LENGTH_SHORT).show()
+        }
+        hidePalette()
+    }
+
+    private fun performCutAction() {
+        lastClipboardTime = System.currentTimeMillis()
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", selectedText))
+        ToolPrefs.addClipToHistory(this, selectedText)
+
+        val targetNode = currentNode?.takeIf { it.isEditable } ?: findSelectedOrFocusedNode()
+        var cutOk = false
+        if (targetNode != null) {
+            val full = targetNode.text?.toString() ?: ""
+            val s = targetNode.textSelectionStart
+            val e = targetNode.textSelectionEnd
+            val start = minOf(s, e)
+            val end = maxOf(s, e)
+            undoOriginalFullText = full
+            undoNode = targetNode
+            undoTimestamp = System.currentTimeMillis()
+
+            cutOk = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_CUT) }.getOrDefault(false)
+            if (!cutOk && start >= 0 && end > start && end <= full.length) {
+                val updated = full.removeRange(start, end)
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
+                }
+                cutOk = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+            }
+        }
+        Toast.makeText(
+            this,
+            if (cutOk) "✂ Cut to clipboard" else "⎘ Copied (read-only text)",
+            Toast.LENGTH_SHORT
+        ).show()
+        hidePalette()
+    }
+
+    private fun performSelectAllAction() {
+        val targetNode = currentNode ?: findSelectedOrFocusedNode()
+        if (targetNode != null) {
+            val full = targetNode.text?.toString() ?: ""
+            var ok = false
+            if (Build.VERSION.SDK_INT >= 33) {
+                ok = runCatching {
+                    targetNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SELECT_ALL.id)
+                }.getOrDefault(false)
+            }
+            if (!ok && full.isNotEmpty()) {
+                val args = Bundle().apply {
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, full.length)
+                }
+                ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args) }.getOrDefault(false)
+            }
+            if (full.isNotEmpty()) {
+                selectedText = full
+                lastShownTime = System.currentTimeMillis()
+                Toast.makeText(this, "⬚ Selected all (${full.length}C)", Toast.LENGTH_SHORT).show()
+                renderPopupBody()
+                return
+            }
+        }
+        Toast.makeText(this, "⬚ Select All requested", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Detects Nepal phone numbers starting with `98`, `97`, or `+977` / `00977` / `977`
+     * (supporting spaces, hyphens, or parentheses like `+977 9841-234567` or `9841234567`).
+     */
+    private fun extractNepalPhone(input: String): NepalPhone? {
+        val regex = Regex(
+            "(?:\\+977|00977|977)?[\\s\\-.()]*((?:98|97)[0-9\\s\\-.()]{8,13}|[1-9][0-9\\s\\-.()]{6,10})"
+        )
+        for (m in regex.findAll(input)) {
+            val fullMatch = m.value.trim()
+            val hasExplicit977 = fullMatch.startsWith("+977") || fullMatch.startsWith("00977") ||
+                (fullMatch.startsWith("977") && fullMatch.filter { it.isDigit() }.length >= 12)
+            val rawDigits = fullMatch.filter { it.isDigit() }
+
+            val localDigits = when {
+                rawDigits.startsWith("00977") -> rawDigits.removePrefix("00977")
+                rawDigits.startsWith("977") && rawDigits.length >= 12 -> rawDigits.removePrefix("977")
+                rawDigits.startsWith("098") && rawDigits.length == 11 -> rawDigits.removePrefix("0")
+                rawDigits.startsWith("097") && rawDigits.length == 11 -> rawDigits.removePrefix("0")
+                else -> rawDigits
+            }
+
+            val isValidMobile = (localDigits.startsWith("98") || localDigits.startsWith("97")) && localDigits.length == 10
+            val isValidLandlineWith977 = hasExplicit977 && localDigits.length in 7..10
+
+            if (isValidMobile || isValidLandlineWith977) {
+                return NepalPhone(
+                    display = "+977 $localDigits",
+                    dialNumber = "+977$localDigits",
+                    waDigits = "977$localDigits"
+                )
+            }
+        }
+        return null
+    }
+
+    /**
+     * Single-line 4-button action strip for Nepal phone numbers (`98...` or `+977...`):
+     * `[ 📞 CALL ] [ 💬 SMS ] [ 🟢 WA ] [ 🏢 BIZ ]`
+     */
+    private fun makeNepalPhoneActionRow(phone: NepalPhone): View {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(3)
+            }
+        }
+
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        fun makePhonePill(
+            labelStr: String,
+            fgHex: String,
+            bgHex: String,
+            borderHex: String,
+            marginEndDp: Int,
+            onClick: () -> Unit
+        ): TextView {
+            return TextView(this).apply {
+                text = labelStr
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextColor(Color.parseColor(fgHex))
+                gravity = Gravity.CENTER
+                isSingleLine = true
+                minimumHeight = dp(40)
+                setPadding(dp(4), dp(8), dp(4), dp(8))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
+                    marginEnd = dp(marginEndDp)
+                }
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#1D2620"))
+                            setStroke(dp(1), Color.parseColor("#00FF66"))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor(bgHex))
+                            setStroke(dp(1), Color.parseColor(borderHex))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                }
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    onClick()
+                }
+            }
+        }
+
+        // 1. 📞 CALL
+        strip.addView(
+            makePhonePill("📞CALL", "#00FF66", "#0F1D14", "#285436", 4) {
+                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(phone.dialNumber)}")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                runCatching { startActivity(dialIntent) }
+                hidePalette()
+            }
+        )
+
+        // 2. 💬 SMS
+        strip.addView(
+            makePhonePill("💬SMS", "#66CCFF", "#0E1821", "#234966", 4) {
+                val smsIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(phone.dialNumber)}")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                if (runCatching { startActivity(smsIntent) }.isFailure) {
+                    val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("sms:${Uri.encode(phone.dialNumber)}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { startActivity(fallback) }
+                }
+                hidePalette()
+            }
+        )
+
+        // 3. WhatsApp (com.whatsapp)
+        strip.addView(
+            makePhonePill("🟢WA", "#25D366", "#0D1F14", "#1F5E37", 4) {
+                openWhatsAppNumber(phone.waDigits, isBusiness = false)
+            }
+        )
+
+        // 4. WhatsApp Business (com.whatsapp.w4b)
+        strip.addView(
+            makePhonePill("🏢W4B", "#00E5B8", "#0C1E1C", "#1B5C52", 0) {
+                openWhatsAppNumber(phone.waDigits, isBusiness = true)
+            }
+        )
+
+        wrapper.addView(strip)
+        return wrapper
+    }
+
+    private fun openWhatsAppNumber(waDigits: String, isBusiness: Boolean) {
+        val targetPkg = if (isBusiness) "com.whatsapp.w4b" else "com.whatsapp"
+        val appLabel = if (isBusiness) "WhatsApp Business" else "WhatsApp"
+
+        // 1. Try native whatsapp:// deep link targeted at the requested package
+        val nativeUri = Uri.parse("whatsapp://send?phone=$waDigits")
+        val nativeIntent = Intent(Intent.ACTION_VIEW, nativeUri).apply {
+            setPackage(targetPkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (runCatching { startActivity(nativeIntent) }.isSuccess) {
+            hidePalette()
+            return
+        }
+
+        // 2. Try https://api.whatsapp.com/send targeted at the requested package
+        val apiUri = Uri.parse("https://api.whatsapp.com/send?phone=$waDigits")
+        val webPkgIntent = Intent(Intent.ACTION_VIEW, apiUri).apply {
+            setPackage(targetPkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (runCatching { startActivity(webPkgIntent) }.isSuccess) {
+            hidePalette()
+            return
+        }
+
+        // 3. Universal fallback via wa.me if that specific WhatsApp variant isn't installed
+        Toast.makeText(this, "$appLabel not found — opening wa.me", Toast.LENGTH_SHORT).show()
+        openUrl("https://wa.me/$waDigits")
+    }
+
+    private fun shortGridLabel(tool: ToolSpec): String {
+        return when (tool.id) {
+            "screen_grab" -> "LENS GRAB"
+            "web_search_folder" -> "WEB ▸"
+            "youtube_folder" -> "YOUTUBE ▸"
+            "clip_history" -> "CLIPS ▸"
+            "markdown_folder" -> "MARKDOWN ▸"
+            "regex_pipe" -> "PIPE ▸"
+            "define" -> "DEFINE"
+            "translate" -> "TRANSLATE"
+            "qr" -> "QR CODE"
+            "magnet" -> "MAGNET"
+            "clean_url" -> "CLEAN URL"
+            "extract" -> "EXTRACT"
+            "clean_text" -> "CLEAN TXT"
+            "sort" -> "SORT"
+            "case" -> "CASE"
+            "incognito" -> "INCOGNITO"
+            "speak" -> "SPEAK"
+            "log" -> "LOG"
+            else -> tool.label.take(10)
+        }
+    }
+
+    private fun executeToolLongPress(tool: ToolSpec) {
+        val encoded = Uri.encode(selectedText.trim())
+        when (tool.id) {
+            "web_search_folder" -> {
+                ToolPrefs.recordUse(this, "web_search_folder")
+                openUrl("https://www.google.com/search?q=$encoded")
+            }
+            "youtube_folder" -> {
+                ToolPrefs.recordUse(this, "youtube_folder")
+                openUrl("https://www.youtube.com/results?search_query=$encoded")
+            }
+            "markdown_folder" -> {
+                ToolPrefs.recordUse(this, "markdown_folder")
+                applyResult("**${selectedText.trim()}**")
+            }
+            else -> executeTool(tool)
+        }
+    }
+
+    private fun makeTwoColumnPairRow(t1: ToolSpec, t2: ToolSpec, showCounts: Boolean): View {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val pairRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(2)
+            }
+        }
+
+        fun makeCell(tool: ToolSpec, marginEndDp: Int): View {
             val favUrl = tool.faviconUrl ?: tool.customTarget?.takeIf {
                 it.startsWith("http://", true) || it.startsWith("https://", true)
             }
-            list.addView(makeRow(tool.glyph, tool.label, badge, favUrl) {
-                ToolPrefs.recordUse(this, tool.id)
-                executeTool(tool)
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(42)
+                setPadding(dp(8), dp(9), dp(8), dp(9))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
+                    marginEnd = dp(marginEndDp)
+                }
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#1D2620"))
+                            setStroke(dp(1), Color.parseColor("#00FF66"))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#111111"))
+                            setStroke(dp(1), Color.parseColor("#262626"))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                }
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    ToolPrefs.recordUse(this@SelAccessibilityService, tool.id)
+                    executeTool(tool)
+                }
+                setOnLongClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                    executeToolLongPress(tool)
+                    true
+                }
+            }
+
+            if (!favUrl.isNullOrBlank() && FaviconManager.extractDomain(favUrl) != null) {
+                val sz = dp(15)
+                val img = ImageView(this).apply {
+                    this.layoutParams = LinearLayout.LayoutParams(sz, sz).apply { marginEnd = dp(6) }
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                FaviconManager.bindFavicon(this, img, favUrl, tool.glyph, sz)
+                cell.addView(img)
+            } else {
+                cell.addView(TextView(this).apply {
+                    text = tool.glyph
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setTextColor(Color.parseColor("#00FF66"))
+                    setPadding(0, 0, dp(6), 0)
+                })
+            }
+
+            cell.addView(TextView(this).apply {
+                text = shortGridLabel(tool)
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextColor(Color.parseColor("#F2F2F2"))
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
+            return cell
         }
+
+        pairRow.addView(makeCell(t1, 4))
+        pairRow.addView(makeCell(t2, 0))
+        return pairRow
     }
 
     // Ring-Buffer Clipboard History Submenu inside the popup
@@ -2574,6 +3206,7 @@ class SelAccessibilityService : AccessibilityService() {
         label: String,
         countBadge: String?,
         faviconUrl: String? = null,
+        onLongClick: (() -> Unit)? = null,
         onClick: () -> Unit
     ): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
@@ -2610,6 +3243,13 @@ class SelAccessibilityService : AccessibilityService() {
             setOnClickListener {
                 runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
                 onClick()
+            }
+            if (onLongClick != null) {
+                setOnLongClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                    onLongClick()
+                    true
+                }
             }
         }
 
@@ -2928,6 +3568,7 @@ class SelAccessibilityService : AccessibilityService() {
         popupParams = null
         headerBarView = null
         statsLabelView = null
+        gridToggleBtn = null
         reorderToggleBtn = null
         bodyContainer = null
         currentMode = PopupMode.ACTIONS

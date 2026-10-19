@@ -2,13 +2,13 @@
 
 A minimal, zero-bloat (<1 MB) PopClip + Google Lens plain-text alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`, inspired by the clean ASCII scoreboard aesthetic of [PlainTextSports.com](https://plaintextsports.com/).
 
-## v2.1 Highlights
-- **Zero-Lag / Instant Popup Show (Fixed v2.0 UI Hang):**
-  - Removed recursive full-tree Accessibility walks (`findBestTightNodeBoundsForText`, post-order `findSelectionInTree`, and recursive `findSelectedOrFocusedNode`), replacing them with **O(1)** `event.source`, `event.text`, and `findFocus(FOCUS_INPUT)` lookups.
-  - Removed blocking `refreshWithExtraData(EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY)` IPC calls and eliminated the `TYPE_WINDOW_CONTENT_CHANGED` / `scheduleToolbarRefinementCheck` loop while the popup is visible.
-  - Removed manual `v.measure()` calls outside `ViewRootImpl` and moved all `FaviconManager` disk cache reads off the UI thread so the popup renders in `< 2ms` with zero UI stutter.
-- **Zero-Overlap Above & Below Selection + Open Keyboard (IME) Awareness:**
-  - Single cached `refreshScreenMetricsCache()` check detects open soft keyboards (`AccessibilityWindowInfo.TYPE_INPUT_METHOD`) and native `"Copy"` / `"Cut"` selection bars while ignoring keyboard suggestion strips and browser bottom URL-bar `"Share"` buttons.
-- **`↗ WEB SEARCH ▸` Subgroup with Top 4 Search Engines & Live Favicons:** Groups **Google**, **DuckDuckGo**, **Bing**, and **Brave Search** into a dedicated subfolder, displaying each search engine's real favicon.
-- **Automatic Favicons for All Future User-Added Web Engines:** `FaviconManager` automatically extracts the domain from any `http://` or `https://` command added via the app (`03:RULES` quick-adder or `rules.txt`), downloads its favicon in the background, and caches it in memory + disk (`cacheDir/favicons/`).
-- **`▶ YOUTUBE ▸` Subfolder:** Consolidates all YouTube search filters (`All Time`, `Last Hour`, `Today`, `This Week`, `This Month`, `This Year` + custom `YT/...` rules) into a clean subfolder like `M↓ MARKDOWN ▸`.
+## v2.2 Highlights
+- **Nepal Phone Number Detection (`98...`, `97...`, `+977...`) with 1-Line Call, SMS, WhatsApp & WhatsApp Business Bar:**
+  - Automatically detects local (`98XXXXXXXX`, `97XXXXXXXX`) and international (`+977...`, `00977...`) phone numbers and pins a 4-button horizontal action bar (`📞CALL`, `💬SMS`, `🟢WA`, `🏢W4B`) right at the top of the popup.
+  - Automatically prepends country code `977` for local `98...` / `97...` numbers when opening **WhatsApp** (`com.whatsapp`) or **WhatsApp Business** (`com.whatsapp.w4b`) so chats open directly without needing to save the contact first.
+- **Single-Line Icon-Only Edit Strip (`[ ⎘ ] [ 📋 ] [ ✂ ] [ ⬚ ]`):**
+  - Replaces the full-width `COPY TEXT` row with 4 equal-width icon-only buttons on a single line: **Copy** (`⎘`), **Paste** (`📋`), **Cut** (`✂`), and **Select All** (`⬚`).
+  - Supports power long-presses: long-press `⎘` to **Append Copy (`+⎘`)** to your current clipboard; long-press `📋` to jump straight to **Clipboard History**.
+- **1-Tap `⊞` / `☷` 2-Column Compact Grid Mode + Long-Press Folder Shortcuts:**
+  - Tap `⊞` in the popup header to toggle between the classic **1-Column List** and a **2-Column Compact Grid** that fits 2× as many tools on screen without scrolling.
+  - Long-press `↗ WEB SEARCH ▸` to immediately search Google, `▶ YOUTUBE ▸` to immediately search YouTube, or `M↓ MARKDOWN ▸` to bold text in 1 gesture.
