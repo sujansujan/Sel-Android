@@ -42,6 +42,7 @@ class MainActivity : Activity() {
     private val tabPanels = mutableMapOf<Tab, View>()
 
     private lateinit var serviceStatusBadge: TextView
+    private lateinit var iconRowsSummaryContainer: LinearLayout
     private lateinit var reorderListContainer: LinearLayout
     private lateinit var sortModeButton: TextView
     private lateinit var rulesView: EditText
@@ -87,7 +88,7 @@ class MainActivity : Activity() {
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
-        topHeader.addView(label("+── v2.2 · +977/98 call·sms·wa·w4b · 4-icon edit bar · 2-col grid ──+", 10.5f, "#777777"))
+        topHeader.addView(label("+── v2.3 · +2 custom icon rows · unique glyphs · external incognito ──+", 10.5f, "#777777"))
         root.addView(topHeader)
 
         // 2. Horizontal Terminal Tab Bar
@@ -222,7 +223,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(8), 0, dp(14))
             }
 
-            rowBtns.addView(buttonPill("[ ⊞ LAUNCH LENS GRAB ]", "#00FF66") {
+            rowBtns.addView(buttonPill("[ ⌖ LAUNCH LENS GRAB ]", "#00FF66") {
                 startActivity(Intent(this@MainActivity, ScreenGrabTriggerActivity::class.java))
             }.apply { setPadding(0, dp(4), dp(14), dp(4)) })
 
@@ -261,16 +262,51 @@ class MainActivity : Activity() {
         }
     }
 
-    // --- TAB 2: TOOLS (Drag-and-Drop Reorder, Most-Used Toggle, & Show/Hide) ---
+    // --- TAB 2: TOOLS (Icon-Only Rows R1/R2, Drag-and-Drop Reorder, Most-Used Toggle, & Show/Hide) ---
     private fun buildToolsTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // POPUP TOOL ORDER & VISIBILITY", 12f, "#888888"))
+            addView(label("01 // ICON-ONLY TOOL ROWS (UP TO 2 EXTRA ROWS)", 12f, "#888888"))
             addView(
                 label(
-                    "Drag the green ≡ handle to reorder tools. Tap [✓ SHOW] to hide/unhide tools.",
+                    "Similar to Copy/Paste/Cut/Select All, assign up to 5 tools each to Icon Row 1 (R1) and Icon Row 2 (R2). Tap [LIST] -> [★R1] -> [★R2] on any tool below.",
+                    10.5f,
+                    "#777777"
+                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+            )
+
+            iconRowsSummaryContainer = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.parseColor("#141414"))
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+            addView(iconRowsSummaryContainer)
+
+            val presetRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(6), 0, dp(14))
+            }
+            presetRow.addView(buttonPill("[ ↺ LOAD 2-ROW PRESET ]", "#00FF66") {
+                ToolPrefs.applyDefaultTwoIconRowsPreset(this@MainActivity)
+                refreshReorderList()
+                Toast.makeText(this@MainActivity, "Loaded 2 icon-only tool rows (R1 & R2)", Toast.LENGTH_SHORT).show()
+            })
+            presetRow.addView(buttonPill("[ × CLEAR R1 ]", "#CCCCCC") {
+                ToolPrefs.clearIconRow(this@MainActivity, 1)
+                refreshReorderList()
+            })
+            presetRow.addView(buttonPill("[ × CLEAR R2 ]", "#CCCCCC") {
+                ToolPrefs.clearIconRow(this@MainActivity, 2)
+                refreshReorderList()
+            })
+            addView(presetRow)
+
+            addView(label("02 // POPUP TOOL ORDER, ICON ROW SLOT & VISIBILITY", 12f, "#888888"))
+            addView(
+                label(
+                    "Drag ≡ to reorder. Tap [LIST] / [★R1] / [★R2] to pin any tool as an icon-only button on Row 1 or Row 2.",
                     11f,
                     "#777777"
                 ).apply { setPadding(0, dp(2), 0, dp(8)) }
@@ -369,7 +405,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(6), 0, 0)
             }
 
-            addEngineBtnsRow.addView(buttonPill("[ + ADD TO ↗ WEB SEARCH ▸ ]", "#00FF66") {
+            addEngineBtnsRow.addView(buttonPill("[ + ADD TO 🔎 WEB SEARCH ▸ ]", "#00FF66") {
                 val rawName = engineNameInput.text.toString().trim().uppercase().removePrefix("SEARCH/").removePrefix("WEB/")
                 var rawUrl = engineUrlInput.text.toString().trim()
                 if (rawName.isNotEmpty() && rawUrl.isNotEmpty()) {
@@ -836,14 +872,51 @@ class MainActivity : Activity() {
         val mostUsed = ToolPrefs.isSortMostUsed(this)
         sortModeButton.text = if (mostUsed) "[ ★ MOST USED TOP: ON ]" else "[ ★ MOST USED TOP: OFF ]"
 
+        if (::iconRowsSummaryContainer.isInitialized) {
+            iconRowsSummaryContainer.removeAllViews()
+            val r1Tools = ToolPrefs.getIconRowTools(this, 1)
+            val r2Tools = ToolPrefs.getIconRowTools(this, 2)
+
+            iconRowsSummaryContainer.addView(
+                label("EDIT ROW │ [ ⎘ ]  [ 📋 ]  [ ✂ ]  [ ⬚ ]   (Copy · Paste · Cut · Select All)", 11f, "#AAAAAA").apply {
+                    setPadding(0, dp(2), 0, dp(4))
+                }
+            )
+
+            val r1Text = if (r1Tools.isEmpty()) {
+                "ROW 1    │ (Empty — tap [LIST] on any tool below to assign)"
+            } else {
+                "ROW 1    │ " + r1Tools.joinToString("  ") { "[ ${it.glyph} ]" } +
+                    "   (" + r1Tools.joinToString(" · ") { it.label.replace(" ▸", "") } + ")"
+            }
+            iconRowsSummaryContainer.addView(
+                label(r1Text, 11.5f, if (r1Tools.isEmpty()) "#666666" else "#00FF66").apply {
+                    setPadding(0, dp(3), 0, dp(4))
+                }
+            )
+
+            val r2Text = if (r2Tools.isEmpty()) {
+                "ROW 2    │ (Empty — tap [★R1] on any tool below to move to Row 2)"
+            } else {
+                "ROW 2    │ " + r2Tools.joinToString("  ") { "[ ${it.glyph} ]" } +
+                    "   (" + r2Tools.joinToString(" · ") { it.label.replace(" ▸", "") } + ")"
+            }
+            iconRowsSummaryContainer.addView(
+                label(r2Text, 11.5f, if (r2Tools.isEmpty()) "#666666" else "#66CCFF").apply {
+                    setPadding(0, dp(3), 0, dp(2))
+                }
+            )
+        }
+
         reorderListContainer.removeAllViews()
         val tools = ToolPrefs.getAllSortedTools(this)
         tools.forEachIndexed { idx, tool ->
             val hidden = ToolPrefs.isToolHidden(this, tool.id)
+            val assignedRow = ToolPrefs.getToolIconRow(this, tool.id)
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(12), dp(12), dp(12))
+                setPadding(dp(10), dp(12), dp(10), dp(12))
                 this.layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -864,7 +937,7 @@ class MainActivity : Activity() {
                 typeface = Typeface.MONOSPACE
                 textSize = 17f
                 setTextColor(Color.parseColor("#00FF66"))
-                setPadding(dp(8), dp(4), dp(14), dp(4))
+                setPadding(dp(6), dp(4), dp(12), dp(4))
             }
 
             val favUrl = tool.faviconUrl ?: tool.customTarget?.takeIf {
@@ -887,33 +960,61 @@ class MainActivity : Activity() {
             val count = ToolPrefs.getUseCount(this, tool.id)
             val numStr = "%02d".format(idx + 1)
             val nameView = TextView(this).apply {
-                val glyphPrefix = if (favView != null) "" else "${tool.glyph}  "
+                val glyphPrefix = "${tool.glyph}  "
                 text = "$numStr │ $glyphPrefix${tool.label}" + if (count > 0) "  [$count×]" else ""
                 typeface = Typeface.MONOSPACE
-                textSize = 12f
+                textSize = 11.5f
                 setTextColor(Color.parseColor(if (hidden) "#555555" else "#F0F0F0"))
                 this.layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     1f
                 )
             }
 
+            row.addView(dragHandle)
+            if (favView != null) row.addView(favView)
+            row.addView(nameView)
+
+            if (tool.id != "copy") {
+                val rowSlotBtn = TextView(this).apply {
+                    text = when (assignedRow) {
+                        1 -> "[ ★ R1 ]"
+                        2 -> "[ ★ R2 ]"
+                        else -> "[ LIST ]"
+                    }
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    textSize = 11f
+                    setTextColor(
+                        Color.parseColor(
+                            when (assignedRow) {
+                                1 -> "#00FF66"
+                                2 -> "#66CCFF"
+                                else -> "#888888"
+                            }
+                        )
+                    )
+                    setPadding(dp(8), dp(4), dp(6), dp(4))
+                    setOnClickListener {
+                        ToolPrefs.cycleToolIconRow(this@MainActivity, tool.id)
+                        refreshReorderList()
+                    }
+                }
+                row.addView(rowSlotBtn)
+            }
+
             val visToggle = TextView(this).apply {
                 text = if (hidden) "[ HIDDEN ]" else "[ ✓ SHOW ]"
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                textSize = 11.5f
+                textSize = 11f
                 setTextColor(Color.parseColor(if (hidden) "#666666" else "#00FF66"))
-                setPadding(dp(10), dp(4), dp(6), dp(4))
+                setPadding(dp(8), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     ToolPrefs.setToolHidden(this@MainActivity, tool.id, !hidden)
                     refreshReorderList()
                 }
             }
 
-            row.addView(dragHandle)
-            if (favView != null) row.addView(favView)
-            row.addView(nameView)
             row.addView(visToggle)
             ToolPrefs.attachDragHandle(dragHandle, row, reorderListContainer) {
                 refreshReorderList()

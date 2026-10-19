@@ -8,6 +8,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.provider.Browser
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -338,7 +340,7 @@ class SelAccessibilityService : AccessibilityService() {
         })
 
         val retryLensBtn = TextView(this).apply {
-            text = "[ ⊞ RE-SCAN ACCESSIBILITY NODES ]"
+            text = "[ ⌖ RE-SCAN ACCESSIBILITY NODES ]"
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             setTextColor(Color.parseColor("#00FF66"))
@@ -1415,7 +1417,7 @@ class SelAccessibilityService : AccessibilityService() {
             renderPopupBody()
         }
 
-        val reorderBtn = makeHeaderBoxBtn("⇅", "#CCCCCC") {
+        val reorderBtn = makeHeaderBoxBtn("⚙", "#CCCCCC") {
             lastShownTime = System.currentTimeMillis()
             currentMode = if (currentMode == PopupMode.REORDER) PopupMode.ACTIONS else PopupMode.REORDER
             renderPopupBody()
@@ -1612,6 +1614,15 @@ class SelAccessibilityService : AccessibilityService() {
         if (!ToolPrefs.isToolHidden(this, "copy")) {
             pinnedIds.add("copy")
             list.addView(makeIconOnlyEditStrip())
+        }
+
+        // 0d. Up to 2 User-Assignable Icon-Only Tool Rows (Row 1 & Row 2)
+        for (rowNum in 1..2) {
+            val rowTools = ToolPrefs.getIconRowTools(this, rowNum)
+            if (rowTools.isNotEmpty()) {
+                rowTools.forEach { pinnedIds.add(it.id) }
+                list.addView(makeCustomIconToolRow(rowTools, rowNum))
+            }
         }
 
         // 1. Instant Math Evaluator
@@ -1854,6 +1865,86 @@ class SelAccessibilityService : AccessibilityService() {
             )
         )
 
+        return strip
+    }
+
+    /**
+     * Renders an assignable icon-only tool row (Row 1 or Row 2, up to 5 tools per row)
+     * matching the exact visual geometry of the Copy / Paste / Cut / Select All strip.
+     * Short-tap runs the tool; long-press shows its label toast and runs its power shortcut.
+     */
+    private fun makeCustomIconToolRow(rowTools: List<ToolSpec>, rowNumber: Int): View {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(2)
+            }
+        }
+
+        val accentColors = listOf("#00FF66", "#66CCFF", "#FFB84D", "#FF80BF", "#B388FF")
+        val borderHex = if (rowNumber == 1) "#26382C" else "#24323D"
+
+        rowTools.forEachIndexed { idx, tool ->
+            val isLast = (idx == rowTools.lastIndex)
+            val fgHex = accentColors[idx % accentColors.size]
+            val cell = TextView(this).apply {
+                text = tool.glyph
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, if (tool.glyph.length > 1) 13f else 15f)
+                setTextColor(Color.parseColor(fgHex))
+                gravity = Gravity.CENTER
+                isSingleLine = true
+                minimumHeight = dp(42)
+                setPadding(dp(4), dp(9), dp(4), dp(9))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
+                    marginEnd = if (isLast) 0 else dp(4)
+                }
+                background = StateListDrawable().apply {
+                    addState(
+                        intArrayOf(android.R.attr.state_pressed),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#1D2620"))
+                            setStroke(dp(1), Color.parseColor("#00FF66"))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                    addState(
+                        intArrayOf(),
+                        GradientDrawable().apply {
+                            setColor(Color.parseColor("#111111"))
+                            setStroke(dp(1), Color.parseColor(borderHex))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                    )
+                }
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    ToolPrefs.recordUse(this@SelAccessibilityService, tool.id)
+                    executeTool(tool)
+                }
+                setOnLongClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                    Toast.makeText(
+                        this@SelAccessibilityService,
+                        "${tool.glyph} ${tool.label}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    executeToolLongPress(tool)
+                    true
+                }
+            }
+            strip.addView(cell)
+        }
         return strip
     }
 
@@ -2172,7 +2263,8 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private fun executeToolLongPress(tool: ToolSpec) {
-        val encoded = Uri.encode(selectedText.trim())
+        val trimmed = selectedText.trim()
+        val encoded = Uri.encode(trimmed)
         when (tool.id) {
             "web_search_folder" -> {
                 ToolPrefs.recordUse(this, "web_search_folder")
@@ -2184,7 +2276,18 @@ class SelAccessibilityService : AccessibilityService() {
             }
             "markdown_folder" -> {
                 ToolPrefs.recordUse(this, "markdown_folder")
-                applyResult("**${selectedText.trim()}**")
+                applyResult("**$trimmed**")
+            }
+            "incognito" -> {
+                ToolPrefs.recordUse(this, "incognito")
+                val targetUrl = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                    cleanUrl(trimmed)
+                } else if (urlPattern.matches(trimmed) && !trimmed.contains(" ")) {
+                    "https://$trimmed"
+                } else {
+                    "https://duckduckgo.com/?q=$encoded"
+                }
+                openInternalIncognitoWebView(targetUrl)
             }
             else -> executeTool(tool)
         }
@@ -2294,7 +2397,7 @@ class SelAccessibilityService : AccessibilityService() {
             currentMode = PopupMode.ACTIONS
             renderPopupBody()
         })
-        container.addView(makeRow("🧹", "CLEAR UNPINNED", null) {
+        container.addView(makeRow("🗑", "CLEAR UNPINNED", null) {
             ToolPrefs.clearUnpinnedClips(this)
             renderPopupBody()
         })
@@ -3079,14 +3182,42 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    // Inline Drag-and-Drop Reorder + Per-App Blacklist Toggle inside the popup
+    // Inline Drag-and-Drop Reorder + Icon Row 1/Row 2 Assignment + Per-App Blacklist Toggle inside the popup
     private fun populateReorderView(container: LinearLayout) {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
 
-        container.addView(makeRow("←", "DONE (DRAG ≡ TO SORT)", null) {
+        container.addView(makeRow("←", "DONE (TAP [LIST/R1/R2])", null) {
             currentMode = PopupMode.ACTIONS
             renderPopupBody()
         })
+
+        val r1Count = ToolPrefs.getIconRowIds(this, 1).size
+        val r2Count = ToolPrefs.getIconRowIds(this, 2).size
+        container.addView(
+            makeRow(
+                "▦",
+                "2-ROW ICON PRESET (R1:$r1Count R2:$r2Count)",
+                null
+            ) {
+                ToolPrefs.applyDefaultTwoIconRowsPreset(this)
+                Toast.makeText(this, "Assigned 2 icon rows (R1 & R2)", Toast.LENGTH_SHORT).show()
+                renderPopupBody()
+            }
+        )
+
+        if (r1Count > 0 || r2Count > 0) {
+            container.addView(
+                makeRow(
+                    "✕",
+                    "CLEAR EXTRA ICON ROWS",
+                    null
+                ) {
+                    ToolPrefs.clearIconRow(this, 1)
+                    ToolPrefs.clearIconRow(this, 2)
+                    renderPopupBody()
+                }
+            )
+        }
 
         val mostUsedOn = ToolPrefs.isSortMostUsed(this)
         container.addView(
@@ -3129,10 +3260,11 @@ class SelAccessibilityService : AccessibilityService() {
         val tools = ToolPrefs.getAllSortedTools(this)
         tools.forEach { tool ->
             val hidden = ToolPrefs.isToolHidden(this, tool.id)
+            val assignedRow = ToolPrefs.getToolIconRow(this, tool.id)
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(11), dp(12), dp(11))
+                setPadding(dp(8), dp(10), dp(10), dp(10))
                 tag = tool.id
             }
 
@@ -3141,37 +3273,72 @@ class SelAccessibilityService : AccessibilityService() {
                 typeface = Typeface.MONOSPACE
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 setTextColor(Color.parseColor("#00FF66"))
-                setPadding(dp(6), dp(2), dp(10), dp(2))
+                setPadding(dp(4), dp(2), dp(8), dp(2))
             }
 
             val label = TextView(this).apply {
                 val cnt = ToolPrefs.getUseCount(this@SelAccessibilityService, tool.id)
                 text = "${tool.glyph} ${tool.label}" + if (cnt > 0) " ($cnt)" else ""
                 typeface = Typeface.MONOSPACE
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                 setTextColor(Color.parseColor(if (hidden) "#555555" else "#E0E0E0"))
                 isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
                 this.layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     1f
                 )
             }
 
+            row.addView(dragHandle)
+            row.addView(label)
+
+            if (tool.id != "copy") {
+                val slotToggle = TextView(this).apply {
+                    text = when (assignedRow) {
+                        1 -> "[★R1]"
+                        2 -> "[★R2]"
+                        else -> "[LIST]"
+                    }
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
+                    setTextColor(
+                        Color.parseColor(
+                            when (assignedRow) {
+                                1 -> "#00FF66"
+                                2 -> "#66CCFF"
+                                else -> "#888888"
+                            }
+                        )
+                    )
+                    setPadding(dp(5), dp(3), dp(5), dp(3))
+                    setOnClickListener {
+                        val nextRow = ToolPrefs.cycleToolIconRow(this@SelAccessibilityService, tool.id)
+                        val msg = when (nextRow) {
+                            1 -> "${tool.glyph} assigned to Icon Row 1"
+                            2 -> "${tool.glyph} assigned to Icon Row 2"
+                            else -> "${tool.glyph} returned to text list"
+                        }
+                        Toast.makeText(this@SelAccessibilityService, msg, Toast.LENGTH_SHORT).show()
+                        renderPopupBody()
+                    }
+                }
+                row.addView(slotToggle)
+            }
+
             val visToggle = TextView(this).apply {
                 text = if (hidden) "[ ]" else "[✓]"
                 typeface = Typeface.MONOSPACE
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                 setTextColor(Color.parseColor(if (hidden) "#666666" else "#00FF66"))
-                setPadding(dp(6), dp(2), dp(2), dp(2))
+                setPadding(dp(5), dp(2), dp(2), dp(2))
                 setOnClickListener {
                     ToolPrefs.setToolHidden(this@SelAccessibilityService, tool.id, !hidden)
                     renderPopupBody()
                 }
             }
 
-            row.addView(dragHandle)
-            row.addView(label)
             row.addView(visToggle)
             ToolPrefs.attachDragHandle(dragHandle, row, dragList) {
                 renderPopupBody()
@@ -3182,13 +3349,281 @@ class SelAccessibilityService : AccessibilityService() {
         container.addView(dragList)
     }
 
+    /**
+     * Opens the target URL/search in the user's ACTUAL installed browser in Incognito / Private mode:
+     * 1. For privacy-native & Firefox-family browsers (Firefox, Fenix, Focus, Klar, DuckDuckGo, Iceraven),
+     *    fires ACTION_VIEW with `private_browsing_mode = true` and `EXTRA_OPEN_NEW_INCOGNITO_TAB = true`.
+     * 2. For Chromium browsers (Chrome, Brave, Edge, Samsung Internet, Vivaldi, Opera, Kiwi, Cromite),
+     *    copies the URL, launches the browser with incognito flags, and runs a fast Accessibility helper
+     *    that automatically taps `More options (⋮) -> New incognito/private tab` and pastes/submits the URL
+     *    so the query never touches normal browsing history!
+     * 3. Long-pressing `🕵` opens `[sel]`'s internal zero-history WebView (`openInternalIncognitoWebView`).
+     */
     private fun openIncognito(url: String) {
+        lastClipboardTime = System.currentTimeMillis()
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("sel_incognito", url))
+        hidePalette()
+
+        val browserPkg = resolveInstalledBrowserPackage()
+        if (browserPkg == null) {
+            openInternalIncognitoWebView(url)
+            return
+        }
+
+        val lowerPkg = browserPkg.lowercase()
+        val isDedicatedPrivateOrFirefox = lowerPkg.contains("focus") ||
+            lowerPkg.contains("klar") ||
+            lowerPkg.contains("duckduckgo") ||
+            lowerPkg.contains("firefox") ||
+            lowerPkg.contains("fenix") ||
+            lowerPkg.contains("iceraven") ||
+            lowerPkg.contains("torproject")
+
+        if (isDedicatedPrivateOrFirefox) {
+            val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                setPackage(browserPkg)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra("private_browsing_mode", true)
+                putExtra("com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB", true)
+                putExtra("androidx.browser.customtabs.extra.OPEN_AS_INCOGNITO", true)
+                putExtra(Browser.EXTRA_CREATE_NEW_TAB, true)
+            }
+            if (runCatching { startActivity(viewIntent) }.isSuccess) {
+                Toast.makeText(this, "🕵 Opening in Private Browser", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
+
+        // Chromium / Chrome / Brave / Edge / Samsung Internet / Vivaldi / Opera:
+        // Launch browser without loading URL into a normal tab, then auto-open a New Incognito Tab via Accessibility!
+        val launchIntent = runCatching { packageManager.getLaunchIntentForPackage(browserPkg) }.getOrNull()?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB", true)
+            putExtra("androidx.browser.customtabs.extra.OPEN_AS_INCOGNITO", true)
+            putExtra("private_browsing_mode", true)
+        }
+
+        if (launchIntent != null && runCatching { startActivity(launchIntent) }.isSuccess) {
+            Toast.makeText(this, "🕵 Opening Incognito tab in browser…", Toast.LENGTH_SHORT).show()
+            scheduleBrowserIncognitoTabAssist(browserPkg, url)
+            return
+        }
+
+        // Direct ACTION_VIEW fallback with incognito extras
+        val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            setPackage(browserPkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB", true)
+            putExtra("androidx.browser.customtabs.extra.OPEN_AS_INCOGNITO", true)
+            putExtra("private_browsing_mode", true)
+            putExtra(Browser.EXTRA_CREATE_NEW_TAB, true)
+        }
+        if (runCatching { startActivity(fallbackIntent) }.isFailure) {
+            openInternalIncognitoWebView(url)
+        }
+    }
+
+    private fun openInternalIncognitoWebView(url: String) {
         val intent = Intent(this, IncognitoActivity::class.java).apply {
             putExtra("url", url)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         runCatching { startActivity(intent) }
         hidePalette()
+    }
+
+    private fun resolveInstalledBrowserPackage(): String? {
+        val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com"))
+        val defaultResolve = runCatching {
+            packageManager.resolveActivity(probe, PackageManager.MATCH_DEFAULT_ONLY)
+        }.getOrNull()
+        val defaultPkg = defaultResolve?.activityInfo?.packageName
+        if (!defaultPkg.isNullOrBlank() &&
+            defaultPkg != "android" &&
+            !defaultPkg.contains("resolver", ignoreCase = true) &&
+            defaultPkg != packageName
+        ) {
+            return defaultPkg
+        }
+
+        val knownBrowsers = listOf(
+            "com.android.chrome",
+            "com.brave.browser",
+            "org.mozilla.firefox",
+            "org.mozilla.fenix",
+            "org.mozilla.focus",
+            "com.duckduckgo.mobile.android",
+            "com.microsoft.emmx",
+            "com.sec.android.app.sbrowser",
+            "com.vivaldi.browser",
+            "com.opera.browser",
+            "com.kiwibrowser.browser",
+            "org.cromite.cromite",
+            "com.chrome.beta",
+            "org.mozilla.klar"
+        )
+        for (pkg in knownBrowsers) {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com")).apply {
+                setPackage(pkg)
+            }
+            if (runCatching { packageManager.resolveActivity(intent, 0) }.getOrNull() != null) {
+                return pkg
+            }
+        }
+        return null
+    }
+
+    /**
+     * Non-blocking Accessibility helper that automates opening a real Incognito / Private tab
+     * inside Chrome, Brave, Edge, Samsung Internet, Opera, or Vivaldi and pasting/submitting `url`.
+     */
+    private fun scheduleBrowserIncognitoTabAssist(browserPkg: String, url: String) {
+        var step = 0 // 0 = find menu or "New incognito tab", 1 = find "New incognito tab", 2 = paste & go in URL bar
+        var attempts = 0
+
+        val incognitoLabels = listOf(
+            "New incognito tab",
+            "New Incognito tab",
+            "New private tab",
+            "New Private tab",
+            "New InPrivate tab",
+            "Turn on Secret mode",
+            "Secret mode"
+        )
+
+        val menuLabels = listOf(
+            "More options",
+            "Customize and control",
+            "Main menu",
+            "Menu",
+            "Browser menu"
+        )
+
+        fun runStep() {
+            attempts++
+            if (attempts > 14) return
+            val root = rootInActiveWindow
+            if (root == null || root.packageName?.toString() != browserPkg) {
+                mainHandler.postDelayed({ runStep() }, 140L)
+                return
+            }
+
+            if (step == 0 || step == 1) {
+                // First check if "New incognito tab" / "New private tab" is already on screen
+                for (label in incognitoLabels) {
+                    val nodes = runCatching { root.findAccessibilityNodeInfosByText(label) }.getOrNull()
+                    val hit = nodes?.firstOrNull { it.isVisibleToUser }
+                    if (hit != null) {
+                        if (clickNodeOrParent(hit)) {
+                            step = 2
+                            mainHandler.postDelayed({ runStep() }, 220L)
+                            return
+                        }
+                    }
+                }
+
+                if (step == 0) {
+                    // Tap the 3-dot "More options" / "Menu" button in the browser toolbar
+                    val menuNode = findNodeByViewIdOrDesc(
+                        root,
+                        idHints = listOf("menu_button", "toolbar_menu", "more_button", "main_menu"),
+                        descHints = menuLabels
+                    )
+                    if (menuNode != null && clickNodeOrParent(menuNode)) {
+                        step = 1
+                        mainHandler.postDelayed({ runStep() }, 180L)
+                        return
+                    }
+                }
+                mainHandler.postDelayed({ runStep() }, 150L)
+                return
+            }
+
+            if (step == 2) {
+                // Find the address / search bar in the newly opened Incognito tab, paste URL, and press Enter!
+                val urlNode = findNodeByViewIdOrDesc(
+                    root,
+                    idHints = listOf("url_bar", "search_box_text", "mozac_browser_toolbar_url_view", "location_bar_edit_text"),
+                    descHints = listOf("Search or type web address", "Search or type URL", "Search or enter address", "Address bar")
+                ) ?: runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+
+                if (urlNode != null) {
+                    if (!urlNode.isFocused) {
+                        clickNodeOrParent(urlNode)
+                    }
+                    val args = Bundle().apply {
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, url)
+                    }
+                    val setOk = runCatching { urlNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+                    if (!setOk) {
+                        runCatching { urlNode.performAction(AccessibilityNodeInfo.ACTION_PASTE) }
+                    }
+                    mainHandler.postDelayed({
+                        val activeRoot = rootInActiveWindow ?: return@postDelayed
+                        val focused = runCatching { activeRoot.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull() ?: urlNode
+                        // 0x01020054 == android.R.id.accessibilityActionImeEnter (API 30+)
+                        val enterOk = runCatching { focused.performAction(0x01020054) }.getOrDefault(false)
+                        if (!enterOk) {
+                            // Tap the first omnibox suggestion row if IME Enter wasn't consumed
+                            val sugg = findNodeByViewIdOrDesc(
+                                activeRoot,
+                                idHints = listOf("line_1", "omnibox_results", "suggestion"),
+                                descHints = listOf(url.take(24))
+                            )
+                            if (sugg != null) clickNodeOrParent(sugg)
+                        }
+                    }, 160L)
+                    return
+                }
+                mainHandler.postDelayed({ runStep() }, 160L)
+            }
+        }
+
+        mainHandler.postDelayed({ runStep() }, 220L)
+    }
+
+    private fun clickNodeOrParent(node: AccessibilityNodeInfo?): Boolean {
+        var cur = node
+        var depth = 0
+        while (cur != null && depth < 5) {
+            if (cur.isClickable && runCatching { cur.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) {
+                return true
+            }
+            cur = cur.parent
+            depth++
+        }
+        return false
+    }
+
+    private fun findNodeByViewIdOrDesc(
+        root: AccessibilityNodeInfo?,
+        idHints: List<String>,
+        descHints: List<String>,
+        depth: Int = 0
+    ): AccessibilityNodeInfo? {
+        if (root == null || depth > 10) return null
+        if (root.isVisibleToUser) {
+            val viewId = root.viewIdResourceName?.lowercase().orEmpty()
+            val desc = root.contentDescription?.toString()?.lowercase().orEmpty()
+            val txt = root.text?.toString()?.lowercase().orEmpty()
+            val hint = root.hintText?.toString()?.lowercase().orEmpty()
+
+            if (idHints.any { viewId.contains(it.lowercase()) } ||
+                descHints.any { d ->
+                    val dl = d.lowercase()
+                    desc.contains(dl) || txt.contains(dl) || hint.contains(dl)
+                }
+            ) {
+                return root
+            }
+        }
+        val count = root.childCount
+        for (i in 0 until count) {
+            val child = runCatching { root.getChild(i) }.getOrNull() ?: continue
+            val found = findNodeByViewIdOrDesc(child, idHints, descHints, depth + 1)
+            if (found != null) return found
+        }
+        return null
     }
 
     private fun openUrl(url: String) {

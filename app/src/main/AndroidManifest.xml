@@ -4,10 +4,34 @@
     <!-- Needed for in-popup Define Word, Translate & built-in Incognito Search -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Package visibility for direct WhatsApp & WhatsApp Business number launch on Android 11+ -->
+    <!-- Package visibility for WhatsApp, WhatsApp Business & installed Web Browsers on Android 11+ -->
     <queries>
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.android.chrome" />
+        <package android:name="com.chrome.beta" />
+        <package android:name="com.brave.browser" />
+        <package android:name="org.mozilla.firefox" />
+        <package android:name="org.mozilla.fenix" />
+        <package android:name="org.mozilla.focus" />
+        <package android:name="org.mozilla.klar" />
+        <package android:name="com.duckduckgo.mobile.android" />
+        <package android:name="com.microsoft.emmx" />
+        <package android:name="com.sec.android.app.sbrowser" />
+        <package android:name="com.opera.browser" />
+        <package android:name="com.vivaldi.browser" />
+        <package android:name="com.kiwibrowser.browser" />
+        <package android:name="org.cromite.cromite" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.DIAL" />
             <data android:scheme="tel" />

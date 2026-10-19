@@ -438,9 +438,9 @@ class LensOverlayView(
         }
 
         val hudTitle = if (selectedCount > 0) {
-            "⊞ ${selectedCount}W SELECTED"
+            "⌖ ${selectedCount}W SELECTED"
         } else {
-            "⊞ LENS (${words.size}W)"
+            "⌖ LENS (${words.size}W)"
         }
         val titleY = topHudRect.centerY() - (hudTitlePaint.descent() + hudTitlePaint.ascent()) / 2f
         canvas.drawText(hudTitle, topHudRect.left + dp(10f), titleY, hudTitlePaint)

@@ -51,19 +51,23 @@ object ToolPrefs {
     private const val KEY_SORT_MOST_USED = "sort_most_used"
     private const val KEY_EDGE_LEFT = "snap_edge_left"
     private const val KEY_GRID_COLUMNS = "grid_two_columns"
+    private const val KEY_ICON_ROW_1 = "icon_row_1_ids"
+    private const val KEY_ICON_ROW_2 = "icon_row_2_ids"
+    private const val KEY_ICON_ROWS_INIT = "icon_rows_init_v23"
     private const val KEY_BLACKLIST = "blacklisted_pkgs"
     private const val KEY_CLIP_HISTORY = "clip_history_json"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
     private const val MAX_CLIPS = 20
+    const val MAX_TOOLS_PER_ICON_ROW = 5
 
-    // Top-level tools in the main popup (filtered dynamically by context in SelAccessibilityService)
+    // Every built-in tool has a 100% unique, non-overlapping glyph across the entire app
     val builtInTools = listOf(
         ToolSpec("copy", "⎘", "COPY TEXT"),
-        ToolSpec("screen_grab", "⊞", "LENS GRAB"),
-        ToolSpec("web_search_folder", "↗", "WEB SEARCH ▸"),
+        ToolSpec("screen_grab", "⌖", "LENS GRAB"),
+        ToolSpec("web_search_folder", "🔎", "WEB SEARCH ▸"),
         ToolSpec("youtube_folder", "▶", "YOUTUBE ▸", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("clip_history", "📋", "CLIP HISTORY ▸"),
+        ToolSpec("clip_history", "🗂", "CLIP HISTORY ▸"),
         ToolSpec("markdown_folder", "M↓", "MARKDOWN ▸"),
         ToolSpec("regex_pipe", "λ", "REGEX / PIPE ▸"),
         ToolSpec("define", "📖", "DEFINE WORD"),
@@ -80,17 +84,17 @@ object ToolPrefs {
         ToolSpec("log", "⊕", "APPEND LOG")
     )
 
-    // Dedicated Web Search Subgroup with Top 4 Search Engines (each displays its own site favicon)
+    // Dedicated Web Search Subgroup with Top 4 Search Engines (unique glyphs + live site favicons)
     val webSearchSubTools = listOf(
         ToolSpec("web_google", "G", "GOOGLE", customTarget = "https://www.google.com/search?q={text}", faviconUrl = "https://www.google.com"),
         ToolSpec("web_ddg", "D", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}", faviconUrl = "https://duckduckgo.com"),
-        ToolSpec("web_bing", "B", "BING", customTarget = "https://www.bing.com/search?q={text}", faviconUrl = "https://www.bing.com"),
-        ToolSpec("web_brave", "B", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
+        ToolSpec("web_bing", "Bi", "BING", customTarget = "https://www.bing.com/search?q={text}", faviconUrl = "https://www.bing.com"),
+        ToolSpec("web_brave", "Br", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
     )
 
-    // Dedicated YouTube Subfolder items (like Markdown)
+    // Dedicated YouTube Subfolder items (unique glyphs)
     val youtubeSubTools = listOf(
-        ToolSpec("yt_all", "▶", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_all", "▶*", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
         ToolSpec("yt_hour", "▶h", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D", faviconUrl = "https://www.youtube.com"),
         ToolSpec("yt_today", "▶d", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D", faviconUrl = "https://www.youtube.com"),
         ToolSpec("yt_week", "▶w", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D", faviconUrl = "https://www.youtube.com"),
@@ -98,7 +102,7 @@ object ToolPrefs {
         ToolSpec("yt_year", "▶y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D", faviconUrl = "https://www.youtube.com")
     )
 
-    // Dedicated Markdown Folder Submenu items
+    // Dedicated Markdown Folder Submenu items (unique glyphs)
     val markdownSubTools = listOf(
         ToolSpec("md_bold", "B", "MD BOLD (**)"),
         ToolSpec("md_italic", "I", "MD ITALIC (*)"),
@@ -110,15 +114,15 @@ object ToolPrefs {
         ToolSpec("md_task", "☐", "MD TASK LIST (- [ ])"),
         ToolSpec("md_h2", "H2", "MD HEADING (##)"),
         ToolSpec("md_spoiler", "▒▒", "MD SPOILER (||)"),
-        ToolSpec("md_table", "⊞", "MD TABLE (2×2)")
+        ToolSpec("md_table", "▦", "MD TABLE (2×2)")
     )
 
-    // Dedicated Regex & Developer Pipe Submenu items
+    // Dedicated Regex & Developer Pipe Submenu items (unique glyphs)
     val regexPipeSubTools = listOf(
-        ToolSpec("pipe_json_pretty", "{}", "JSON PRETTY"),
-        ToolSpec("pipe_json_min", "{}", "JSON MINIFY"),
-        ToolSpec("pipe_url_enc", "%", "URL ENCODE"),
-        ToolSpec("pipe_url_dec", "%", "URL DECODE"),
+        ToolSpec("pipe_json_pretty", "{+}", "JSON PRETTY"),
+        ToolSpec("pipe_json_min", "{-}", "JSON MINIFY"),
+        ToolSpec("pipe_url_enc", "%↑", "URL ENCODE"),
+        ToolSpec("pipe_url_dec", "%↓", "URL DECODE"),
         ToolSpec("pipe_b64_enc", "64", "BASE64 ENCODE"),
         ToolSpec("pipe_sha256", "#", "SHA-256 HASH"),
         ToolSpec("pipe_rot13", "13", "ROT13 CIPHER"),
@@ -503,6 +507,112 @@ object ToolPrefs {
             .apply()
     }
 
+    // --- Up to 2 Custom Icon-Only Tool Rows (Row 1 & Row 2, similar to Copy/Paste/Cut/Select All) ---
+    private fun ensureDefaultIconRows(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean(KEY_ICON_ROWS_INIT, false)) {
+            prefs.edit()
+                .putString(KEY_ICON_ROW_1, "web_search_folder,youtube_folder,translate,incognito")
+                .putString(KEY_ICON_ROW_2, "")
+                .putBoolean(KEY_ICON_ROWS_INIT, true)
+                .apply()
+        }
+    }
+
+    fun getIconRowIds(context: Context, rowNumber: Int): List<String> {
+        ensureDefaultIconRows(context)
+        val key = if (rowNumber == 1) KEY_ICON_ROW_1 else KEY_ICON_ROW_2
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(key, "") ?: ""
+        return raw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "copy" }
+            .distinct()
+            .take(MAX_TOOLS_PER_ICON_ROW)
+    }
+
+    fun setIconRowIds(context: Context, rowNumber: Int, ids: List<String>) {
+        ensureDefaultIconRows(context)
+        val clean = ids.map { it.trim() }
+            .filter { it.isNotEmpty() && it != "copy" }
+            .distinct()
+            .take(MAX_TOOLS_PER_ICON_ROW)
+        val key = if (rowNumber == 1) KEY_ICON_ROW_1 else KEY_ICON_ROW_2
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(key, clean.joinToString(","))
+            .apply()
+    }
+
+    fun getIconRowTools(context: Context, rowNumber: Int): List<ToolSpec> {
+        val ids = getIconRowIds(context, rowNumber)
+        if (ids.isEmpty()) return emptyList()
+        val allMap = loadAllTools(context).associateBy { it.id }
+        return ids.mapNotNull { id ->
+            val spec = allMap[id]
+            if (spec != null && !isToolHidden(context, id)) spec else null
+        }
+    }
+
+    fun getToolIconRow(context: Context, toolId: String): Int {
+        if (toolId == "copy") return 0
+        if (toolId in getIconRowIds(context, 1)) return 1
+        if (toolId in getIconRowIds(context, 2)) return 2
+        return 0
+    }
+
+    fun setToolIconRow(context: Context, toolId: String, targetRow: Int): Boolean {
+        if (toolId == "copy") return false
+        val r1 = getIconRowIds(context, 1).toMutableList()
+        val r2 = getIconRowIds(context, 2).toMutableList()
+        r1.remove(toolId)
+        r2.remove(toolId)
+
+        when (targetRow) {
+            1 -> {
+                if (r1.size >= MAX_TOOLS_PER_ICON_ROW) return false
+                r1.add(toolId)
+            }
+            2 -> {
+                if (r2.size >= MAX_TOOLS_PER_ICON_ROW) return false
+                r2.add(toolId)
+            }
+        }
+        setIconRowIds(context, 1, r1)
+        setIconRowIds(context, 2, r2)
+        return true
+    }
+
+    fun cycleToolIconRow(context: Context, toolId: String): Int {
+        if (toolId == "copy") return 0
+        val current = getToolIconRow(context, toolId)
+        val r1Count = getIconRowIds(context, 1).count { it != toolId }
+        val r2Count = getIconRowIds(context, 2).count { it != toolId }
+
+        val candidates = when (current) {
+            0 -> listOf(1, 2, 0)
+            1 -> listOf(2, 0)
+            else -> listOf(0, 1)
+        }
+        for (next in candidates) {
+            if (next == 1 && r1Count >= MAX_TOOLS_PER_ICON_ROW) continue
+            if (next == 2 && r2Count >= MAX_TOOLS_PER_ICON_ROW) continue
+            setToolIconRow(context, toolId, next)
+            return next
+        }
+        setToolIconRow(context, toolId, 0)
+        return 0
+    }
+
+    fun clearIconRow(context: Context, rowNumber: Int) {
+        setIconRowIds(context, rowNumber, emptyList())
+    }
+
+    fun applyDefaultTwoIconRowsPreset(context: Context) {
+        ensureDefaultIconRows(context)
+        setIconRowIds(context, 1, listOf("web_search_folder", "youtube_folder", "translate", "incognito"))
+        setIconRowIds(context, 2, listOf("clip_history", "markdown_folder", "define", "qr"))
+    }
+
     fun isSortMostUsed(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getBoolean(KEY_SORT_MOST_USED, true)
@@ -597,10 +707,13 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "2.2.0")
+        root.put("version", "2.3.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))
+        root.put("grid_two_columns", isTwoColumnGrid(context))
+        root.put("icon_row_1", getIconRowIds(context, 1).joinToString(","))
+        root.put("icon_row_2", getIconRowIds(context, 2).joinToString(","))
         root.put("manual_order", prefs.getString(KEY_ORDER, "") ?: "")
         root.put("blacklisted_pkgs", prefs.getString(KEY_BLACKLIST, "") ?: "")
         root.put("rules_txt", if (rulesFile.exists()) rulesFile.readText() else "")
@@ -636,6 +749,17 @@ object ToolPrefs {
             }
             if (root.has("snap_edge_left")) {
                 editor.putBoolean(KEY_EDGE_LEFT, root.optBoolean("snap_edge_left", false))
+            }
+            if (root.has("grid_two_columns")) {
+                editor.putBoolean(KEY_GRID_COLUMNS, root.optBoolean("grid_two_columns", false))
+            }
+            if (root.has("icon_row_1")) {
+                editor.putString(KEY_ICON_ROW_1, root.optString("icon_row_1", ""))
+                editor.putBoolean(KEY_ICON_ROWS_INIT, true)
+            }
+            if (root.has("icon_row_2")) {
+                editor.putString(KEY_ICON_ROW_2, root.optString("icon_row_2", ""))
+                editor.putBoolean(KEY_ICON_ROWS_INIT, true)
             }
             if (root.has("manual_order")) {
                 editor.putString(KEY_ORDER, root.optString("manual_order", ""))
