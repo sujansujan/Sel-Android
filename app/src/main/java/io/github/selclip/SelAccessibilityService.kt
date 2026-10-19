@@ -1935,17 +1935,19 @@ class SelAccessibilityService : AccessibilityService() {
         if (targetNode != null) {
             val full = targetNode.text?.toString() ?: ""
             var ok = false
-            if (Build.VERSION.SDK_INT >= 33) {
-                ok = runCatching {
-                    targetNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SELECT_ALL.id)
-                }.getOrDefault(false)
-            }
-            if (!ok && full.isNotEmpty()) {
+            if (full.isNotEmpty()) {
                 val args = Bundle().apply {
                     putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
                     putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, full.length)
                 }
-                ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args) }.getOrDefault(false)
+                ok = runCatching {
+                    targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
+                }.getOrDefault(false)
+            }
+            if (!ok) {
+                ok = runCatching {
+                    targetNode.performAction(android.R.id.selectAll)
+                }.getOrDefault(false)
             }
             if (full.isNotEmpty()) {
                 selectedText = full
