@@ -584,7 +584,7 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "1.9.0")
+        root.put("version", "2.0.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))
