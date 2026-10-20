@@ -3582,17 +3582,12 @@ class SelAccessibilityService : AccessibilityService() {
         mainHandler.postDelayed({ runStep() }, 220L)
     }
 
-    private fun clickNodeOrParent(node: AccessibilityNodeInfo?): Boolean {
-        var cur = node
-        var depth = 0
-        while (cur != null && depth < 5) {
-            if (cur.isClickable && runCatching { cur.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) {
-                return true
-            }
-            cur = cur.parent
-            depth++
+    private tailrec fun clickNodeOrParent(node: AccessibilityNodeInfo?, depth: Int = 0): Boolean {
+        if (node == null || depth >= 5) return false
+        if (node.isClickable && runCatching { node.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) {
+            return true
         }
-        return false
+        return clickNodeOrParent(node.parent, depth + 1)
     }
 
     private fun findNodeByViewIdOrDesc(
