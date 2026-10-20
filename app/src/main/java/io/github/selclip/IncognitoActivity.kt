@@ -45,7 +45,7 @@ class IncognitoActivity : Activity() {
         }
 
         val badge = TextView(this).apply {
-            text = "🕵 INCOGNITO"
+            text = "[INC] INCOGNITO"
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setTextColor(Color.parseColor("#00FF66"))
@@ -66,7 +66,7 @@ class IncognitoActivity : Activity() {
         }
 
         val extBtn = TextView(this).apply {
-            text = "[↗ EXT]"
+            text = "[EXT]"
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             setTextColor(Color.parseColor("#CCCCCC"))
@@ -78,7 +78,7 @@ class IncognitoActivity : Activity() {
         }
 
         val closeBtn = TextView(this).apply {
-            text = "[ × WIPE ]"
+            text = "[ X WIPE ]"
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(Color.parseColor("#FF6666"))

@@ -61,87 +61,113 @@ object ToolPrefs {
     private const val MAX_CLIPS = 20
     const val MAX_TOOLS_PER_ICON_ROW = 5
 
-    // Every built-in tool has a 100% unique, non-overlapping glyph across the entire app
+    // Every built-in tool has a 100% unique plain-text ASCII symbol or 1-4 letter code (zero emojis)
     val builtInTools = listOf(
-        ToolSpec("copy", "⎘", "COPY TEXT"),
-        ToolSpec("screen_grab", "⌖", "LENS GRAB"),
-        ToolSpec("web_search_folder", "🔎", "WEB SEARCH ▸"),
-        ToolSpec("youtube_folder", "▶", "YOUTUBE ▸", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("clip_history", "🗂", "CLIP HISTORY ▸"),
-        ToolSpec("markdown_folder", "M↓", "MARKDOWN ▸"),
-        ToolSpec("regex_pipe", "λ", "REGEX / PIPE ▸"),
-        ToolSpec("define", "📖", "DEFINE WORD"),
-        ToolSpec("translate", "🌐", "TRANSLATE"),
-        ToolSpec("qr", "▣", "QR CODE"),
-        ToolSpec("magnet", "🧲", "HASH → MAGNET"),
-        ToolSpec("clean_url", "⌫", "CLEAN URL"),
-        ToolSpec("extract", "＠", "EXTRACT LINKS"),
-        ToolSpec("clean_text", "🧹", "CLEAN TEXT"),
-        ToolSpec("sort", "⇅", "SORT LINES"),
+        ToolSpec("copy", "CPY", "COPY TEXT"),
+        ToolSpec("screen_grab", "[+]", "LENS GRAB"),
+        ToolSpec("web_search_folder", "WEB", "WEB SEARCH >"),
+        ToolSpec("youtube_folder", "YT", "YOUTUBE >", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("clip_history", "CLP", "CLIP HISTORY >"),
+        ToolSpec("markdown_folder", "MD", "MARKDOWN >"),
+        ToolSpec("regex_pipe", "|>", "REGEX / PIPE >"),
+        ToolSpec("define", "DEF", "DEFINE WORD"),
+        ToolSpec("translate", "TRN", "TRANSLATE"),
+        ToolSpec("qr", "[#]", "QR CODE"),
+        ToolSpec("magnet", "MAG", "HASH -> MAGNET"),
+        ToolSpec("clean_url", "URL", "CLEAN URL"),
+        ToolSpec("extract", "@#", "EXTRACT LINKS"),
+        ToolSpec("clean_text", "CLR", "CLEAN TEXT"),
+        ToolSpec("sort", "A-Z", "SORT LINES"),
         ToolSpec("case", "Aa", "CYCLE CASE"),
-        ToolSpec("incognito", "🕵", "INCOGNITO"),
-        ToolSpec("speak", "🔊", "SPEAK ALOUD"),
-        ToolSpec("log", "⊕", "APPEND LOG")
+        ToolSpec("incognito", "INC", "INCOGNITO"),
+        ToolSpec("speak", "TTS", "SPEAK ALOUD"),
+        ToolSpec("log", "LOG", "APPEND LOG")
     )
 
-    // Dedicated Web Search Subgroup with Top 4 Search Engines (unique glyphs + live site favicons)
+    // Dedicated Web Search Subgroup with Top 4 Search Engines (1-4 letter plain-text codes)
     val webSearchSubTools = listOf(
-        ToolSpec("web_google", "G", "GOOGLE", customTarget = "https://www.google.com/search?q={text}", faviconUrl = "https://www.google.com"),
-        ToolSpec("web_ddg", "D", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}", faviconUrl = "https://duckduckgo.com"),
-        ToolSpec("web_bing", "Bi", "BING", customTarget = "https://www.bing.com/search?q={text}", faviconUrl = "https://www.bing.com"),
-        ToolSpec("web_brave", "Br", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
+        ToolSpec("web_google", "GGL", "GOOGLE", customTarget = "https://www.google.com/search?q={text}", faviconUrl = "https://www.google.com"),
+        ToolSpec("web_ddg", "DDG", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}", faviconUrl = "https://duckduckgo.com"),
+        ToolSpec("web_bing", "BNG", "BING", customTarget = "https://www.bing.com/search?q={text}", faviconUrl = "https://www.bing.com"),
+        ToolSpec("web_brave", "BRV", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
     )
 
-    // Dedicated YouTube Subfolder items (unique glyphs)
+    // Dedicated YouTube Subfolder items (plain-text ASCII codes)
     val youtubeSubTools = listOf(
-        ToolSpec("yt_all", "▶*", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_hour", "▶h", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_today", "▶d", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_week", "▶w", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_month", "▶m", "YT THIS MONTH", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBA%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_year", "▶y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D", faviconUrl = "https://www.youtube.com")
+        ToolSpec("yt_all", "YT*", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_hour", "1H", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_today", "24H", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_week", "7D", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_month", "30D", "YT THIS MONTH", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBA%3D%3D", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_year", "1Y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D", faviconUrl = "https://www.youtube.com")
     )
 
-    // Dedicated Markdown Folder Submenu items (unique glyphs)
+    // Dedicated Markdown Folder Submenu items (pure ASCII markdown syntax codes)
     val markdownSubTools = listOf(
-        ToolSpec("md_bold", "B", "MD BOLD (**)"),
-        ToolSpec("md_italic", "I", "MD ITALIC (*)"),
-        ToolSpec("md_code", "⟨⟩", "MD CODE (` / ```)"),
-        ToolSpec("md_quote", "❝", "MD QUOTE (>)"),
-        ToolSpec("md_link", "🔗", "MD LINK ([txt](url))"),
-        ToolSpec("md_strike", "S̶", "MD STRIKE (~~)"),
-        ToolSpec("md_bullet", "•", "MD BULLET LIST (-)"),
-        ToolSpec("md_task", "☐", "MD TASK LIST (- [ ])"),
-        ToolSpec("md_h2", "H2", "MD HEADING (##)"),
-        ToolSpec("md_spoiler", "▒▒", "MD SPOILER (||)"),
-        ToolSpec("md_table", "▦", "MD TABLE (2×2)")
+        ToolSpec("md_bold", "**", "MD BOLD (**)"),
+        ToolSpec("md_italic", "*", "MD ITALIC (*)"),
+        ToolSpec("md_code", "``", "MD CODE (` / ```)"),
+        ToolSpec("md_quote", ">", "MD QUOTE (>)"),
+        ToolSpec("md_link", "[]", "MD LINK ([txt](url))"),
+        ToolSpec("md_strike", "~~", "MD STRIKE (~~)"),
+        ToolSpec("md_bullet", "-", "MD BULLET LIST (-)"),
+        ToolSpec("md_task", "[ ]", "MD TASK LIST (- [ ])"),
+        ToolSpec("md_h2", "##", "MD HEADING (##)"),
+        ToolSpec("md_spoiler", "||", "MD SPOILER (||)"),
+        ToolSpec("md_table", "|T|", "MD TABLE (2x2)")
     )
 
-    // Dedicated Regex & Developer Pipe Submenu items (unique glyphs)
+    // Dedicated Regex & Developer Pipe Submenu items (pure ASCII codes)
     val regexPipeSubTools = listOf(
         ToolSpec("pipe_json_pretty", "{+}", "JSON PRETTY"),
         ToolSpec("pipe_json_min", "{-}", "JSON MINIFY"),
-        ToolSpec("pipe_url_enc", "%↑", "URL ENCODE"),
-        ToolSpec("pipe_url_dec", "%↓", "URL DECODE"),
-        ToolSpec("pipe_b64_enc", "64", "BASE64 ENCODE"),
-        ToolSpec("pipe_sha256", "#", "SHA-256 HASH"),
-        ToolSpec("pipe_rot13", "13", "ROT13 CIPHER"),
+        ToolSpec("pipe_url_enc", "%E", "URL ENCODE"),
+        ToolSpec("pipe_url_dec", "%D", "URL DECODE"),
+        ToolSpec("pipe_b64_enc", "B64", "BASE64 ENCODE"),
+        ToolSpec("pipe_sha256", "SHA", "SHA-256 HASH"),
+        ToolSpec("pipe_rot13", "R13", "ROT13 CIPHER"),
         ToolSpec("pipe_num_lines", "1.", "NUMBER LINES"),
-        ToolSpec("pipe_strip_html", "⟨/⟩", "STRIP HTML TAGS")
+        ToolSpec("pipe_strip_html", "</>", "STRIP HTML TAGS")
     )
 
+    fun toPlainAsciiCode(rawGlyph: String, rawLabel: String, target: String? = null): String {
+        val cleanLabel = rawLabel.substringAfter("/").trim().uppercase()
+        val lowerTarget = target?.lowercase().orEmpty()
+        if (cleanLabel.contains("WIKIPEDIA") || lowerTarget.contains("wikipedia.org")) {
+            if (rawGlyph.equals("W", ignoreCase = true) || rawGlyph.isBlank()) return "WIKI"
+        }
+        val asciiOnly = rawGlyph.filter { it.code in 33..126 }.take(4)
+        if (asciiOnly.isNotEmpty()) return asciiOnly.uppercase()
+
+        return when {
+            lowerTarget.contains("youtube.") || lowerTarget.contains("youtu.be") -> "YT"
+            lowerTarget.contains("wikipedia.") -> "WIKI"
+            lowerTarget.contains("google.") -> "GGL"
+            lowerTarget.contains("duckduckgo.") -> "DDG"
+            lowerTarget.contains("bing.") -> "BNG"
+            lowerTarget.contains("brave.") -> "BRV"
+            lowerTarget.contains("github.") -> "GH"
+            lowerTarget.contains("stackoverflow.") -> "SO"
+            lowerTarget.contains("reddit.") -> "RDT"
+            lowerTarget.contains("perplexity.") -> "PPLX"
+            lowerTarget.contains("kagi.") -> "KAGI"
+            lowerTarget.contains("startpage.") -> "SP"
+            cleanLabel.isNotEmpty() -> cleanLabel.filter { it.isLetterOrDigit() }.take(4).ifEmpty { "CMD" }
+            else -> "CMD"
+        }
+    }
+
     fun defaultRulesText(): String = """
-        # Format: GLYPH | LABEL | TARGET ({text} = selection)
+        # Format: CODE (1-4 ASCII chars) | LABEL | TARGET ({text} = selection)
         # Submenu tips:
-        # - Prefix with 'SEARCH/' or 'WEB/' to place inside ↗ WEB SEARCH ▸ (auto-loads site favicon!)
-        # - Prefix with 'YT/' or 'YOUTUBE/' to place inside ▶ YOUTUBE ▸
-        # - Prefix with 'MD ' to place inside M↓ MARKDOWN ▸
-        # - Prefix with 'PIPE/' or use s/find/replace/g to place inside λ REGEX / PIPE ▸
-        # - Any http/https rule automatically fetches & caches its own website favicon!
-        W | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}
+        # - Prefix with 'SEARCH/' or 'WEB/' to place inside WEB SEARCH >
+        # - Prefix with 'YT/' or 'YOUTUBE/' to place inside YOUTUBE >
+        # - Prefix with 'MD ' to place inside MARKDOWN >
+        # - Prefix with 'PIPE/' or use s/find/replace/g to place inside REGEX / PIPE >
+        WIKI | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}
         GH | DEV/GITHUB | https://github.com/search?q={text}
         SO | DEV/STACKOVERFLOW | https://stackoverflow.com/search?q={text}
-        λ | PIPE/DIGITS ONLY | s/[^0-9]+//g
+        0-9 | PIPE/DIGITS ONLY | s/[^0-9]+//g
     """.trimIndent()
 
     fun ensureRulesFile(context: Context): File {
@@ -164,7 +190,7 @@ object ToolPrefs {
                 if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                     val parts = trimmed.split("|").map { it.trim() }
                     if (parts.size >= 3) {
-                        val glyph = parts[0].take(2)
+                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
 
@@ -188,8 +214,8 @@ object ToolPrefs {
                                     list.add(
                                         ToolSpec(
                                             id = "folder_custom_$folder",
-                                            glyph = "📁",
-                                            label = "$folder ▸",
+                                            glyph = "DIR",
+                                            label = "$folder >",
                                             folderName = folder
                                         )
                                     )
@@ -225,7 +251,7 @@ object ToolPrefs {
                 if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                     val parts = trimmed.split("|").map { it.trim() }
                     if (parts.size >= 3) {
-                        val glyph = parts[0].take(2)
+                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
                         if (rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/")) {
@@ -262,7 +288,7 @@ object ToolPrefs {
                 if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                     val parts = trimmed.split("|").map { it.trim() }
                     if (parts.size >= 3) {
-                        val glyph = parts[0].take(2)
+                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
                         if (rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/")) {
@@ -293,7 +319,7 @@ object ToolPrefs {
                 if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                     val parts = trimmed.split("|").map { it.trim() }
                     if (parts.size >= 3) {
-                        val glyph = parts[0].take(2)
+                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
                         if (rawLabel.contains("/")) {
@@ -331,7 +357,7 @@ object ToolPrefs {
                 if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                     val parts = trimmed.split("|").map { it.trim() }
                     if (parts.size >= 3) {
-                        val glyph = parts[0].take(2)
+                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
                         if (rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/")) {
@@ -366,7 +392,7 @@ object ToolPrefs {
                 if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                     val parts = trimmed.split("|").map { it.trim() }
                     if (parts.size >= 3) {
-                        val glyph = parts[0].take(2)
+                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
                         if (rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/")) {

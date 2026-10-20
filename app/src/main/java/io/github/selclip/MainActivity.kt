@@ -88,7 +88,7 @@ class MainActivity : Activity() {
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
-        topHeader.addView(label("+── v2.3 · +2 custom icon rows · unique glyphs · external incognito ──+", 10.5f, "#777777"))
+        topHeader.addView(label("+-- v2.4 · pure plain-text ascii popup · +2 code rows · ext incognito --+", 10.5f, "#777777"))
         root.addView(topHeader)
 
         // 2. Horizontal Terminal Tab Bar
@@ -223,11 +223,11 @@ class MainActivity : Activity() {
                 setPadding(0, dp(8), 0, dp(14))
             }
 
-            rowBtns.addView(buttonPill("[ ⌖ LAUNCH LENS GRAB ]", "#00FF66") {
+            rowBtns.addView(buttonPill("[ [+] LAUNCH LENS GRAB ]", "#00FF66") {
                 startActivity(Intent(this@MainActivity, ScreenGrabTriggerActivity::class.java))
             }.apply { setPadding(0, dp(4), dp(14), dp(4)) })
 
-            rowBtns.addView(buttonPill("[ ⎘ COPY INTENT ]", "#CCCCCC") {
+            rowBtns.addView(buttonPill("[ CPY INTENT ]", "#CCCCCC") {
                 copyPlain("io.github.selclip.ACTION_GRAB_SCREEN", "Copied intent action")
             }.apply { setPadding(0, dp(4), 0, dp(4)) })
 
@@ -405,7 +405,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(6), 0, 0)
             }
 
-            addEngineBtnsRow.addView(buttonPill("[ + ADD TO 🔎 WEB SEARCH ▸ ]", "#00FF66") {
+            addEngineBtnsRow.addView(buttonPill("[ + ADD TO WEB SEARCH > ]", "#00FF66") {
                 val rawName = engineNameInput.text.toString().trim().uppercase().removePrefix("SEARCH/").removePrefix("WEB/")
                 var rawUrl = engineUrlInput.text.toString().trim()
                 if (rawName.isNotEmpty() && rawUrl.isNotEmpty()) {
@@ -876,18 +876,19 @@ class MainActivity : Activity() {
             iconRowsSummaryContainer.removeAllViews()
             val r1Tools = ToolPrefs.getIconRowTools(this, 1)
             val r2Tools = ToolPrefs.getIconRowTools(this, 2)
+            val tok = { g: String -> if (g.startsWith("[") && g.endsWith("]")) g else "[$g]" }
 
             iconRowsSummaryContainer.addView(
-                label("EDIT ROW │ [ ⎘ ]  [ 📋 ]  [ ✂ ]  [ ⬚ ]   (Copy · Paste · Cut · Select All)", 11f, "#AAAAAA").apply {
+                label("EDIT ROW | [CPY]  [PST]  [CUT]  [ALL]   (Copy · Paste · Cut · Select All)", 11f, "#AAAAAA").apply {
                     setPadding(0, dp(2), 0, dp(4))
                 }
             )
 
             val r1Text = if (r1Tools.isEmpty()) {
-                "ROW 1    │ (Empty — tap [LIST] on any tool below to assign)"
+                "ROW 1    | (Empty — tap [LIST] on any tool below to assign)"
             } else {
-                "ROW 1    │ " + r1Tools.joinToString("  ") { "[ ${it.glyph} ]" } +
-                    "   (" + r1Tools.joinToString(" · ") { it.label.replace(" ▸", "") } + ")"
+                "ROW 1    | " + r1Tools.joinToString("  ") { tok(it.glyph) } +
+                    "   (" + r1Tools.joinToString(" · ") { it.label.replace(" >", "") } + ")"
             }
             iconRowsSummaryContainer.addView(
                 label(r1Text, 11.5f, if (r1Tools.isEmpty()) "#666666" else "#00FF66").apply {
@@ -896,10 +897,10 @@ class MainActivity : Activity() {
             )
 
             val r2Text = if (r2Tools.isEmpty()) {
-                "ROW 2    │ (Empty — tap [★R1] on any tool below to move to Row 2)"
+                "ROW 2    | (Empty — tap [*R1] on any tool below to move to Row 2)"
             } else {
-                "ROW 2    │ " + r2Tools.joinToString("  ") { "[ ${it.glyph} ]" } +
-                    "   (" + r2Tools.joinToString(" · ") { it.label.replace(" ▸", "") } + ")"
+                "ROW 2    | " + r2Tools.joinToString("  ") { tok(it.glyph) } +
+                    "   (" + r2Tools.joinToString(" · ") { it.label.replace(" >", "") } + ")"
             }
             iconRowsSummaryContainer.addView(
                 label(r2Text, 11.5f, if (r2Tools.isEmpty()) "#666666" else "#66CCFF").apply {
@@ -940,28 +941,11 @@ class MainActivity : Activity() {
                 setPadding(dp(6), dp(4), dp(12), dp(4))
             }
 
-            val favUrl = tool.faviconUrl ?: tool.customTarget?.takeIf {
-                it.startsWith("http://", true) || it.startsWith("https://", true)
-            }
-            val favView: View? = if (!favUrl.isNullOrBlank() && FaviconManager.extractDomain(favUrl) != null) {
-                val sz = dp(18)
-                ImageView(this).apply {
-                    this.layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
-                        marginEnd = dp(8)
-                    }
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                }.also { img ->
-                    FaviconManager.bindFavicon(this, img, favUrl, tool.glyph, sz)
-                }
-            } else {
-                null
-            }
-
             val count = ToolPrefs.getUseCount(this, tool.id)
             val numStr = "%02d".format(idx + 1)
+            val codePad = tool.glyph.take(4).padEnd(4, ' ')
             val nameView = TextView(this).apply {
-                val glyphPrefix = "${tool.glyph}  "
-                text = "$numStr │ $glyphPrefix${tool.label}" + if (count > 0) "  [$count×]" else ""
+                text = "$numStr | $codePad | ${tool.label}" + if (count > 0) "  ($count)" else ""
                 typeface = Typeface.MONOSPACE
                 textSize = 11.5f
                 setTextColor(Color.parseColor(if (hidden) "#555555" else "#F0F0F0"))
@@ -973,7 +957,6 @@ class MainActivity : Activity() {
             }
 
             row.addView(dragHandle)
-            if (favView != null) row.addView(favView)
             row.addView(nameView)
 
             if (tool.id != "copy") {

@@ -329,23 +329,23 @@ class LensOverlayView(
         if (Regex("\\b([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[A-Za-z2-7]{32})\\b").containsMatchIn(trimmed) ||
             trimmed.startsWith("magnet:?", ignoreCase = true)
         ) {
-            return "magnet" to "🧲 MAGNET"
+            return "magnet" to "MAG MAGNET"
         }
         if (!trimmed.contains(" ") && (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true))) {
             return if (trimmed.contains("?") || trimmed.contains("&")) {
-                "clean_url" to "⌫ CLEAN URL"
+                "clean_url" to "URL CLEAN"
             } else {
-                "open_url" to "↗ OPEN URL"
+                "open_url" to "-> OPEN URL"
             }
         }
         if (Regex("^\\+?[0-9][0-9\\- ()]{6,16}[0-9]$").matches(trimmed)) {
-            return "dial" to "📞 DIAL"
+            return "dial" to "TEL DIAL"
         }
         val wordCount = trimmed.split(Regex("\\s+")).count { it.isNotEmpty() }
         if (wordCount in 1..3 && trimmed.any { it.isLetter() } && trimmed.length <= 36) {
-            return "define" to "📖 DEFINE"
+            return "define" to "DEF DEFINE"
         }
-        return "tools" to "⚡ TOOLS ▸"
+        return "tools" to "TOOLS >"
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -438,9 +438,9 @@ class LensOverlayView(
         }
 
         val hudTitle = if (selectedCount > 0) {
-            "⌖ ${selectedCount}W SELECTED"
+            "[+] ${selectedCount}W SELECTED"
         } else {
-            "⌖ LENS (${words.size}W)"
+            "[+] LENS (${words.size}W)"
         }
         val titleY = topHudRect.centerY() - (hudTitlePaint.descent() + hudTitlePaint.ascent()) / 2f
         canvas.drawText(hudTitle, topHudRect.left + dp(10f), titleY, hudTitlePaint)
@@ -480,7 +480,7 @@ class LensOverlayView(
         if (multiSelectMode) {
             canvas.drawRoundRect(topMultiBtnRect, dp(3f), dp(3f), btnPrimaryBgPaint)
             canvas.drawText(
-                "+ADD✓",
+                "+ADD*",
                 topMultiBtnRect.centerX(),
                 topMultiBtnRect.centerY() - (btnPrimaryTextPaint.descent() + btnPrimaryTextPaint.ascent()) / 2f,
                 btnPrimaryTextPaint
@@ -500,7 +500,7 @@ class LensOverlayView(
         canvas.drawRoundRect(topSnapBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topSnapBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
-            "📸",
+            "IMG",
             topSnapBtnRect.centerX(),
             topSnapBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
             btnSecondaryTextPaint
@@ -520,7 +520,7 @@ class LensOverlayView(
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
-            "× ESC",
+            "X ESC",
             topEscBtnRect.centerX(),
             topEscBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
             btnSecondaryTextPaint
@@ -565,7 +565,7 @@ class LensOverlayView(
             // Primary green [ ⎘ COPY ] button
             canvas.drawRoundRect(btnCopyRect, dp(3f), dp(3f), btnPrimaryBgPaint)
             val btnTextY = btnCopyRect.centerY() - (btnPrimaryTextPaint.descent() + btnPrimaryTextPaint.ascent()) / 2f
-            canvas.drawText("⎘ COPY", btnCopyRect.centerX(), btnTextY, btnPrimaryTextPaint)
+            canvas.drawText("[CPY]", btnCopyRect.centerX(), btnTextY, btnPrimaryTextPaint)
 
             // Context-Aware Smart Pill ([🧲 MAGNET], [⌫ CLEAN URL], [📖 DEFINE], [📞 DIAL], or [⚡ TOOLS ▸])
             canvas.drawRoundRect(btnSmartRect, dp(3f), dp(3f), btnSecondaryBgPaint)
@@ -573,7 +573,7 @@ class LensOverlayView(
             canvas.drawText(smartLabel, btnSmartRect.centerX(), btnTextY, btnSecondaryTextPaint)
 
             // [ ⚡ TOOLS ▸ ] or [ ↗ SEARCH ] button
-            val thirdLabel = if (smartLabel == "⚡ TOOLS ▸") "↗ SEARCH" else "⚡ TOOLS ▸"
+            val thirdLabel = if (smartLabel == "TOOLS >") "WEB >" else "TOOLS >"
             canvas.drawRoundRect(btnSearchRect, dp(3f), dp(3f), btnSecondaryBgPaint)
             canvas.drawRoundRect(btnSearchRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
             canvas.drawText(thirdLabel, btnSearchRect.centerX(), btnTextY, btnSecondaryTextPaint)
@@ -581,7 +581,7 @@ class LensOverlayView(
             // [ ✕ ] clear selection button
             canvas.drawRoundRect(btnClearRect, dp(3f), dp(3f), btnSecondaryBgPaint)
             canvas.drawRoundRect(btnClearRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
-            canvas.drawText("✕", btnClearRect.centerX(), btnTextY, btnSecondaryTextPaint)
+            canvas.drawText("X", btnClearRect.centerX(), btnTextY, btnSecondaryTextPaint)
         }
     }
 
