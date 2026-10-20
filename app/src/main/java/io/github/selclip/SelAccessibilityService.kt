@@ -1194,22 +1194,23 @@ class SelAccessibilityService : AccessibilityService() {
         anchoredAboveSelection = placeAbove
 
         val chosenSpace = if (placeAbove) spaceAbove else spaceBelow
-        currentMaxTotalHeight = chosenSpace.coerceIn(dp(110), (realH * 0.43f).toInt())
-        val headerHeightEst = dp(52)
-        dynamicMaxScrollHeight = (currentMaxTotalHeight - headerHeightEst).coerceIn(dp(58), dp(330))
+        currentMaxTotalHeight = chosenSpace.coerceIn(dp(100), (realH * 0.40f).toInt())
+        val headerHeightEst = dp(32)
+        dynamicMaxScrollHeight = (currentMaxTotalHeight - headerHeightEst).coerceIn(dp(54), dp(290))
 
         val tightVertical = chosenSpace < dp(220)
         val twoColGrid = ToolPrefs.isTwoColumnGrid(this) && currentMode == PopupMode.ACTIONS
         dynamicMinPopupWidth = when {
-            twoColGrid -> dp(276)
-            tightVertical -> dp(242)
-            else -> dp(236)
+            currentMode != PopupMode.ACTIONS -> dp(208)
+            twoColGrid -> dp(212)
+            tightVertical -> dp(178)
+            else -> dp(174)
         }
         dynamicMaxPopupWidth = when {
-            currentMode != PopupMode.ACTIONS -> dp(300)
-            twoColGrid -> dp(298)
-            tightVertical -> dp(280)
-            else -> dp(272)
+            currentMode != PopupMode.ACTIONS -> dp(252)
+            twoColGrid -> dp(236)
+            tightVertical -> dp(208)
+            else -> dp(204)
         }.coerceAtMost(dm.widthPixels - dp(20))
 
         if (!userManuallyDragged) {
@@ -1323,23 +1324,24 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Pure Plain-Text Terminal Header Bar: "12W:64C ^   [2C] [_] [CFG] [X]"
+        // Compact Plain-Text Terminal Header Bar: "1W:4C v  [1C] [_] [*] [X]"
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Color.parseColor("#0E0E0E"))
-            setPadding(dp(10), dp(8), dp(8), dp(6))
+            setPadding(dp(6), dp(3), dp(4), dp(3))
         }
 
         val posGlyph = if (anchoredAboveSelection) "^" else "v"
         val statsLabel = TextView(this).apply {
             text = "${words}W:${chars}C $posGlyph"
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(Color.parseColor("#888888"))
+            includeFontPadding = false
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, 0, dp(4), 0)
+            setPadding(0, 0, dp(2), 0)
             this.layoutParams = LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1355,11 +1357,11 @@ class SelAccessibilityService : AccessibilityService() {
             return TextView(this).apply {
                 text = textStr
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
                 setTextColor(Color.parseColor(fgHex))
+                includeFontPadding = false
                 gravity = Gravity.CENTER
-                minHeight = dp(30)
-                setPadding(dp(5), dp(4), dp(5), dp(4))
+                setPadding(dp(3), dp(2), dp(3), dp(2))
                 background = StateListDrawable().apply {
                     addState(
                         intArrayOf(android.R.attr.state_pressed),
@@ -1419,13 +1421,13 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }.apply {
             isVerticalScrollBarEnabled = true
-            setPadding(0, dp(2), 0, dp(4))
+            setPadding(0, 0, 0, 0)
             clipToPadding = false
         }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(2), dp(8), dp(6))
+            setPadding(dp(4), dp(1), dp(4), dp(2))
         }
 
         scrollView.addView(container)
@@ -1700,7 +1702,7 @@ class SelAccessibilityService : AccessibilityService() {
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(2), dp(2), dp(2), dp(2))
+            setPadding(0, 0, 0, 0)
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1716,12 +1718,12 @@ class SelAccessibilityService : AccessibilityService() {
             return TextView(this).apply {
                 text = token
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                 setTextColor(Color.parseColor(fgHex))
+                includeFontPadding = false
                 gravity = Gravity.CENTER
                 isSingleLine = true
-                minimumHeight = dp(38)
-                setPadding(dp(2), dp(8), dp(2), dp(8))
+                setPadding(dp(1), dp(4), dp(1), dp(4))
                 this.layoutParams = LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1830,7 +1832,7 @@ class SelAccessibilityService : AccessibilityService() {
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(2), dp(1), dp(2), dp(1))
+            setPadding(0, 0, 0, 0)
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1846,10 +1848,10 @@ class SelAccessibilityService : AccessibilityService() {
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                 setTextColor(Color.parseColor(fgHex))
+                includeFontPadding = false
                 gravity = Gravity.CENTER
                 isSingleLine = true
-                minimumHeight = dp(38)
-                setPadding(dp(2), dp(8), dp(2), dp(8))
+                setPadding(dp(1), dp(4), dp(1), dp(4))
                 this.layoutParams = LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -2070,8 +2072,8 @@ class SelAccessibilityService : AccessibilityService() {
                 setTextColor(Color.parseColor(fgHex))
                 gravity = Gravity.CENTER
                 isSingleLine = true
-                minimumHeight = dp(40)
-                setPadding(dp(4), dp(8), dp(4), dp(8))
+                includeFontPadding = false
+                setPadding(dp(2), dp(4), dp(2), dp(4))
                 this.layoutParams = LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -2182,25 +2184,25 @@ class SelAccessibilityService : AccessibilityService() {
 
     private fun shortGridLabel(tool: ToolSpec): String {
         return when (tool.id) {
-            "screen_grab" -> "LENS"
+            "screen_grab" -> "[+] LENS"
             "web_search_folder" -> "WEB >"
-            "youtube_folder" -> "YT >"
+            "youtube_folder" -> "YOUTUBE >"
             "clip_history" -> "CLIPS >"
             "markdown_folder" -> "MD >"
-            "regex_pipe" -> "PIPE >"
+            "regex_pipe" -> "|> PIPE >"
             "define" -> "DEFINE"
-            "translate" -> "TRANSL"
-            "qr" -> "QR"
+            "translate" -> "TRANSLATE"
+            "qr" -> "[#] QR"
             "magnet" -> "MAGNET"
-            "clean_url" -> "URL"
+            "clean_url" -> "CLEAN URL"
             "extract" -> "LINKS"
-            "clean_text" -> "CLEAN"
-            "sort" -> "SORT"
-            "case" -> "CASE"
-            "incognito" -> "INCOG"
+            "clean_text" -> "CLEAN TXT"
+            "sort" -> "SORT A-Z"
+            "case" -> "Aa CASE"
+            "incognito" -> "INCOGNITO"
             "speak" -> "SPEAK"
-            "log" -> "LOG"
-            else -> tool.label.replace(" ▸", " >").take(8)
+            "log" -> "+ LOG"
+            else -> tool.label.replace(" ▸", " >").take(11)
         }
     }
 
@@ -2247,17 +2249,16 @@ class SelAccessibilityService : AccessibilityService() {
         }
 
         fun makeCell(tool: ToolSpec): View {
-            val codeStr = tool.glyph.take(4).padEnd(4, ' ')
             return TextView(this).apply {
-                text = "$codeStr ${shortGridLabel(tool)}"
+                text = shortGridLabel(tool)
                 typeface = Typeface.MONOSPACE
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                 setTextColor(Color.parseColor("#EAEAEA"))
+                includeFontPadding = false
                 isSingleLine = true
                 ellipsize = TextUtils.TruncateAt.END
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(38)
-                setPadding(dp(6), dp(8), dp(4), dp(8))
+                setPadding(dp(4), dp(4), dp(4), dp(4))
                 this.layoutParams = LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -2290,8 +2291,9 @@ class SelAccessibilityService : AccessibilityService() {
             text = "|"
             typeface = Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(Color.parseColor("#3A3A3A"))
-            setPadding(dp(2), 0, dp(4), 0)
+            setTextColor(Color.parseColor("#383838"))
+            includeFontPadding = false
+            setPadding(dp(2), 0, dp(2), 0)
         }
 
         pairRow.addView(makeCell(t1))
@@ -3176,7 +3178,7 @@ class SelAccessibilityService : AccessibilityService() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(10), dp(10), dp(10))
+                setPadding(dp(4), dp(4), dp(4), dp(4))
                 tag = tool.id
             }
 
@@ -3557,8 +3559,7 @@ class SelAccessibilityService : AccessibilityService() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(40)
-            setPadding(dp(8), dp(9), dp(8), dp(9))
+            setPadding(dp(5), dp(4), dp(5), dp(4))
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -3590,28 +3591,33 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
-        val cleanCode = ToolPrefs.toPlainAsciiCode(glyph, label, faviconUrl).take(4).padEnd(4, ' ')
-        val codeView = TextView(this).apply {
-            text = cleanCode
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(Color.parseColor("#00FF66"))
-            isSingleLine = true
+        val cleanCode = ToolPrefs.toPlainAsciiCode(glyph, label, faviconUrl).trim()
+        val cleanLabel = label.replace("▸", ">").replace("→", "->").trim()
+
+        // Omit redundant code prefix if the label already starts with the code (e.g. "WIKI" + "WIKIPEDIA", "WEB" + "WEB SEARCH >")
+        val showCodePrefix = cleanCode.isNotEmpty() &&
+            !cleanLabel.startsWith(cleanCode, ignoreCase = true) &&
+            !(cleanCode == "YT" && cleanLabel.startsWith("YOUTUBE", ignoreCase = true)) &&
+            !(cleanCode == "DIR" && cleanLabel.endsWith(">"))
+
+        if (showCodePrefix) {
+            val codeView = TextView(this).apply {
+                text = "$cleanCode "
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextColor(Color.parseColor("#00FF66"))
+                includeFontPadding = false
+                isSingleLine = true
+            }
+            row.addView(codeView)
         }
 
-        val pipeSep = TextView(this).apply {
-            text = " | "
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(Color.parseColor("#4A4A4A"))
-        }
-
-        val cleanLabel = label.replace("▸", ">").replace("→", "->")
         val labelView = TextView(this).apply {
             text = cleanLabel
             typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             setTextColor(Color.parseColor("#ECECEC"))
+            includeFontPadding = false
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
             this.layoutParams = LinearLayout.LayoutParams(
@@ -3620,18 +3626,16 @@ class SelAccessibilityService : AccessibilityService() {
                 1f
             )
         }
-
-        row.addView(codeView)
-        row.addView(pipeSep)
         row.addView(labelView)
 
         if (!countBadge.isNullOrBlank()) {
             val badgeView = TextView(this).apply {
                 text = "($countBadge)"
                 typeface = Typeface.MONOSPACE
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f)
                 setTextColor(Color.parseColor("#6E6E6E"))
-                setPadding(dp(6), 0, 0, 0)
+                includeFontPadding = false
+                setPadding(dp(4), 0, 0, 0)
             }
             row.addView(badgeView)
         }
@@ -3640,25 +3644,21 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Literal ASCII horizontal rule (`+------------------------------------+`) so the popup looks
-     * like it was rendered directly from plain text.
+     * Ultra-compact 1dp terminal divider line with minimal margin (2dp) so zero vertical space is wasted.
      */
     private fun makeHorizontalRule(thick: Boolean = false): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
-        val ch = if (thick) '=' else '-'
-        val lineStr = "+" + ch.toString().repeat(46)
-        return TextView(this).apply {
-            text = lineStr
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            setTextColor(Color.parseColor(if (thick) "#4A4A4A" else "#333333"))
-            isSingleLine = true
-            ellipsize = null
-            setPadding(dp(4), if (thick) dp(1) else dp(2), dp(4), if (thick) dp(1) else dp(2))
+        return View(this).apply {
             this.layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+                dp(1)
+            ).apply {
+                if (!thick) {
+                    topMargin = dp(2)
+                    bottomMargin = dp(2)
+                }
+            }
+            setBackgroundColor(Color.parseColor(if (thick) "#383838" else "#262626"))
         }
     }
 
