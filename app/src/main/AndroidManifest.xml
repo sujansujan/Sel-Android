@@ -1,27 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Needed for in-popup Define Word, Translate & built-in Incognito Search -->
+    <!-- Needed for in-popup Define Word, Translate & Favicon fetching -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Package visibility for WhatsApp, WhatsApp Business & installed Web Browsers on Android 11+ -->
+    <!-- Package visibility for WhatsApp, WhatsApp Business & Web Browsers on Android 11+ -->
     <queries>
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
-        <package android:name="com.android.chrome" />
-        <package android:name="com.chrome.beta" />
-        <package android:name="com.brave.browser" />
-        <package android:name="org.mozilla.firefox" />
-        <package android:name="org.mozilla.fenix" />
-        <package android:name="org.mozilla.focus" />
-        <package android:name="org.mozilla.klar" />
-        <package android:name="com.duckduckgo.mobile.android" />
-        <package android:name="com.microsoft.emmx" />
-        <package android:name="com.sec.android.app.sbrowser" />
-        <package android:name="com.opera.browser" />
-        <package android:name="com.vivaldi.browser" />
-        <package android:name="com.kiwibrowser.browser" />
-        <package android:name="org.cromite.cromite" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />
@@ -51,22 +37,13 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="uiMode|orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Ephemeral Zero-History Incognito Browser for Search & Links -->
-        <activity
-            android:name=".IncognitoActivity"
-            android:exported="false"
-            android:label="[sel] Incognito"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 
         <!-- Hooks into Android's native Copy/Share selection menu as a universal fallback -->
         <activity

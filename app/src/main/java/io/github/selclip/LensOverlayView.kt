@@ -25,10 +25,10 @@ data class LensWord(
 )
 
 /**
- * Google Lens-style on-screen text selection rendered in a crisp plain-text terminal aesthetic:
+ * Google Lens-style on-screen text selection rendered in Dracula (Dark) or Alucard (Light) aesthetic:
  * - Breaks every on-screen text block into individual interactive word chips at their exact screen coordinates.
  * - Supports both contiguous range selection (with draggable `[` and `]` handles) AND multi-region `[ + ADD ]` selection!
- * - Dynamically adapts the bottom smart button (`🧲 MAGNET`, `⌫ CLEAN URL`, `📖 DEFINE`, `📞 DIAL`, or `⚡ TOOLS ▸`) based on what you highlight.
+ * - Dynamically adapts the bottom smart button (`[0x] MAGNET`, `[?x] CLEAN URL`, `[?=] DEFINE`, `TEL DIAL`, or `TOOLS >`) based on what you highlight.
  */
 class LensOverlayView(
     context: Context,
@@ -43,6 +43,7 @@ class LensOverlayView(
 
     private val density = resources.displayMetrics.density
     private fun dp(v: Float): Float = v * density
+    private val pal = ToolPrefs.resolvePalette(context)
 
     private val words = mutableListOf<LensWord>()
     private val blockRects = mutableListOf<RectF>()
@@ -79,111 +80,113 @@ class LensOverlayView(
     private val btnClearRect = RectF()
 
     private val scrimPaint = Paint().apply {
-        color = Color.parseColor("#C8060606")
+        color = Color.parseColor(if (pal.isDark) "#CC191A21" else "#CCECE9DF")
         style = Paint.Style.FILL
     }
 
     private val blockFramePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2E00FF66")
+        color = Color.parseColor(pal.border)
+        alpha = 90
         style = Paint.Style.STROKE
         strokeWidth = dp(0.8f)
     }
 
     private val chipBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#EB111613")
+        color = Color.parseColor(pal.bgPrimary)
+        alpha = 238
         style = Paint.Style.FILL
     }
 
     private val chipBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#5500FF66")
+        color = Color.parseColor(pal.border)
         style = Paint.Style.STROKE
         strokeWidth = dp(1f)
     }
 
     private val chipSelectedBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF66")
+        color = Color.parseColor(pal.accentGreen)
         style = Paint.Style.FILL
     }
 
     private val wordTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.MONOSPACE
-        color = Color.parseColor("#F2F2F2")
+        color = Color.parseColor(pal.fgPrimary)
         textAlign = Paint.Align.CENTER
     }
 
     private val wordSelectedTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        color = Color.parseColor("#080808")
+        color = Color.parseColor(pal.onAccent)
         textAlign = Paint.Align.CENTER
     }
 
     private val handleBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#0A0A0A")
+        color = Color.parseColor(pal.bgHeader)
         style = Paint.Style.FILL
     }
 
     private val handleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF66")
+        color = Color.parseColor(pal.accentGreen)
         style = Paint.Style.STROKE
         strokeWidth = dp(1.6f)
     }
 
     private val handleGlyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        color = Color.parseColor("#00FF66")
+        color = Color.parseColor(pal.accentGreen)
         textSize = dp(13f)
         textAlign = Paint.Align.CENTER
     }
 
     private val hudBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#F50B0B0B")
+        color = Color.parseColor(pal.bgHeader)
         style = Paint.Style.FILL
     }
 
     private val hudStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF66")
+        color = Color.parseColor(pal.accentPurple)
         style = Paint.Style.STROKE
         strokeWidth = dp(1.2f)
     }
 
     private val hudTitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        color = Color.parseColor("#00FF66")
+        color = Color.parseColor(pal.accentGreen)
         textSize = dp(11f)
     }
 
     private val hudSubPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.MONOSPACE
-        color = Color.parseColor("#CFCFCF")
+        color = Color.parseColor(pal.fgPrimary)
         textSize = dp(11f)
     }
 
     private val btnPrimaryBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#00FF66")
+        color = Color.parseColor(pal.accentGreen)
         style = Paint.Style.FILL
     }
 
     private val btnSecondaryBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#1A1A1A")
+        color = Color.parseColor(pal.bgSurface)
         style = Paint.Style.FILL
     }
 
     private val btnSecondaryStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#3E3E3E")
+        color = Color.parseColor(pal.border)
         style = Paint.Style.STROKE
         strokeWidth = dp(1f)
     }
 
     private val btnPrimaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        color = Color.parseColor("#080808")
+        color = Color.parseColor(pal.onAccent)
         textSize = dp(11f)
         textAlign = Paint.Align.CENTER
     }
 
     private val btnSecondaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        color = Color.parseColor("#F0F0F0")
+        color = Color.parseColor(pal.fgPrimary)
         textSize = dp(11f)
         textAlign = Paint.Align.CENTER
     }
@@ -329,11 +332,11 @@ class LensOverlayView(
         if (Regex("\\b([0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[A-Za-z2-7]{32})\\b").containsMatchIn(trimmed) ||
             trimmed.startsWith("magnet:?", ignoreCase = true)
         ) {
-            return "magnet" to "MAG MAGNET"
+            return "magnet" to "[0x] MAGNET"
         }
         if (!trimmed.contains(" ") && (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true))) {
             return if (trimmed.contains("?") || trimmed.contains("&")) {
-                "clean_url" to "URL CLEAN"
+                "clean_url" to "[?x] CLEAN"
             } else {
                 "open_url" to "-> OPEN URL"
             }
@@ -343,7 +346,7 @@ class LensOverlayView(
         }
         val wordCount = trimmed.split(Regex("\\s+")).count { it.isNotEmpty() }
         if (wordCount in 1..3 && trimmed.any { it.isLetter() } && trimmed.length <= 36) {
-            return "define" to "DEF DEFINE"
+            return "define" to "[?=] DEFINE"
         }
         return "tools" to "TOOLS >"
     }
@@ -353,7 +356,7 @@ class LensOverlayView(
         val viewW = width.toFloat()
         val viewH = height.toFloat()
 
-        // 1. Dark Google-Lens translucent terminal backdrop
+        // 1. Dracula / Alucard translucent terminal backdrop
         canvas.drawRect(0f, 0f, viewW, viewH, scrimPaint)
 
         // 2. Subtle block outlines
@@ -423,7 +426,7 @@ class LensOverlayView(
             canvas.drawText("]", endHandleCenter.centerX(), ey, handleGlyphPaint)
         }
 
-        // 5. Top Plain-Text Lens HUD Bar with [+ADD], [📸], [ALL], [×ESC]
+        // 5. Top Plain-Text Lens HUD Bar with [+ADD], [IMG], [^A], [X ESC]
         val topHudRect = RectF(dp(10f), dp(36f), viewW - dp(10f), dp(84f))
         canvas.drawRoundRect(topHudRect, dp(4f), dp(4f), hudBgPaint)
         canvas.drawRoundRect(topHudRect, dp(4f), dp(4f), hudStrokePaint)
@@ -496,7 +499,7 @@ class LensOverlayView(
             )
         }
 
-        // [📸] screenshot/image fallback button
+        // [IMG] screenshot/image fallback button
         canvas.drawRoundRect(topSnapBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topSnapBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
@@ -506,17 +509,17 @@ class LensOverlayView(
             btnSecondaryTextPaint
         )
 
-        // [ALL] button
+        // [^A] Select All button
         canvas.drawRoundRect(topAllBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topAllBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
-            "ALL",
+            "[^A]",
             topAllBtnRect.centerX(),
             topAllBtnRect.centerY() - (btnSecondaryTextPaint.descent() + btnSecondaryTextPaint.ascent()) / 2f,
             btnSecondaryTextPaint
         )
 
-        // [×ESC] button
+        // [X ESC] button
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryBgPaint)
         canvas.drawRoundRect(topEscBtnRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
         canvas.drawText(
@@ -562,23 +565,23 @@ class LensOverlayView(
             curLeft += mainBtnW + gap
             btnClearRect.set(curLeft, btnTop, curLeft + clearW, btnBottom)
 
-            // Primary green [ ⎘ COPY ] button
+            // Primary [ ^C ] Copy button
             canvas.drawRoundRect(btnCopyRect, dp(3f), dp(3f), btnPrimaryBgPaint)
             val btnTextY = btnCopyRect.centerY() - (btnPrimaryTextPaint.descent() + btnPrimaryTextPaint.ascent()) / 2f
-            canvas.drawText("[CPY]", btnCopyRect.centerX(), btnTextY, btnPrimaryTextPaint)
+            canvas.drawText("[^C]", btnCopyRect.centerX(), btnTextY, btnPrimaryTextPaint)
 
-            // Context-Aware Smart Pill ([🧲 MAGNET], [⌫ CLEAN URL], [📖 DEFINE], [📞 DIAL], or [⚡ TOOLS ▸])
+            // Context-Aware Smart Pill
             canvas.drawRoundRect(btnSmartRect, dp(3f), dp(3f), btnSecondaryBgPaint)
             canvas.drawRoundRect(btnSmartRect, dp(3f), dp(3f), hudStrokePaint)
             canvas.drawText(smartLabel, btnSmartRect.centerX(), btnTextY, btnSecondaryTextPaint)
 
-            // [ ⚡ TOOLS ▸ ] or [ ↗ SEARCH ] button
-            val thirdLabel = if (smartLabel == "TOOLS >") "WEB >" else "TOOLS >"
+            // [ / WEB ] or [ TOOLS > ] button
+            val thirdLabel = if (smartLabel == "TOOLS >") "[/] WEB" else "TOOLS >"
             canvas.drawRoundRect(btnSearchRect, dp(3f), dp(3f), btnSecondaryBgPaint)
             canvas.drawRoundRect(btnSearchRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
             canvas.drawText(thirdLabel, btnSearchRect.centerX(), btnTextY, btnSecondaryTextPaint)
 
-            // [ ✕ ] clear selection button
+            // [ X ] clear selection button
             canvas.drawRoundRect(btnClearRect, dp(3f), dp(3f), btnSecondaryBgPaint)
             canvas.drawRoundRect(btnClearRect, dp(3f), dp(3f), btnSecondaryStrokePaint)
             canvas.drawText("X", btnClearRect.centerX(), btnTextY, btnSecondaryTextPaint)

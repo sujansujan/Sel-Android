@@ -1,7 +1,11 @@
 package io.github.selclip
+
+import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
@@ -12,22 +16,19 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.View
 import android.widget.ImageView
+import android.widget.LinearLayout
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Collections
 import java.util.concurrent.Executors
-
-import android.content.Context
-import android.graphics.Color
-import android.view.HapticFeedbackConstants
-import android.view.MotionEvent
-import android.view.View
-import android.widget.LinearLayout
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
 import kotlin.math.roundToInt
 
 data class ToolSpec(
@@ -45,6 +46,33 @@ data class ClipEntry(
     val timestamp: Long
 )
 
+/**
+ * Official Dracula Classic (Dark) and Alucard Classic (Light) palettes
+ * based on https://draculatheme.com/spec
+ */
+data class ThemePalette(
+    val name: String,
+    val isDark: Boolean,
+    val bgPrimary: String,
+    val bgHeader: String,
+    val bgSurface: String,
+    val bgInput: String,
+    val bgPressed: String,
+    val border: String,
+    val divider: String,
+    val fgPrimary: String,
+    val fgSecondary: String,
+    val fgMuted: String,
+    val accentGreen: String,
+    val accentCyan: String,
+    val accentPurple: String,
+    val accentPink: String,
+    val accentOrange: String,
+    val accentYellow: String,
+    val dangerRed: String,
+    val onAccent: String
+)
+
 object ToolPrefs {
     private const val PREFS_NAME = "sel_tool_prefs"
     private const val KEY_ORDER = "manual_order"
@@ -53,38 +81,90 @@ object ToolPrefs {
     private const val KEY_GRID_COLUMNS = "grid_two_columns"
     private const val KEY_ICON_ROW_1 = "icon_row_1_ids"
     private const val KEY_ICON_ROW_2 = "icon_row_2_ids"
-    private const val KEY_ICON_ROWS_INIT = "icon_rows_init_v23"
+    private const val KEY_ICON_ROWS_INIT = "icon_rows_init_v25"
+    private const val KEY_MIGRATED_V25 = "migrated_v25_no_dev"
     private const val KEY_BLACKLIST = "blacklisted_pkgs"
     private const val KEY_CLIP_HISTORY = "clip_history_json"
+    private const val KEY_FOLLOW_SYSTEM_THEME = "follow_system_theme"
+    private const val KEY_DARK_THEME_MANUAL = "dark_theme_manual"
+    private const val KEY_CUSTOM_FOLDERS = "user_custom_folders"
+    private const val PREFIX_TOOL_FOLDER = "tool_folder_"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
     private const val MAX_CLIPS = 20
-    const val MAX_TOOLS_PER_ICON_ROW = 5
+    const val MAX_TOOLS_PER_ICON_ROW = 4
 
-    // Every built-in tool has a 100% unique plain-text ASCII symbol or 1-4 letter code (zero emojis)
-    val builtInTools = listOf(
-        ToolSpec("copy", "CPY", "COPY TEXT"),
-        ToolSpec("screen_grab", "[+]", "LENS GRAB"),
-        ToolSpec("web_search_folder", "WEB", "WEB SEARCH >"),
-        ToolSpec("youtube_folder", "YT", "YOUTUBE >", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("clip_history", "CLP", "CLIP HISTORY >"),
-        ToolSpec("markdown_folder", "MD", "MARKDOWN >"),
-        ToolSpec("regex_pipe", "|>", "REGEX / PIPE >"),
-        ToolSpec("define", "DEF", "DEFINE WORD"),
-        ToolSpec("translate", "TRN", "TRANSLATE"),
-        ToolSpec("qr", "[#]", "QR CODE"),
-        ToolSpec("magnet", "MAG", "HASH -> MAGNET"),
-        ToolSpec("clean_url", "URL", "CLEAN URL"),
-        ToolSpec("extract", "@#", "EXTRACT LINKS"),
-        ToolSpec("clean_text", "CLR", "CLEAN TEXT"),
-        ToolSpec("sort", "A-Z", "SORT LINES"),
-        ToolSpec("case", "Aa", "CYCLE CASE"),
-        ToolSpec("incognito", "INC", "INCOGNITO"),
-        ToolSpec("speak", "TTS", "SPEAK ALOUD"),
-        ToolSpec("log", "LOG", "APPEND LOG")
+    // Official Dracula Classic (Dark) Specification
+    val DRACULA_PALETTE = ThemePalette(
+        name = "DRACULA",
+        isDark = true,
+        bgPrimary = "#282A36",
+        bgHeader = "#21222C",
+        bgSurface = "#343746",
+        bgInput = "#191A21",
+        bgPressed = "#44475A",
+        border = "#6272A4",
+        divider = "#44475A",
+        fgPrimary = "#F8F8F2",
+        fgSecondary = "#BD93F9",
+        fgMuted = "#6272A4",
+        accentGreen = "#50FA7B",
+        accentCyan = "#8BE9FD",
+        accentPurple = "#BD93F9",
+        accentPink = "#FF79C6",
+        accentOrange = "#FFB86C",
+        accentYellow = "#F1FA8C",
+        dangerRed = "#FF5555",
+        onAccent = "#282A36"
     )
 
-    // Dedicated Web Search Subgroup with Top 4 Search Engines (1-4 letter plain-text codes)
+    // Official Alucard Classic (Light) Specification
+    val ALUCARD_PALETTE = ThemePalette(
+        name = "ALUCARD",
+        isDark = false,
+        bgPrimary = "#FFFBEB",
+        bgHeader = "#ECE9DF",
+        bgSurface = "#EFEDDC",
+        bgInput = "#DEDCCF",
+        bgPressed = "#CFCFDE",
+        border = "#6C664B",
+        divider = "#CECCC0",
+        fgPrimary = "#1F1F1F",
+        fgSecondary = "#644AC9",
+        fgMuted = "#6C664B",
+        accentGreen = "#14710A",
+        accentCyan = "#036A96",
+        accentPurple = "#644AC9",
+        accentPink = "#A3144D",
+        accentOrange = "#A34D14",
+        accentYellow = "#846E15",
+        dangerRed = "#CB3A2A",
+        onAccent = "#FFFBEB"
+    )
+
+    // Computer-shortcut inspired bracketed icons (shown as [glyph] ONLY when placed on top rows)
+    val builtInTools = listOf(
+        ToolSpec("copy", "^C", "COPY TEXT"),
+        ToolSpec("screen_grab", "+", "LENS GRAB"),
+        ToolSpec("web_search_folder", "/", "WEB SEARCH >"),
+        ToolSpec("youtube_folder", "|>", "YOUTUBE >", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("clip_history", "≡", "CLIP HISTORY >"),
+        ToolSpec("markdown_folder", "**", "MARKDOWN >"),
+        ToolSpec("regex_pipe", "s/", "REGEX / PIPE >"),
+        ToolSpec("define", "?=", "DEFINE WORD"),
+        ToolSpec("translate", "<>", "TRANSLATE"),
+        ToolSpec("qr", "::", "QR CODE"),
+        ToolSpec("magnet", "0x", "HASH -> MAGNET"),
+        ToolSpec("clean_url", "?x", "CLEAN URL"),
+        ToolSpec("extract", "@#", "EXTRACT LINKS"),
+        ToolSpec("clean_text", "~", "CLEAN TEXT"),
+        ToolSpec("sort", "A↓", "SORT LINES"),
+        ToolSpec("case", "Aa", "CYCLE CASE"),
+        ToolSpec("speak", "~)", "SPEAK ALOUD"),
+        ToolSpec("log", ">>", "APPEND LOG")
+    )
+
+    // Dedicated Web Search Subgroup with Top 4 Search Engines
     val webSearchSubTools = listOf(
         ToolSpec("web_google", "GGL", "GOOGLE", customTarget = "https://www.google.com/search?q={text}", faviconUrl = "https://www.google.com"),
         ToolSpec("web_ddg", "DDG", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}", faviconUrl = "https://duckduckgo.com"),
@@ -92,9 +172,9 @@ object ToolPrefs {
         ToolSpec("web_brave", "BRV", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
     )
 
-    // Dedicated YouTube Subfolder items (plain-text ASCII codes)
+    // Dedicated YouTube Subfolder items
     val youtubeSubTools = listOf(
-        ToolSpec("yt_all", "YT*", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("yt_all", "|>", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
         ToolSpec("yt_hour", "1H", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D", faviconUrl = "https://www.youtube.com"),
         ToolSpec("yt_today", "24H", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D", faviconUrl = "https://www.youtube.com"),
         ToolSpec("yt_week", "7D", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D", faviconUrl = "https://www.youtube.com"),
@@ -102,7 +182,7 @@ object ToolPrefs {
         ToolSpec("yt_year", "1Y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D", faviconUrl = "https://www.youtube.com")
     )
 
-    // Dedicated Markdown Folder Submenu items (pure ASCII markdown syntax codes)
+    // Dedicated Markdown Folder Submenu items
     val markdownSubTools = listOf(
         ToolSpec("md_bold", "**", "MD BOLD (**)"),
         ToolSpec("md_italic", "*", "MD ITALIC (*)"),
@@ -117,7 +197,7 @@ object ToolPrefs {
         ToolSpec("md_table", "|T|", "MD TABLE (2x2)")
     )
 
-    // Dedicated Regex & Developer Pipe Submenu items (pure ASCII codes)
+    // Dedicated Regex & Developer Pipe Submenu items
     val regexPipeSubTools = listOf(
         ToolSpec("pipe_json_pretty", "{+}", "JSON PRETTY"),
         ToolSpec("pipe_json_min", "{-}", "JSON MINIFY"),
@@ -130,18 +210,59 @@ object ToolPrefs {
         ToolSpec("pipe_strip_html", "</>", "STRIP HTML TAGS")
     )
 
+    // --- Theme Preferences (Dracula Dark / Alucard Light + Follow System Toggle) ---
+    fun isFollowSystemTheme(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_FOLLOW_SYSTEM_THEME, true)
+    }
+
+    fun setFollowSystemTheme(context: Context, follow: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_FOLLOW_SYSTEM_THEME, follow)
+            .apply()
+    }
+
+    fun isDarkThemeManual(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_DARK_THEME_MANUAL, true)
+    }
+
+    fun setDarkThemeManual(context: Context, dark: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_DARK_THEME_MANUAL, dark)
+            .apply()
+    }
+
+    fun isSystemInDarkMode(context: Context): Boolean {
+        val nightModeFlags = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        return nightModeFlags == Configuration.UI_MODE_NIGHT_YES
+    }
+
+    fun resolvePalette(context: Context): ThemePalette {
+        val useDark = if (isFollowSystemTheme(context)) {
+            isSystemInDarkMode(context)
+        } else {
+            isDarkThemeManual(context)
+        }
+        return if (useDark) DRACULA_PALETTE else ALUCARD_PALETTE
+    }
+
     fun toPlainAsciiCode(rawGlyph: String, rawLabel: String, target: String? = null): String {
         val cleanLabel = rawLabel.substringAfter("/").trim().uppercase()
         val lowerTarget = target?.lowercase().orEmpty()
         if (cleanLabel.contains("WIKIPEDIA") || lowerTarget.contains("wikipedia.org")) {
-            if (rawGlyph.equals("W", ignoreCase = true) || rawGlyph.isBlank()) return "WIKI"
+            return "W"
         }
-        val asciiOnly = rawGlyph.filter { it.code in 33..126 }.take(4)
-        if (asciiOnly.isNotEmpty()) return asciiOnly.uppercase()
+        val stripped = rawGlyph.trim().removePrefix("[").removeSuffix("]").trim()
+        if (stripped.isNotEmpty()) {
+            return stripped.take(4)
+        }
 
         return when {
-            lowerTarget.contains("youtube.") || lowerTarget.contains("youtu.be") -> "YT"
-            lowerTarget.contains("wikipedia.") -> "WIKI"
+            lowerTarget.contains("youtube.") || lowerTarget.contains("youtu.be") -> "|>"
+            lowerTarget.contains("wikipedia.") -> "W"
             lowerTarget.contains("google.") -> "GGL"
             lowerTarget.contains("duckduckgo.") -> "DDG"
             lowerTarget.contains("bing.") -> "BNG"
@@ -152,21 +273,19 @@ object ToolPrefs {
             lowerTarget.contains("perplexity.") -> "PPLX"
             lowerTarget.contains("kagi.") -> "KAGI"
             lowerTarget.contains("startpage.") -> "SP"
-            cleanLabel.isNotEmpty() -> cleanLabel.filter { it.isLetterOrDigit() }.take(4).ifEmpty { "CMD" }
+            cleanLabel.isNotEmpty() -> cleanLabel.filter { it.isLetterOrDigit() }.take(3).ifEmpty { "CMD" }
             else -> "CMD"
         }
     }
 
     fun defaultRulesText(): String = """
-        # Format: CODE (1-4 ASCII chars) | LABEL | TARGET ({text} = selection)
+        # Format: ICON (1-4 chars) | LABEL | TARGET ({text} = selection)
         # Submenu tips:
         # - Prefix with 'SEARCH/' or 'WEB/' to place inside WEB SEARCH >
         # - Prefix with 'YT/' or 'YOUTUBE/' to place inside YOUTUBE >
         # - Prefix with 'MD ' to place inside MARKDOWN >
         # - Prefix with 'PIPE/' or use s/find/replace/g to place inside REGEX / PIPE >
-        WIKI | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}
-        GH | DEV/GITHUB | https://github.com/search?q={text}
-        SO | DEV/STACKOVERFLOW | https://stackoverflow.com/search?q={text}
+        W | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}
         0-9 | PIPE/DIGITS ONLY | s/[^0-9]+//g
     """.trimIndent()
 
@@ -174,15 +293,163 @@ object ToolPrefs {
         val rulesFile = File(context.filesDir, "rules.txt")
         if (!rulesFile.exists()) {
             rulesFile.writeText(defaultRulesText())
+        } else {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(KEY_MIGRATED_V25, false)) {
+                val updatedLines = rulesFile.readLines().mapNotNull { line ->
+                    val t = line.trim()
+                    when {
+                        t.contains("DEV/GITHUB", ignoreCase = true) -> null
+                        t.contains("DEV/STACKOVERFLOW", ignoreCase = true) -> null
+                        t.startsWith("WIKI | WIKIPEDIA", ignoreCase = true) ->
+                            "W | WIKIPEDIA | https://en.wikipedia.org/w/index.php?search={text}"
+                        else -> line
+                    }
+                }
+                rulesFile.writeText(updatedLines.joinToString("\n"))
+                prefs.edit().putBoolean(KEY_MIGRATED_V25, true).apply()
+            }
         }
         return rulesFile
     }
 
-    fun loadAllTools(context: Context): List<ToolSpec> {
+    // --- User-Created Custom Folders & Tool Assignment in Settings ---
+    private val reservedFolderPrefixes = setOf("SEARCH", "WEB", "YT", "YOUTUBE", "MD", "MARKDOWN", "PIPE", "REGEX")
+
+    fun sanitizeFolderName(raw: String): String {
+        return raw.uppercase()
+            .replace("/", "")
+            .replace("|", "")
+            .replace(">", "")
+            .trim()
+            .take(14)
+    }
+
+    fun getCustomFolders(context: Context): List<String> {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_CUSTOM_FOLDERS, "")
+            ?.split(",")
+            ?.map { sanitizeFolderName(it) }
+            ?.filter { it.isNotEmpty() && it !in reservedFolderPrefixes }
+            ?: emptyList()
+
+        val combined = LinkedHashSet<String>()
+        combined.addAll(saved)
+
+        val rulesFile = ensureRulesFile(context)
+        if (rulesFile.exists()) {
+            rulesFile.readLines().forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    val parts = trimmed.split("|").map { it.trim() }
+                    if (parts.size >= 3) {
+                        val rawLabel = parts[1].uppercase()
+                        if (rawLabel.contains("/")) {
+                            val folder = sanitizeFolderName(rawLabel.substringBefore("/"))
+                            if (folder.isNotEmpty() && folder !in reservedFolderPrefixes) {
+                                combined.add(folder)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return combined.toList()
+    }
+
+    fun createCustomFolder(context: Context, rawName: String): Boolean {
+        val clean = sanitizeFolderName(rawName)
+        if (clean.isEmpty() || clean in reservedFolderPrefixes) return false
+        val current = getCustomFolders(context).toMutableSet()
+        current.add(clean)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_CUSTOM_FOLDERS, current.joinToString(","))
+            .apply()
+        return true
+    }
+
+    fun deleteCustomFolder(context: Context, folderName: String) {
+        val target = sanitizeFolderName(folderName)
+        if (target.isEmpty()) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val remaining = getCustomFolders(context).filterNot { it == target }
+        val editor = prefs.edit()
+        editor.putString(KEY_CUSTOM_FOLDERS, remaining.joinToString(","))
+
+        // Unassign any tools assigned to this folder
+        prefs.all.forEach { (k, v) ->
+            if (k.startsWith(PREFIX_TOOL_FOLDER) && (v as? String)?.equals(target, ignoreCase = true) == true) {
+                editor.remove(k)
+            }
+        }
+        editor.apply()
+
+        // Remove folder from icon rows if present
+        setToolIconRow(context, "folder_custom_$target", 0)
+
+        // Also unwrap any FOLDER/ITEM rules in rules.txt back to top-level ITEM
+        val rulesFile = ensureRulesFile(context)
+        if (rulesFile.exists()) {
+            val updated = rulesFile.readLines().map { line ->
+                val trimmed = line.trim()
+                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    val parts = trimmed.split("|").map { it.trim() }
+                    if (parts.size >= 3 && parts[1].uppercase().startsWith("$target/")) {
+                        val subLabel = parts[1].substringAfter("/").trim()
+                        "${parts[0]} | $subLabel | ${parts[2]}"
+                    } else {
+                        line
+                    }
+                } else {
+                    line
+                }
+            }
+            rulesFile.writeText(updated.joinToString("\n"))
+        }
+    }
+
+    fun getToolFolderAssignment(context: Context, toolId: String): String? {
+        if (toolId == "copy" || toolId.startsWith("folder_custom_")) return null
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(PREFIX_TOOL_FOLDER + toolId, "")?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val validFolders = getCustomFolders(context)
+        return raw.takeIf { it in validFolders }
+    }
+
+    fun setToolFolderAssignment(context: Context, toolId: String, folderName: String?) {
+        if (toolId == "copy" || toolId.startsWith("folder_custom_")) return
+        val clean = folderName?.let { sanitizeFolderName(it) }.orEmpty()
+        val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+        if (clean.isEmpty()) {
+            editor.remove(PREFIX_TOOL_FOLDER + toolId)
+        } else {
+            editor.putString(PREFIX_TOOL_FOLDER + toolId, clean)
+        }
+        editor.apply()
+    }
+
+    fun cycleToolFolderAssignment(context: Context, toolId: String): String? {
+        if (toolId == "copy" || toolId.startsWith("folder_custom_")) return null
+        val folders = getCustomFolders(context)
+        if (folders.isEmpty()) return null
+        val current = getToolFolderAssignment(context, toolId)
+        val next = when {
+            current == null -> folders.first()
+            else -> {
+                val idx = folders.indexOf(current)
+                if (idx in 0 until folders.lastIndex) folders[idx + 1] else null
+            }
+        }
+        setToolFolderAssignment(context, toolId, next)
+        return next
+    }
+
+    private fun loadBaseToolsWithoutFolderEntries(context: Context): List<ToolSpec> {
         val list = mutableListOf<ToolSpec>()
         list.addAll(builtInTools)
 
-        val customFoldersSeen = LinkedHashSet<String>()
         val rulesFile = ensureRulesFile(context)
         if (rulesFile.exists()) {
             rulesFile.readLines().forEachIndexed { idx, line ->
@@ -193,34 +460,13 @@ object ToolPrefs {
                         val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
-
                         val isHttp = target.startsWith("http://", true) || target.startsWith("https://", true)
                         when {
-                            rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/") -> {
-                                // Handled in loadWebSearchTools (inside WEB SEARCH ▸ subgroup)
-                            }
-                            rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/") -> {
-                                // Handled in loadYoutubeTools (inside YOUTUBE ▸ subfolder)
-                            }
-                            rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/") -> {
-                                // Handled in loadMarkdownTools
-                            }
-                            rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/") -> {
-                                // Handled in loadRegexPipeTools
-                            }
-                            rawLabel.contains("/") -> {
-                                val folder = rawLabel.substringBefore("/").trim()
-                                if (folder.isNotEmpty() && customFoldersSeen.add(folder)) {
-                                    list.add(
-                                        ToolSpec(
-                                            id = "folder_custom_$folder",
-                                            glyph = "DIR",
-                                            label = "$folder >",
-                                            folderName = folder
-                                        )
-                                    )
-                                }
-                            }
+                            rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/") -> {}
+                            rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/") -> {}
+                            rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/") -> {}
+                            rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/") -> {}
+                            rawLabel.contains("/") -> {}
                             else -> {
                                 list.add(
                                     ToolSpec(
@@ -236,6 +482,23 @@ object ToolPrefs {
                     }
                 }
             }
+        }
+        return list
+    }
+
+    fun loadAllTools(context: Context): List<ToolSpec> {
+        val list = mutableListOf<ToolSpec>()
+        list.addAll(loadBaseToolsWithoutFolderEntries(context))
+
+        getCustomFolders(context).forEach { folder ->
+            list.add(
+                ToolSpec(
+                    id = "folder_custom_$folder",
+                    glyph = "D/",
+                    label = "$folder >",
+                    folderName = folder
+                )
+            )
         }
         return list
     }
@@ -311,7 +574,17 @@ object ToolPrefs {
 
     fun loadCustomFolderTools(context: Context, folderName: String): List<ToolSpec> {
         val list = mutableListOf<ToolSpec>()
-        val targetFolder = folderName.uppercase().trim()
+        val targetFolder = sanitizeFolderName(folderName)
+        if (targetFolder.isEmpty()) return list
+
+        // 1. Any built-in or custom top-level tools assigned to this folder via Settings
+        loadBaseToolsWithoutFolderEntries(context).forEach { tool ->
+            if (!isToolHidden(context, tool.id) && getToolFolderAssignment(context, tool.id) == targetFolder) {
+                list.add(tool)
+            }
+        }
+
+        // 2. Any rules in rules.txt using FOLDER/SUBLABEL syntax
         val rulesFile = ensureRulesFile(context)
         if (rulesFile.exists()) {
             rulesFile.readLines().forEachIndexed { idx, line ->
@@ -323,7 +596,7 @@ object ToolPrefs {
                         val rawLabel = parts[1].uppercase()
                         val target = parts[2]
                         if (rawLabel.contains("/")) {
-                            val folder = rawLabel.substringBefore("/").trim()
+                            val folder = sanitizeFolderName(rawLabel.substringBefore("/"))
                             val subLabel = rawLabel.substringAfter("/").trim()
                             if (folder == targetFolder && subLabel.isNotEmpty()) {
                                 val isHttp = target.startsWith("http://", true) || target.startsWith("https://", true)
@@ -533,12 +806,12 @@ object ToolPrefs {
             .apply()
     }
 
-    // --- Up to 2 Custom Icon-Only Tool Rows (Row 1 & Row 2, similar to Copy/Paste/Cut/Select All) ---
+    // --- Up to 2 Custom Icon-Only Tool Rows (Row 1 & Row 2, max 4 items per row) ---
     private fun ensureDefaultIconRows(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(KEY_ICON_ROWS_INIT, false)) {
             prefs.edit()
-                .putString(KEY_ICON_ROW_1, "web_search_folder,youtube_folder,translate,incognito")
+                .putString(KEY_ICON_ROW_1, "web_search_folder,youtube_folder,translate,define")
                 .putString(KEY_ICON_ROW_2, "")
                 .putBoolean(KEY_ICON_ROWS_INIT, true)
                 .apply()
@@ -551,7 +824,7 @@ object ToolPrefs {
         val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(key, "") ?: ""
         return raw.split(",")
             .map { it.trim() }
-            .filter { it.isNotEmpty() && it != "copy" }
+            .filter { it.isNotEmpty() && it != "copy" && it != "incognito" }
             .distinct()
             .take(MAX_TOOLS_PER_ICON_ROW)
     }
@@ -559,7 +832,7 @@ object ToolPrefs {
     fun setIconRowIds(context: Context, rowNumber: Int, ids: List<String>) {
         ensureDefaultIconRows(context)
         val clean = ids.map { it.trim() }
-            .filter { it.isNotEmpty() && it != "copy" }
+            .filter { it.isNotEmpty() && it != "copy" && it != "incognito" }
             .distinct()
             .take(MAX_TOOLS_PER_ICON_ROW)
         val key = if (rowNumber == 1) KEY_ICON_ROW_1 else KEY_ICON_ROW_2
@@ -635,8 +908,8 @@ object ToolPrefs {
 
     fun applyDefaultTwoIconRowsPreset(context: Context) {
         ensureDefaultIconRows(context)
-        setIconRowIds(context, 1, listOf("web_search_folder", "youtube_folder", "translate", "incognito"))
-        setIconRowIds(context, 2, listOf("clip_history", "markdown_folder", "define", "qr"))
+        setIconRowIds(context, 1, listOf("web_search_folder", "youtube_folder", "translate", "define"))
+        setIconRowIds(context, 2, listOf("clip_history", "qr", "screen_grab", "markdown_folder"))
     }
 
     fun isSortMostUsed(context: Context): Boolean {
@@ -704,7 +977,16 @@ object ToolPrefs {
     }
 
     fun getSortedToolsForPopup(context: Context): List<ToolSpec> {
-        return getAllSortedTools(context).filter { !isToolHidden(context, it.id) }
+        return getAllSortedTools(context).filter { tool ->
+            if (isToolHidden(context, tool.id)) return@filter false
+            // Hide tools from root popup if user placed them inside a custom folder
+            if (getToolFolderAssignment(context, tool.id) != null) return@filter false
+            // Only show a custom folder in the popup if it has at least 1 tool inside
+            if (tool.folderName != null && tool.customTarget == null) {
+                return@filter loadCustomFolderTools(context, tool.folderName).isNotEmpty()
+            }
+            true
+        }
     }
 
     fun saveExactOrder(context: Context, orderedIds: List<String>) {
@@ -733,28 +1015,35 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "2.3.0")
+        root.put("version", "2.5.0")
         root.put("timestamp", System.currentTimeMillis())
+        root.put("follow_system_theme", isFollowSystemTheme(context))
+        root.put("dark_theme_manual", isDarkThemeManual(context))
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))
         root.put("grid_two_columns", isTwoColumnGrid(context))
         root.put("icon_row_1", getIconRowIds(context, 1).joinToString(","))
         root.put("icon_row_2", getIconRowIds(context, 2).joinToString(","))
+        root.put("custom_folders", getCustomFolders(context).joinToString(","))
         root.put("manual_order", prefs.getString(KEY_ORDER, "") ?: "")
         root.put("blacklisted_pkgs", prefs.getString(KEY_BLACKLIST, "") ?: "")
         root.put("rules_txt", if (rulesFile.exists()) rulesFile.readText() else "")
 
         val hiddenArr = JSONArray()
         val countsObj = JSONObject()
+        val folderAssignObj = JSONObject()
         for ((k, v) in prefs.all) {
             if (k.startsWith(PREFIX_HIDDEN) && v == true) {
                 hiddenArr.put(k.removePrefix(PREFIX_HIDDEN))
             } else if (k.startsWith(PREFIX_COUNT) && v is Int && v > 0) {
                 countsObj.put(k.removePrefix(PREFIX_COUNT), v)
+            } else if (k.startsWith(PREFIX_TOOL_FOLDER) && v is String && v.isNotBlank()) {
+                folderAssignObj.put(k.removePrefix(PREFIX_TOOL_FOLDER), v)
             }
         }
         root.put("hidden_tools", hiddenArr)
         root.put("use_counts", countsObj)
+        root.put("tool_folders", folderAssignObj)
 
         val pinnedClips = JSONArray()
         getClipHistory(context).filter { it.pinned }.forEach {
@@ -770,6 +1059,12 @@ object ToolPrefs {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val editor = prefs.edit()
 
+            if (root.has("follow_system_theme")) {
+                editor.putBoolean(KEY_FOLLOW_SYSTEM_THEME, root.optBoolean("follow_system_theme", true))
+            }
+            if (root.has("dark_theme_manual")) {
+                editor.putBoolean(KEY_DARK_THEME_MANUAL, root.optBoolean("dark_theme_manual", true))
+            }
             if (root.has("sort_most_used")) {
                 editor.putBoolean(KEY_SORT_MOST_USED, root.optBoolean("sort_most_used", true))
             }
@@ -787,6 +1082,9 @@ object ToolPrefs {
                 editor.putString(KEY_ICON_ROW_2, root.optString("icon_row_2", ""))
                 editor.putBoolean(KEY_ICON_ROWS_INIT, true)
             }
+            if (root.has("custom_folders")) {
+                editor.putString(KEY_CUSTOM_FOLDERS, root.optString("custom_folders", ""))
+            }
             if (root.has("manual_order")) {
                 editor.putString(KEY_ORDER, root.optString("manual_order", ""))
             }
@@ -800,6 +1098,17 @@ object ToolPrefs {
                 for (i in 0 until arr.length()) {
                     val id = arr.optString(i, "")
                     if (id.isNotEmpty()) editor.putBoolean(PREFIX_HIDDEN + id, true)
+                }
+            }
+
+            if (root.has("tool_folders")) {
+                prefs.all.keys.filter { it.startsWith(PREFIX_TOOL_FOLDER) }.forEach { editor.remove(it) }
+                val fObj = root.getJSONObject("tool_folders")
+                val keys = fObj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val fName = sanitizeFolderName(fObj.optString(k, ""))
+                    if (fName.isNotEmpty()) editor.putString(PREFIX_TOOL_FOLDER + k, fName)
                 }
             }
 
@@ -847,6 +1156,7 @@ object ToolPrefs {
 
         handleView.setOnTouchListener { v, event ->
             runCatching {
+                val palette = resolvePalette(rowView.context)
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         container.requestDisallowInterceptTouchEvent(true)
@@ -855,7 +1165,7 @@ object ToolPrefs {
                         origIndex = container.indexOfChild(rowView)
                         targetIndex = origIndex
                         rowHeight = rowView.height.coerceAtLeast(1)
-                        rowView.setBackgroundColor(Color.parseColor("#1F3324"))
+                        rowView.setBackgroundColor(Color.parseColor(palette.bgPressed))
                         rowView.alpha = 0.94f
                         rowView.translationZ = 10f
                         runCatching { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
@@ -926,8 +1236,6 @@ object ToolPrefs {
 
 /**
  * Automatic Favicon Loader + Memory/Disk Cache for built-in and user-added Web Search Engines.
- * Works for Google, DuckDuckGo, Bing, Brave, YouTube, Wikipedia, GitHub, StackOverflow,
- * and ANY future web engine URL added via the app's Rules/Search Engine builder.
  */
 object FaviconManager {
 
@@ -965,7 +1273,7 @@ object FaviconManager {
         val domain = extractDomain(rawUrl)
         if (domain == null) {
             val key = "glyph_${fallbackGlyph}_$sizePx"
-            val cached = fallbackCache.get(key) ?: createMonogramBitmap(fallbackGlyph, "#141414", "#00FF66", sizePx).also {
+            val cached = fallbackCache.get(key) ?: createMonogramBitmap(fallbackGlyph, "#282A36", "#50FA7B", sizePx).also {
                 fallbackCache.put(key, it)
             }
             imageView.setImageBitmap(cached)
@@ -974,21 +1282,18 @@ object FaviconManager {
 
         imageView.tag = domain
 
-        // 1. Instant Memory Cache hit (0 disk I/O on UI thread)
         val memBmp = memoryCache.get(domain)
         if (memBmp != null) {
             imageView.setImageBitmap(memBmp)
             return
         }
 
-        // 2. Instant cached brand monogram placeholder on UI thread
         val fbKey = "${domain}_$sizePx"
         val fbBmp = fallbackCache.get(fbKey) ?: createBrandFallbackBitmap(domain, fallbackGlyph, sizePx).also {
             fallbackCache.put(fbKey, it)
         }
         imageView.setImageBitmap(fbBmp)
 
-        // 3. Load from disk cache or network strictly on background thread
         fetchFaviconAsync(context.applicationContext, domain, sizePx) { fetched ->
             if (fetched != null && imageView.tag == domain) {
                 imageView.setImageBitmap(fetched)
@@ -1036,7 +1341,6 @@ object FaviconManager {
         executor.execute {
             var resultBmp: Bitmap? = null
             try {
-                // Check disk cache first on background thread
                 val diskFile = getDiskCacheFile(context, domain)
                 if (diskFile.exists() && diskFile.length() > 64) {
                     val diskBmp = runCatching { BitmapFactory.decodeFile(diskFile.absolutePath) }.getOrNull()
@@ -1081,7 +1385,7 @@ object FaviconManager {
                     readTimeout = 4000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; sel-android/1.9)")
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; sel-android/2.5)")
                 }
                 val code = conn.responseCode
                 if (code in 300..399) {
@@ -1141,18 +1445,12 @@ object FaviconManager {
             d.contains("duckduckgo.") -> createMonogramBitmap("D", "#DE5833", "#FFFFFF", sizePx)
             d.contains("bing.") -> createMonogramBitmap("b", "#008373", "#FFFFFF", sizePx)
             d.contains("brave.") -> createMonogramBitmap("B", "#FB542B", "#FFFFFF", sizePx)
-            d.contains("youtube.") || d.contains("youtu.be") -> createMonogramBitmap("▶", "#FF0000", "#FFFFFF", sizePx)
+            d.contains("youtube.") || d.contains("youtu.be") -> createMonogramBitmap("|>", "#FF0000", "#FFFFFF", sizePx)
             d.contains("wikipedia.") -> createMonogramBitmap("W", "#E8E8E8", "#111111", sizePx)
-            d.contains("github.") -> createMonogramBitmap("GH", "#24292E", "#FFFFFF", sizePx)
-            d.contains("stackoverflow.") -> createMonogramBitmap("SO", "#F48024", "#FFFFFF", sizePx)
-            d.contains("reddit.") -> createMonogramBitmap("R", "#FF4500", "#FFFFFF", sizePx)
-            d.contains("perplexity.") -> createMonogramBitmap("P", "#20808D", "#FFFFFF", sizePx)
-            d.contains("kagi.") -> createMonogramBitmap("K", "#FFB319", "#111111", sizePx)
-            d.contains("startpage.") -> createMonogramBitmap("S", "#6573FF", "#FFFFFF", sizePx)
             else -> {
                 val letter = d.removePrefix("www.").removePrefix("search.").firstOrNull()?.uppercaseChar()?.toString()
                     ?: fallbackGlyph.take(1)
-                createMonogramBitmap(letter, "#1F2922", "#00FF66", sizePx)
+                createMonogramBitmap(letter, "#282A36", "#50FA7B", sizePx)
             }
         }
     }
