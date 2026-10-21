@@ -1498,7 +1498,27 @@ class SelAccessibilityService : AccessibilityService() {
             val words = selectedText.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.size
             val chars = selectedText.length
             val posGlyph = if (anchoredAboveSelection) "^" else "v"
-            statsLabelView?.text = "${words}W:${chars}C $posGlyph"
+            val headerTxt = when (currentMode) {
+                PopupMode.ACTIONS, PopupMode.COLLAPSED_PILL -> "${words}W:${chars}C $posGlyph"
+                PopupMode.WEB_SEARCH_FOLDER -> "< BACK · WEB"
+                PopupMode.YOUTUBE_FOLDER -> "< BACK · YT"
+                PopupMode.CLIP_HISTORY -> "< BACK · CLIPS"
+                PopupMode.MARKDOWN_FOLDER -> "< BACK · MD"
+                PopupMode.REGEX_PIPE -> "< BACK · PIPE"
+                PopupMode.CUSTOM_FOLDER -> "< BACK · ${activeCustomFolder.take(7)}"
+                PopupMode.QR_CODE -> "< BACK · QR"
+                PopupMode.MAGNET -> "< BACK · MAGNET"
+                PopupMode.DEFINE_WORD -> "< BACK · DEFINE"
+                PopupMode.TRANSLATE -> "< BACK · TRANS"
+                PopupMode.EXTRACT -> "< BACK · LINKS"
+                PopupMode.REORDER -> "< DONE · ORDER"
+            }
+            statsLabelView?.text = headerTxt
+            statsLabelView?.setTextColor(
+                Color.parseColor(
+                    if (currentMode == PopupMode.ACTIONS) pal.fgMuted else pal.accentPurple
+                )
+            )
         }
 
         popupView?.requestLayout()
@@ -3438,7 +3458,19 @@ class SelAccessibilityService : AccessibilityService() {
                         true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        if (kotlin.math.abs(event.rawX - touchX) > dp(8)) {
+                        val movedX = kotlin.math.abs(event.rawX - touchX)
+                        val movedY = kotlin.math.abs(event.rawY - touchY)
+                        if (movedX <= dp(6) && movedY <= dp(6) &&
+                            currentMode != PopupMode.ACTIONS &&
+                            currentMode != PopupMode.COLLAPSED_PILL
+                        ) {
+                            lastShownTime = System.currentTimeMillis()
+                            currentMode = PopupMode.ACTIONS
+                            runCatching { v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                            renderPopupBody()
+                            return@runCatching true
+                        }
+                        if (movedX > dp(8)) {
                             val centerX = params.x + rootView.width / 2
                             val snapLeft = centerX < dm.widthPixels / 2
                             ToolPrefs.setSnapLeftEdge(this@SelAccessibilityService, snapLeft)

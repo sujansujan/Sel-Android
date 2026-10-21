@@ -2,12 +2,16 @@
 
 A minimal, zero-bloat (<1 MB) PopClip + Google Lens plain-text alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`, inspired by the clean ASCII scoreboard aesthetic of [PlainTextSports.com](https://plaintextsports.com/) and styled with the official [Dracula & Alucard](https://draculatheme.com/spec) palettes.
 
-## v2.5.0 Highlights
-- **Official Dracula (Dark) & Alucard (Light) Themes + Auto System Toggle:**
-  - Automatically follows Android system Dark / Light mode out of the box (`Dracula` `#282A36` in Dark mode, `Alucard` `#FFFBEB` in Light mode), with a toggle in Settings (`[ FOLLOW SYSTEM: ON/OFF ]` + manual Dracula/Alucard switch).
-- **Computer-Shortcut Inspired Top Icon Rows (Max 4 Items) & Text-Only List Below:**
-  - Top rows (`EDIT ROW`: `[^C] [^V] [^X] [^A]`, plus `ROW 1` and `ROW 2`) display **only** bracketed icons and are capped at **4 items per row**.
-  - Tools in the 1-column list and 2-column grid below the top rows display **clean text labels only** — showing a tool's bracketed icon (`[/]`, `[|>]`, `[≡]`, `[::]`, `[?=]`, `[+]`, `[<>]`, `[**]`, `[s/]`, `[W]`, `[>>]`, `[Aa]`, `[~]`, `[?x]`, `[A↓]`, `[@#]`, `[0x]`, `[~)]`, `[D/]`) **only** when placed on a top row.
-- **Custom Folder Builder in Settings (Default `DEV` Folder Removed):**
-  - Removed the pre-bundled `DEV` folder and `Incognito` tool completely.
-  - Create your own custom folders by name in `02:TOOLS` and tap `[DIR:ROOT]` on any built-in or custom tool to keep the items you want inside your folders.
+## v2.6.0 UX Highlights
+- **Streamlined `[HOME]` with 1-Tap Sandbox Test Chips & Smart Onboarding:**
+  - The top-right status badge (`[ ● ACTIVE ↗ ]` / `[ ○ ENABLE ↗ ]`) is now clickable from every screen, and `[HOME]` collapses the setup banner into a single status line once the service is active.
+  - Added 1-tap sample chips (`[PHONE]`, `[WORD]`, `[MATH]`, `[URL]`, `[HASH]`) above the Sandbox so anyone can test context-aware tools with a single tap, and tucked technical intent strings behind `[ ? AUTOMATION ▾ ]`.
+- **Interactive 4-Slot Top Row Matrix & Checklist Folder Manager in `[TOOLS]`:**
+  - Tap any slot in `ROW 1` or `ROW 2` (`[/]`, `[|>]`, `[<>]`, `[?=]`, or `[ + ]`) to assign or swap bracketed top-row icons via a plain-text slot picker dialog — eliminating button wrapping.
+  - Tap `[ + ITEMS ]` on any custom folder to check/uncheck multiple tools into that folder at once.
+- **1-Tap Popular Search Presets & Visual Rule List in `[RULES]`:**
+  - Added 1-tap presets (`[+REDDIT]`, `[+MAPS]`, `[+PERPLEXITY]`, `[+GITHUB]`, `[+IMDB]`, `[+CHATGPT]`), a visual placement selector (`[ IN: WEB SEARCH > ]` / `[ IN: MAIN LIST ]` / `[ IN: YOUTUBE > ]` / custom folder), and a visual list of active custom rules with `[ × ]` delete buttons.
+- **Unified Popup Behavior Controls & 1-Tap Installed App Picker in `[SET]`:**
+  - Toggle Dracula/Alucard theme, `1-COL` vs `2-COL` layout, `LEFT` vs `RIGHT` screen edge, and `MOST USED` vs `MANUAL` sort in one place, plus mute apps via `[ + PICK INSTALLED APP ]` without typing package names.
+- **Polished `[CLIPS]` & Submenu Header Navigation:**
+  - Added `[ + SAVE CURRENT CLIP ]`, replaced the literal `"(Empty)"` scratchpad text with a proper hint + `[ ✓ SAVE NOTES ]`, and made the floating popup header display `< BACK · [MODE]` in submenus.

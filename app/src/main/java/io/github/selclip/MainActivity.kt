@@ -1,6 +1,7 @@
 package io.github.selclip
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -11,6 +12,9 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextUtils
+import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -37,17 +41,37 @@ class MainActivity : Activity() {
         CLIPS("CLIPS")
     }
 
+    private data class QuickPreset(
+        val chipLabel: String,
+        val glyph: String,
+        val ruleLabel: String,
+        val targetUrl: String
+    )
+
+    private val popularSearchPresets = listOf(
+        QuickPreset("+REDDIT", "RDT", "SEARCH/REDDIT", "https://www.reddit.com/search/?q={text}"),
+        QuickPreset("+MAPS", "MAP", "SEARCH/GOOGLE MAPS", "https://www.google.com/maps/search/?api=1&query={text}"),
+        QuickPreset("+PERPLEXITY", "PPL", "SEARCH/PERPLEXITY", "https://www.perplexity.ai/search?q={text}"),
+        QuickPreset("+GITHUB", "GH", "SEARCH/GITHUB", "https://github.com/search?q={text}"),
+        QuickPreset("+IMDB", "IMD", "SEARCH/IMDB", "https://www.imdb.com/find/?q={text}"),
+        QuickPreset("+CHATGPT", "GPT", "SEARCH/CHATGPT", "https://chatgpt.com/?q={text}")
+    )
+
     private var activeTab: Tab = Tab.HOME
     private var lastRenderedIsDark: Boolean? = null
+    private var selectedRuleDestination: String = "SEARCH/"
     private val tabButtons = mutableMapOf<Tab, TextView>()
     private val tabPanels = mutableMapOf<Tab, View>()
 
     private lateinit var serviceStatusBadge: TextView
+    private lateinit var homeOnboardingCard: LinearLayout
+    private lateinit var homeSandboxInput: EditText
     private lateinit var iconRowsSummaryContainer: LinearLayout
     private lateinit var customFoldersContainer: LinearLayout
     private lateinit var customFolderInput: EditText
     private lateinit var reorderListContainer: LinearLayout
     private lateinit var sortModeButton: TextView
+    private lateinit var visualRulesContainer: LinearLayout
     private lateinit var rulesView: EditText
     private lateinit var clipListContainer: LinearLayout
     private lateinit var logView: EditText
@@ -93,11 +117,11 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor(p.bgPrimary))
         }
 
-        // 1. Fixed Top Terminal Header
+        // 1. Fixed Top Terminal Header with Clickable Status Pill
         val topHeader = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor(p.bgHeader))
-            setPadding(dp(14), dp(14), dp(14), dp(10))
+            setPadding(dp(14), dp(12), dp(14), dp(10))
         }
 
         val titleRow = LinearLayout(this).apply {
@@ -105,7 +129,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val titleLabel = label("[sel_] // PLAIN-TEXT PALETTE", 14.5f, p.fgPrimary).apply {
+        val titleLabel = label("[sel_] // PLAIN-TEXT PALETTE", 14f, p.fgPrimary, bold = true).apply {
             this.layoutParams = LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -113,16 +137,27 @@ class MainActivity : Activity() {
             )
         }
 
-        serviceStatusBadge = label("○ INACTIVE", 10.5f, p.dangerRed)
+        serviceStatusBadge = label("[ ○ ENABLE ↗ ]", 10.5f, p.dangerRed, bold = true).apply {
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor(p.bgSurface))
+                setStroke(dp(1), Color.parseColor(p.border))
+                cornerRadius = dp(2).toFloat()
+            }
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
         topHeader.addView(
             label(
-                "+-- v2.5.1 · ${p.name} theme · max 4 top-row icons · custom folders --+",
-                10f,
+                "+-- v2.6.0 · ${p.name} theme · 4-icon top rows · custom folders --+",
+                9.8f,
                 p.fgMuted
-            )
+            ).apply { setPadding(0, dp(3), 0, 0) }
         )
         root.addView(topHeader)
 
@@ -179,7 +214,7 @@ class MainActivity : Activity() {
 
         val bodyHost = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(14), dp(14), dp(24))
+            setPadding(dp(14), dp(12), dp(14), dp(24))
         }
 
         tabPanels[Tab.HOME] = buildHomeTab()
@@ -222,11 +257,14 @@ class MainActivity : Activity() {
         refreshAllTabs()
     }
 
-    private fun buildThemeToggleCard(): View {
+    private fun buildThemeAndBehaviorCard(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         val followSys = ToolPrefs.isFollowSystemTheme(this)
         val sysDark = ToolPrefs.isSystemInDarkMode(this)
+        val twoCol = ToolPrefs.isTwoColumnGrid(this)
+        val snapLeft = ToolPrefs.isSnapLeftEdge(this)
+        val sortMostUsed = ToolPrefs.isSortMostUsed(this)
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -235,25 +273,27 @@ class MainActivity : Activity() {
                 setStroke(dp(1), Color.parseColor(p.border))
                 cornerRadius = dp(3).toFloat()
             }
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
 
+            // 1. Theme Palette Row
             addView(
                 label(
-                    "THEME: ${p.name} (${if (p.isDark) "DARK #282A36" else "LIGHT #FFFBEB"})" +
-                        if (followSys) " · SYSTEM AUTO (${if (sysDark) "DARK" else "LIGHT"})" else " · MANUAL",
+                    "THEME PALETTE: ${p.name} (${if (p.isDark) "DARK" else "LIGHT"})" +
+                        if (followSys) " · AUTO (${if (sysDark) "DARK" else "LIGHT"})" else " · LOCKED",
                     10.5f,
-                    p.accentGreen
+                    p.accentGreen,
+                    bold = true
                 ).apply { setPadding(0, 0, 0, dp(4)) }
             )
 
-            val btnRow = LinearLayout(this@MainActivity).apply {
+            val themeRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
 
-            btnRow.addView(
-                buttonPill(
-                    if (followSys) "[ SYSTEM AUTO: ON ]" else "[ SYSTEM AUTO: OFF ]",
+            themeRow.addView(
+                equalButtonPill(
+                    if (followSys) "[ AUTO: ON ]" else "[ AUTO: OFF ]",
                     if (followSys) p.accentGreen else p.fgMuted
                 ) {
                     ToolPrefs.setFollowSystemTheme(this@MainActivity, !followSys)
@@ -262,9 +302,9 @@ class MainActivity : Activity() {
                 }
             )
 
-            btnRow.addView(
-                buttonPill(
-                    if (p.isDark) "[ USE ALUCARD LIGHT ]" else "[ USE DRACULA DARK ]",
+            themeRow.addView(
+                equalButtonPill(
+                    if (p.isDark) "[ ALUCARD LIGHT ]" else "[ DRACULA DARK ]",
                     p.accentPurple
                 ) {
                     val targetDark = !p.isDark
@@ -274,123 +314,334 @@ class MainActivity : Activity() {
                     rebuildUi()
                 }
             )
+            addView(themeRow)
 
-            addView(btnRow)
+            // 2. Popup Layout & Edge Snap Row
+            addView(
+                label(
+                    "POPUP LAYOUT & SCREEN EDGE:",
+                    10.5f,
+                    p.fgSecondary,
+                    bold = true
+                ).apply { setPadding(0, dp(8), 0, dp(4)) }
+            )
+
+            val behaviorRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            behaviorRow.addView(
+                equalButtonPill(
+                    if (twoCol) "[ GRID: 2-COL ]" else "[ LIST: 1-COL ]",
+                    if (twoCol) p.accentCyan else p.fgPrimary
+                ) {
+                    ToolPrefs.setTwoColumnGrid(this@MainActivity, !twoCol)
+                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                    rebuildUi()
+                }
+            )
+
+            behaviorRow.addView(
+                equalButtonPill(
+                    if (snapLeft) "[ EDGE: LEFT ]" else "[ EDGE: RIGHT ]",
+                    p.fgPrimary
+                ) {
+                    ToolPrefs.setSnapLeftEdge(this@MainActivity, !snapLeft)
+                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                    rebuildUi()
+                }
+            )
+            addView(behaviorRow)
+
+            // 3. Tool Sort Order Row
+            val sortRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, 0)
+            }
+
+            sortRow.addView(
+                equalButtonPill(
+                    if (sortMostUsed) "[ SORT: MOST USED FIRST ]" else "[ SORT: MANUAL ORDER ]",
+                    if (sortMostUsed) p.accentGreen else p.fgMuted
+                ) {
+                    ToolPrefs.setSortMostUsed(this@MainActivity, !sortMostUsed)
+                    rebuildUi()
+                }
+            )
+            addView(sortRow)
         }
     }
 
-    // --- TAB 1: HOME (Quick Permission/Theme Bar, Context-Aware Test Sandbox at Top, & Lens Grabber) ---
+    // --- TAB 1: HOME (Smart Status Banner, 1-Tap Quick-Test Chips + Sandbox, & Clean Lens Grab) ---
     private fun buildHomeTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // PERMISSION & THEME", 11.5f, p.fgSecondary))
-            addView(buttonPill("[ ENABLE / MANAGE IN ACCESSIBILITY SETTINGS ↗ ]", p.accentGreen) {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            })
-            addView(buildThemeToggleCard())
-
-            // Placed right near the top of HOME so it sits well above the soft keyboard and requires zero scrolling
-            addView(label("\n02 // CONTEXT-AWARE TEST SANDBOX", 11.5f, p.fgSecondary))
-            addView(
-                label(
-                    "Highlight any word or number below to test the popup:",
-                    10.5f,
-                    p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(6)) }
-            )
-
-            val sandbox = EditText(this@MainActivity).apply {
-                typeface = Typeface.MONOSPACE
-                textSize = 12f
-                setTextColor(Color.parseColor(p.fgPrimary))
-                setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                setText(
-                    "Nepal Phone (Call/SMS/WA/W4B): 9841234567  or  +977 9801234567\n" +
-                        "Word (Define [?=]): serendipity\n" +
-                        "Torrent Hash (Magnet [0x]): dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\n" +
-                        "Math / Unit: 145 * 12   or   72 F   or   0xFF\n" +
-                        "Unix Timestamp: 1730000000\n" +
-                        "Base64: aGVsbG8gd29ybGQ=\n" +
-                        "Dirty URL ([?x]): https://example.com/item?utm_source=ads&fbclid=123"
-                )
+            // Dynamic Onboarding / Status Card (prominent when inactive, compact 1-liner when active)
+            homeOnboardingCard = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(10)
+                }
             }
-            addView(sandbox)
+            addView(homeOnboardingCard)
 
-            addView(label("\n03 // [+] LENS SCREEN TEXT GRABBER", 11.5f, p.fgSecondary))
+            // Section 01: Interactive Test Sandbox with 1-Tap Quick-Test Sample Chips
+            addView(label("01 // INTERACTIVE TEST SANDBOX", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Extract unselectable text anywhere on screen with word chips, [+ADD] multi-select, and '[' / ']' handles.",
+                    "Tap any sample chip below to spawn the popup in 1 tap, or highlight any word/number in the box:",
                     10.5f,
                     p.fgMuted
                 ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
-            val rowBtns = LinearLayout(this@MainActivity).apply {
+            val sandboxText =
+                "Nepal Phone (Call/SMS/WA/W4B): 9841234567  or  +977 9801234567\n" +
+                    "Word (Define [?=]): serendipity\n" +
+                    "Torrent Hash (Magnet [0x]): dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\n" +
+                    "Math / Unit: 145 * 12   or   72 F   or   0xFF\n" +
+                    "Unix Timestamp: 1730000000\n" +
+                    "Base64: aGVsbG8gd29ybGQ=\n" +
+                    "Dirty URL ([?x]): https://example.com/item?utm_source=ads&fbclid=123"
+
+            // 1-Tap Sample Chips Row
+            val sampleChipsRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, 0, 0, dp(6))
             }
 
-            rowBtns.addView(buttonPill("[ [+] LAUNCH LENS GRAB ]", p.accentGreen) {
-                startActivity(Intent(this@MainActivity, ScreenGrabTriggerActivity::class.java))
-            })
+            val samples = listOf(
+                "[PHONE]" to "9841234567",
+                "[WORD]" to "serendipity",
+                "[MATH]" to "145 * 12",
+                "[URL]" to "https://example.com/item?utm_source=ads&fbclid=123",
+                "[HASH]" to "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+            )
 
-            rowBtns.addView(buttonPill("[ [^C] COPY INTENT ]", p.fgPrimary) {
-                copyPlain("io.github.selclip.ACTION_GRAB_SCREEN", "Copied intent action")
-            })
+            samples.forEach { (chipTitle, sampleVal) ->
+                val chip = TextView(this@MainActivity).apply {
+                    text = chipTitle
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    textSize = 10f
+                    setTextColor(Color.parseColor(p.accentCyan))
+                    gravity = Gravity.CENTER
+                    setPadding(dp(4), dp(6), dp(4), dp(6))
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor(p.bgSurface))
+                        setStroke(dp(1), Color.parseColor(p.border))
+                        cornerRadius = dp(2).toFloat()
+                    }
+                    this.layoutParams = LinearLayout.LayoutParams(
+                        0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        1f
+                    ).apply {
+                        marginEnd = dp(3)
+                    }
+                    setOnClickListener {
+                        triggerSandboxSample(sampleVal)
+                    }
+                }
+                sampleChipsRow.addView(chip)
+            }
+            addView(sampleChipsRow)
+
+            homeSandboxInput = EditText(this@MainActivity).apply {
+                typeface = Typeface.MONOSPACE
+                textSize = 11.8f
+                setTextColor(Color.parseColor(p.fgPrimary))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.border))
+                    cornerRadius = dp(2).toFloat()
+                }
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                setText(sandboxText)
+            }
+            addView(homeSandboxInput)
+
+            // Section 02: Lens Screen Text Grabber with collapsible Automation Info
+            addView(label("\n02 // [+] LENS SCREEN TEXT GRABBER", 11.5f, p.fgSecondary, bold = true))
+            addView(
+                label(
+                    "Extract unselectable text from images, videos, or any app with interactive word chips and [+ADD] multi-select:",
+                    10.5f,
+                    p.fgMuted
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
+            )
+
+            val automationBox = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.divider))
+                    cornerRadius = dp(2).toFloat()
+                }
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(4)
+                }
+
+                addView(
+                    label(
+                        "3RD-PARTY GESTURE / TASKER / MACRODROID TRIGGERS:\n" +
+                            "• Action:    io.github.selclip.ACTION_GRAB_SCREEN\n" +
+                            "• Activity:  io.github.selclip.ScreenGrabTriggerActivity\n" +
+                            "• Deep Link: sel://grab",
+                        10f,
+                        p.fgPrimary
+                    )
+                )
+                addView(
+                    buttonPill("[ [^C] COPY INTENT ACTION ]", p.accentCyan) {
+                        copyPlain("io.github.selclip.ACTION_GRAB_SCREEN", "Copied intent action")
+                    }
+                )
+            }
+
+            val rowBtns = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            rowBtns.addView(
+                equalButtonPill("[ [+] LAUNCH LENS GRAB ]", p.accentGreen) {
+                    startActivity(Intent(this@MainActivity, ScreenGrabTriggerActivity::class.java))
+                }
+            )
+
+            lateinit var toggleAutoBtn: TextView
+            toggleAutoBtn = equalButtonPill("[ ? AUTOMATION ▾ ]", p.fgMuted) {
+                val show = automationBox.visibility != View.VISIBLE
+                automationBox.visibility = if (show) View.VISIBLE else View.GONE
+                toggleAutoBtn.text = if (show) "[ ? AUTOMATION ▴ ]" else "[ ? AUTOMATION ▾ ]"
+            }
+            rowBtns.addView(toggleAutoBtn)
 
             addView(rowBtns)
-
-            val intentInfo = """
-                Action:    io.github.selclip.ACTION_GRAB_SCREEN
-                Activity:  io.github.selclip.ScreenGrabTriggerActivity
-                Deep Link: sel://grab
-            """.trimIndent()
-
-            addView(TextView(this@MainActivity).apply {
-                text = intentInfo
-                typeface = Typeface.MONOSPACE
-                textSize = 10.5f
-                setTextColor(Color.parseColor(p.fgPrimary))
-                setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-            })
+            addView(automationBox)
         }
     }
 
-    // --- TAB 2 (SET): THEME SETTINGS, BACKUP / EXPORT / IMPORT & PER-APP BLACKLIST ---
+    private fun triggerSandboxSample(sample: String) {
+        val full = homeSandboxInput.text?.toString() ?: ""
+        val idx = full.indexOf(sample)
+        if (idx >= 0) {
+            homeSandboxInput.requestFocus()
+            homeSandboxInput.setSelection(idx, idx + sample.length)
+        }
+        val svc = SelAccessibilityService.instance
+        if (svc != null) {
+            svc.showFromExternalText(sample)
+        } else {
+            Toast.makeText(
+                this,
+                "Enable [sel] in Accessibility Settings first (tap [ ○ ENABLE ↗ ] at top right)",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    private fun refreshHomeOnboardingCard() {
+        if (!::homeOnboardingCard.isInitialized) return
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        val active = SelAccessibilityService.instance != null
+        homeOnboardingCard.removeAllViews()
+
+        if (!active) {
+            homeOnboardingCard.background = GradientDrawable().apply {
+                setColor(Color.parseColor(p.bgSurface))
+                setStroke(dp(1), Color.parseColor(p.dangerRed))
+                cornerRadius = dp(3).toFloat()
+            }
+            homeOnboardingCard.setPadding(dp(12), dp(10), dp(12), dp(10))
+            homeOnboardingCard.addView(
+                label("[ ! ] STEP 1: ENABLE ACCESSIBILITY SERVICE", 11.5f, p.dangerRed, bold = true)
+            )
+            homeOnboardingCard.addView(
+                label(
+                    "Turn on [sel] Plain-Text Palette in Android Accessibility Settings so the popup appears whenever you select text.",
+                    10.2f,
+                    p.fgPrimary
+                ).apply { setPadding(0, dp(3), 0, dp(6)) }
+            )
+            homeOnboardingCard.addView(
+                buttonPill("[ ↗ ENABLE IN ACCESSIBILITY SETTINGS ]", p.accentGreen) {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+            )
+        } else {
+            homeOnboardingCard.background = GradientDrawable().apply {
+                setColor(Color.parseColor(p.bgSurface))
+                setStroke(dp(1), Color.parseColor(p.border))
+                cornerRadius = dp(3).toFloat()
+            }
+            homeOnboardingCard.setPadding(dp(10), dp(7), dp(10), dp(7))
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(
+                label("● [sel_] is active. Select text anywhere or tap a chip below:", 10.2f, p.accentGreen).apply {
+                    this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+            )
+            row.addView(
+                label("[SET ↗]", 10f, p.accentPurple, bold = true).apply {
+                    setPadding(dp(6), dp(2), dp(2), dp(2))
+                    setOnClickListener { switchTab(Tab.BACKUP) }
+                }
+            )
+            homeOnboardingCard.addView(row)
+        }
+    }
+
+    // --- TAB 2 (SET): THEME & BEHAVIOR, 1-TAP APP PICKER BLACKLIST, & CLEAN BACKUP ---
     private fun buildBackupAndSettingsTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // THEME PALETTE (DRACULA DARK / ALUCARD LIGHT)", 12f, p.fgSecondary))
+            addView(label("01 // THEME & POPUP BEHAVIOR", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Follow system dark/light mode automatically or lock the popup and app to Dracula (Dark) or Alucard (Light):",
+                    "Customize theme palette, 1-column vs 2-column popup layout, screen edge side, and tool sorting:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
-            addView(buildThemeToggleCard())
+            addView(buildThemeAndBehaviorCard())
 
-            addView(label("\n02 // PER-APP BLACKLIST (⊘ MUTED APPS)", 12f, p.fgSecondary))
+            addView(label("\n02 // PER-APP BLACKLIST (⊘ MUTED APPS)", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Muted apps will not trigger automatic selection popups (manual Lens Grab still works).",
+                    "Muted apps will not trigger automatic selection popups. Pick from installed apps or enter a package name:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
-            val addBlkRow = LinearLayout(this@MainActivity).apply {
+            // 1-Tap Installed App Picker Button + Collapsible Manual Package Input
+            val manualPkgRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, dp(8))
+                visibility = View.GONE
+                setPadding(0, dp(4), 0, dp(6))
             }
 
             blacklistInput = EditText(this@MainActivity).apply {
@@ -401,10 +652,11 @@ class MainActivity : Activity() {
                 setPadding(dp(10), dp(8), dp(10), dp(8))
                 hint = "com.example.app"
                 setHintTextColor(Color.parseColor(p.fgMuted))
+                isSingleLine = true
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
 
-            val addBlkBtn = buttonPill("  [ + MUTE ]", p.accentGreen) {
+            val addBlkBtn = buttonPill(" [ + MUTE ]", p.accentGreen) {
                 val pkg = blacklistInput.text.toString().trim()
                 if (pkg.isNotEmpty()) {
                     ToolPrefs.setAppBlacklisted(this@MainActivity, pkg, true)
@@ -412,10 +664,31 @@ class MainActivity : Activity() {
                     refreshBlacklistView()
                 }
             }
+            manualPkgRow.addView(blacklistInput)
+            manualPkgRow.addView(addBlkBtn)
 
-            addBlkRow.addView(blacklistInput)
-            addBlkRow.addView(addBlkBtn)
-            addView(addBlkRow)
+            val pickerActionRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(6))
+            }
+
+            pickerActionRow.addView(
+                equalButtonPill("[ + PICK INSTALLED APP ]", p.accentGreen) {
+                    showInstalledAppsBlacklistDialog()
+                }
+            )
+
+            lateinit var manualPkgToggle: TextView
+            manualPkgToggle = equalButtonPill("[ + BY PACKAGE ID ▾ ]", p.fgMuted) {
+                val show = manualPkgRow.visibility != View.VISIBLE
+                manualPkgRow.visibility = if (show) View.VISIBLE else View.GONE
+                manualPkgToggle.text = if (show) "[ + BY PACKAGE ID ▴ ]" else "[ + BY PACKAGE ID ▾ ]"
+            }
+            pickerActionRow.addView(manualPkgToggle)
+
+            addView(pickerActionRow)
+            addView(manualPkgRow)
 
             blacklistContainer = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -428,40 +701,36 @@ class MainActivity : Activity() {
             }
             addView(blacklistContainer)
 
-            addView(label("\n03 // EXPORT & IMPORT SETTINGS + CUSTOM FOLDERS", 12f, p.fgSecondary))
+            addView(label("\n03 // BACKUP & RESTORE CONFIG (.JSON)", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Exports theme mode, custom folders, tool folder assignments, top icon rows, tool order, blacklist, and rules.txt as a portable JSON file.",
+                    "Export or restore all settings, custom folders, top icon rows, tool order, muted apps, and rules:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(4), 0, dp(10)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
             val fileBtnRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(8))
             }
-            fileBtnRow.addView(buttonPill("[ ⇩ EXPORT .JSON ]", p.accentGreen) {
+            fileBtnRow.addView(equalButtonPill("[ ⇩ EXPORT .JSON ]", p.accentGreen) {
                 launchExportJsonFile()
             })
-
-            fileBtnRow.addView(buttonPill("[ ⇧ IMPORT .JSON ]", p.fgPrimary) {
+            fileBtnRow.addView(equalButtonPill("[ ⇧ IMPORT .JSON ]", p.fgPrimary) {
                 launchImportJsonFile()
             })
             addView(fileBtnRow)
 
             val clipBtnRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(8))
             }
-            clipBtnRow.addView(buttonPill("[ [^C] COPY JSON ]", p.accentGreen) {
+            clipBtnRow.addView(equalButtonPill("[ [^C] COPY JSON ]", p.accentCyan) {
                 val json = ToolPrefs.exportBackupJson(this@MainActivity)
                 backupPreviewBox.setText(json)
-                copyPlain(json, "Exported config JSON to clipboard")
+                copyPlain(json, "Copied config JSON to clipboard")
             })
-
-            clipBtnRow.addView(buttonPill("[ [^V] RESTORE JSON ]", p.fgPrimary) {
-                val candidate = backupPreviewBox.text.toString().ifBlank {
+            clipBtnRow.addView(equalButtonPill("[ [^V] RESTORE CLIP ]", p.fgPrimary) {
+                val candidate = backupPreviewBox.text.toString().takeIf { it.isNotBlank() } ?: run {
                     val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                     cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString() ?: ""
                 }
@@ -470,12 +739,17 @@ class MainActivity : Activity() {
                     rebuildUi()
                     Toast.makeText(this@MainActivity, "✓ Settings & custom folders restored!", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Invalid backup JSON", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Copy a valid backup JSON first", Toast.LENGTH_SHORT).show()
                 }
             })
             addView(clipBtnRow)
 
-            addView(buttonPill("[ ↗ SHARE CONFIG BUNDLE ]", p.accentPurple) {
+            val shareAndRawRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 0, 0, dp(6))
+            }
+
+            shareAndRawRow.addView(equalButtonPill("[ ↗ SHARE BUNDLE ]", p.accentPurple) {
                 val json = ToolPrefs.exportBackupJson(this@MainActivity)
                 val share = Intent(Intent.ACTION_SEND).apply {
                     type = "application/json"
@@ -487,33 +761,47 @@ class MainActivity : Activity() {
 
             backupPreviewBox = EditText(this@MainActivity).apply {
                 typeface = Typeface.MONOSPACE
-                textSize = 10.5f
+                textSize = 10f
                 setTextColor(Color.parseColor(p.fgPrimary))
                 setBackgroundColor(Color.parseColor(p.bgSurface))
                 setPadding(dp(10), dp(10), dp(10), dp(10))
                 minLines = 5
                 maxLines = 8
-                hint = "Config JSON preview (or paste backup JSON here to restore)…"
+                visibility = View.GONE
+                hint = "Paste backup JSON here…"
                 setHintTextColor(Color.parseColor(p.fgMuted))
             }
+
+            lateinit var rawJsonToggle: TextView
+            rawJsonToggle = equalButtonPill("[ RAW JSON ▾ ]", p.fgMuted) {
+                val show = backupPreviewBox.visibility != View.VISIBLE
+                if (show) {
+                    backupPreviewBox.setText(ToolPrefs.exportBackupJson(this@MainActivity))
+                }
+                backupPreviewBox.visibility = if (show) View.VISIBLE else View.GONE
+                rawJsonToggle.text = if (show) "[ RAW JSON ▴ ]" else "[ RAW JSON ▾ ]"
+            }
+            shareAndRawRow.addView(rawJsonToggle)
+
+            addView(shareAndRawRow)
             addView(backupPreviewBox)
         }
     }
 
-    // --- TAB 3: TOOLS (Top Icon Rows max 4, Custom Folder Builder, & Tool Order / Folder Assignment) ---
+    // --- TAB 3: TOOLS (Interactive 4-Slot Top Row Matrix, Checklist Folder Manager, & Clean Tool List) ---
     private fun buildToolsTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // TOP ICON-ONLY ROWS (MAX 4 ITEMS PER ROW)", 12f, p.fgSecondary))
+            addView(label("01 // TOP ICON-ONLY ROWS (TAP ANY SLOT TO EDIT)", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Top rows show ONLY bracketed icons (max 4 items per row). Tools below the top rows show clean text labels only (no icons). Tap [LIST] -> [★R1] -> [★R2] on any tool below.",
+                    "Top rows display bracketed icons only (max 4 per row). Tap any [ + ] or icon slot below to assign/remove:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
             iconRowsSummaryContainer = LinearLayout(this@MainActivity).apply {
@@ -523,43 +811,44 @@ class MainActivity : Activity() {
                     setStroke(dp(1), Color.parseColor(p.border))
                     cornerRadius = dp(2).toFloat()
                 }
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(10), dp(8), dp(10), dp(8))
             }
             addView(iconRowsSummaryContainer)
 
+            // Equal-width non-wrapping action bar for presets
             val presetRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(6), 0, dp(14))
+                setPadding(0, dp(4), 0, dp(12))
             }
-            presetRow.addView(buttonPill("[ ↺ 2-ROW PRESET (4x2) ]", p.accentGreen) {
+            presetRow.addView(equalButtonPill("[ ↺ 4x2 PRESET ]", p.accentGreen) {
                 ToolPrefs.applyDefaultTwoIconRowsPreset(this@MainActivity)
                 refreshReorderList()
                 Toast.makeText(this@MainActivity, "Loaded 4 icons each in Row 1 & Row 2", Toast.LENGTH_SHORT).show()
             })
-            presetRow.addView(buttonPill("[ × CLEAR R1 ]", p.fgPrimary) {
+            presetRow.addView(equalButtonPill("[ × CLEAR R1 ]", p.fgPrimary) {
                 ToolPrefs.clearIconRow(this@MainActivity, 1)
                 refreshReorderList()
             })
-            presetRow.addView(buttonPill("[ × CLEAR R2 ]", p.fgPrimary) {
+            presetRow.addView(equalButtonPill("[ × CLEAR R2 ]", p.fgPrimary) {
                 ToolPrefs.clearIconRow(this@MainActivity, 2)
                 refreshReorderList()
             })
             addView(presetRow)
 
-            // Section 2: Interactive Custom Folder Builder
-            addView(label("02 // CREATE CUSTOM FOLDERS & KEEP ITEMS IN THEM", 12f, p.fgSecondary))
+            // Section 2: Interactive Custom Folder Builder with 1-Tap [+ ITEMS] Checklist Dialog
+            addView(label("02 // CUSTOM FOLDERS (GROUP TOOLS INTO SUBMENUS)", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Create your own folders below (e.g. READ, SOCIAL, TOOLS), then tap [DIR:ROOT] on any tool in the list below to move it inside your folder.",
+                    "Create a folder (e.g. READ, SOCIAL, AI), then tap [ + ITEMS ] on the folder to check which tools belong inside:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
             val createFolderRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, dp(8))
+                setPadding(0, 0, 0, dp(6))
             }
 
             customFolderInput = EditText(this@MainActivity).apply {
@@ -568,25 +857,21 @@ class MainActivity : Activity() {
                 setTextColor(Color.parseColor(p.fgPrimary))
                 setBackgroundColor(Color.parseColor(p.bgSurface))
                 setPadding(dp(10), dp(8), dp(10), dp(8))
-                hint = "New Folder Name (e.g. READ, STUDY)"
+                hint = "Folder Name (e.g. READ, STUDY)"
                 setHintTextColor(Color.parseColor(p.fgMuted))
                 isSingleLine = true
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
 
-            val addFolderBtn = buttonPill("  [ + CREATE FOLDER ]", p.accentGreen) {
+            val addFolderBtn = buttonPill(" [ + CREATE ]", p.accentGreen) {
                 val raw = customFolderInput.text.toString().trim()
                 if (ToolPrefs.createCustomFolder(this@MainActivity, raw)) {
                     val clean = ToolPrefs.sanitizeFolderName(raw)
                     customFolderInput.setText("")
                     refreshReorderList()
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Created folder [$clean >]. Tap [DIR:ROOT] on any tool below to add items!",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    showFolderChecklistDialog(clean)
                 } else {
-                    Toast.makeText(this@MainActivity, "Enter a valid folder name", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Enter a valid folder name (e.g. READ)", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -606,42 +891,37 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    bottomMargin = dp(14)
+                    bottomMargin = dp(12)
                 }
             }
             addView(customFoldersContainer)
 
-            // Section 3: Tool Reorder, Top Row Slot (R1/R2), Custom Folder Assignment, & Visibility
-            addView(label("03 // TOOL ORDER, TOP ROW SLOT, FOLDER & VISIBILITY", 12f, p.fgSecondary))
+            // Section 3: Tool Reorder, Top Row Slot (R1/R2), & Visibility
+            addView(label("03 // ALL TOOLS (DRAG ≡ TO REORDER)", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Drag ≡ to reorder. Tap [DIR:ROOT] to move a tool into your custom folder. Tap [LIST] / [★R1] / [★R2] to place its bracketed icon on Top Row 1 or 2 (max 4).",
+                    "Tools below top rows display clean text labels only. Tap [LIST]/[★R1]/[★R2] to pin icon to top rows:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
             val controls = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(4), 0, dp(8))
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(6))
             }
 
-            sortModeButton = label("", 11.5f, p.accentGreen).apply {
-                setPadding(0, dp(4), dp(16), dp(4))
-                setOnClickListener {
-                    val next = !ToolPrefs.isSortMostUsed(this@MainActivity)
-                    ToolPrefs.setSortMostUsed(this@MainActivity, next)
-                    refreshReorderList()
-                }
+            sortModeButton = equalButtonPill("", p.accentGreen) {
+                val next = !ToolPrefs.isSortMostUsed(this@MainActivity)
+                ToolPrefs.setSortMostUsed(this@MainActivity, next)
+                refreshReorderList()
             }
 
-            val resetBtn = label("[ RESET USE COUNTS ]", 11.5f, p.dangerRed).apply {
-                setPadding(0, dp(4), 0, dp(4))
-                setOnClickListener {
-                    ToolPrefs.resetUseCounts(this@MainActivity)
-                    refreshReorderList()
-                    Toast.makeText(this@MainActivity, "Usage counts reset", Toast.LENGTH_SHORT).show()
-                }
+            val resetBtn = equalButtonPill("[ × RESET COUNTS ]", p.dangerRed) {
+                ToolPrefs.resetUseCounts(this@MainActivity)
+                refreshReorderList()
+                Toast.makeText(this@MainActivity, "Usage counts reset", Toast.LENGTH_SHORT).show()
             }
 
             controls.addView(sortModeButton)
@@ -655,13 +935,13 @@ class MainActivity : Activity() {
                     setStroke(dp(1), Color.parseColor(p.border))
                     cornerRadius = dp(2).toFloat()
                 }
-                setPadding(dp(8), dp(8), dp(10), dp(8))
+                setPadding(dp(8), dp(8), dp(8), dp(8))
             }
             addView(reorderListContainer)
         }
     }
 
-    // --- TAB 4: RULES (Add Web Engines with Auto-Favicon, Custom Commands, & Regex Pipes) ---
+    // --- TAB 4: RULES (1-Tap Popular Search Presets, Visual Destination Picker, & Visual Rule Manager) ---
     private fun buildRulesTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
@@ -670,15 +950,54 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // ADD WEB SEARCH ENGINE (OR ADD TO CUSTOM FOLDER)", 12f, p.fgSecondary))
+            addView(label("01 // 1-TAP POPULAR SEARCH PRESETS", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Add any search engine or URL tool to WEB SEARCH >, top-level, or into any custom folder.",
+                    "Tap any preset below to add it to WEB SEARCH > with automatic favicon:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
 
+            // 2 rows of 3 equal-width preset chips
+            for (rowIdx in 0..1) {
+                val chipRow = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                val slice = popularSearchPresets.subList(rowIdx * 3, (rowIdx + 1) * 3)
+                slice.forEach { preset ->
+                    chipRow.addView(
+                        equalButtonPill("[${preset.chipLabel}]", p.accentCyan) {
+                            val added = ToolPrefs.appendCustomRuleLine(
+                                this@MainActivity,
+                                preset.glyph,
+                                preset.ruleLabel,
+                                preset.targetUrl
+                            )
+                            if (added) {
+                                FaviconManager.prefetchAllForTools(this@MainActivity)
+                                refreshRulesTabViews()
+                                refreshReorderList()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "✓ Added ${preset.ruleLabel.substringAfter("/")} to WEB SEARCH >",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "${preset.ruleLabel.substringAfter("/")} is already added",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    )
+                }
+                addView(chipRow)
+            }
+
+            addView(label("\n02 // ADD CUSTOM SEARCH ENGINE OR URL TOOL", 11.5f, p.fgSecondary, bold = true))
             val engineCard = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
@@ -686,7 +1005,13 @@ class MainActivity : Activity() {
                     setStroke(dp(1), Color.parseColor(p.border))
                     cornerRadius = dp(2).toFloat()
                 }
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(4)
+                }
             }
 
             val engineNameInput = EditText(this@MainActivity).apply {
@@ -695,7 +1020,7 @@ class MainActivity : Activity() {
                 setTextColor(Color.parseColor(p.fgPrimary))
                 setBackgroundColor(Color.parseColor(p.bgInput))
                 setPadding(dp(10), dp(8), dp(10), dp(8))
-                hint = "Name (e.g. KAGI, STARTPAGE, or FOLDER/NAME)"
+                hint = "Tool Name (e.g. KAGI, STARTPAGE)"
                 setHintTextColor(Color.parseColor(p.fgMuted))
                 isSingleLine = true
             }
@@ -717,143 +1042,192 @@ class MainActivity : Activity() {
                 }
             }
 
-            val addEngineBtnsRow = LinearLayout(this@MainActivity).apply {
+            val destAndAddRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, dp(6), 0, 0)
             }
 
-            addEngineBtnsRow.addView(buttonPill("[ + ADD TO WEB SEARCH > ]", p.accentGreen) {
-                val rawName = engineNameInput.text.toString().trim().uppercase().removePrefix("SEARCH/").removePrefix("WEB/")
-                var rawUrl = engineUrlInput.text.toString().trim()
-                if (rawName.isNotEmpty() && rawUrl.isNotEmpty()) {
-                    if (!rawUrl.startsWith("http://", true) && !rawUrl.startsWith("https://", true)) {
-                        rawUrl = "https://$rawUrl"
-                    }
-                    if (!rawUrl.contains("{text}")) {
-                        rawUrl = if (rawUrl.contains("?")) "$rawUrl&q={text}" else "$rawUrl?q={text}"
-                    }
-                    val g = rawName.take(2)
-                    val newRule = "\n$g | SEARCH/$rawName | $rawUrl"
-                    rulesView.append(newRule)
-                    rulesFile.writeText(rulesView.text.toString())
-                    FaviconManager.prefetchAllForTools(this@MainActivity)
-                    engineNameInput.setText("")
-                    engineUrlInput.setText("")
-                    refreshReorderList()
-                    Toast.makeText(this@MainActivity, "✓ Added $rawName to WEB SEARCH >", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this@MainActivity, "Enter both engine name and search URL", Toast.LENGTH_SHORT).show()
+            lateinit var destBtn: TextView
+            fun formatDestLabel(prefix: String): String {
+                return when (prefix) {
+                    "SEARCH/" -> "[ IN: WEB SEARCH > ]"
+                    "" -> "[ IN: MAIN LIST ]"
+                    "YT/" -> "[ IN: YOUTUBE > ]"
+                    else -> "[ IN: ${prefix.removeSuffix("/")} > ]"
                 }
-            })
+            }
 
-            addEngineBtnsRow.addView(buttonPill("[ + TOP-LEVEL / FOLDER ]", p.fgPrimary) {
+            destBtn = equalButtonPill(formatDestLabel(selectedRuleDestination), p.accentPurple) {
+                val options = mutableListOf(
+                    "SEARCH/" to "WEB SEARCH > (Submenu)",
+                    "" to "MAIN POPUP LIST (Top-Level)",
+                    "YT/" to "YOUTUBE > (Submenu)"
+                )
+                ToolPrefs.getCustomFolders(this@MainActivity).forEach { f ->
+                    options.add("$f/" to "Custom Folder: $f >")
+                }
+                showPlainChoiceDialog(
+                    title = "CHOOSE WHERE TO PLACE TOOL",
+                    items = options.map { it.second }
+                ) { chosenIdx ->
+                    selectedRuleDestination = options[chosenIdx].first
+                    destBtn.text = formatDestLabel(selectedRuleDestination)
+                }
+            }
+
+            val submitEngineBtn = equalButtonPill("[ + ADD TOOL ]", p.accentGreen) {
                 val rawName = engineNameInput.text.toString().trim().uppercase()
                 var rawUrl = engineUrlInput.text.toString().trim()
                 if (rawName.isNotEmpty() && rawUrl.isNotEmpty()) {
-                    if (!rawUrl.startsWith("http://", true) && !rawUrl.startsWith("https://", true)) {
+                    if (!rawUrl.startsWith("http://", true) &&
+                        !rawUrl.startsWith("https://", true) &&
+                        !rawUrl.startsWith("s/")
+                    ) {
                         rawUrl = "https://$rawUrl"
                     }
-                    if (!rawUrl.contains("{text}")) {
+                    if ((rawUrl.startsWith("http://", true) || rawUrl.startsWith("https://", true)) &&
+                        !rawUrl.contains("{text}")
+                    ) {
                         rawUrl = if (rawUrl.contains("?")) "$rawUrl&q={text}" else "$rawUrl?q={text}"
                     }
-                    val g = rawName.substringAfter("/").trim().take(2).ifEmpty { "W" }
-                    val newRule = "\n$g | $rawName | $rawUrl"
-                    rulesView.append(newRule)
-                    rulesFile.writeText(rulesView.text.toString())
+                    val fullLabel = if (rawName.contains("/")) rawName else "$selectedRuleDestination$rawName"
+                    val g = ToolPrefs.toPlainAsciiCode("", fullLabel, rawUrl)
+                    ToolPrefs.appendCustomRuleLine(this@MainActivity, g, fullLabel, rawUrl)
                     FaviconManager.prefetchAllForTools(this@MainActivity)
                     engineNameInput.setText("")
                     engineUrlInput.setText("")
+                    refreshRulesTabViews()
                     refreshReorderList()
-                    Toast.makeText(this@MainActivity, "✓ Added $rawName", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "✓ Added $fullLabel", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Enter both engine name and search URL", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Enter both tool name and URL", Toast.LENGTH_SHORT).show()
                 }
-            })
+            }
+
+            destAndAddRow.addView(destBtn)
+            destAndAddRow.addView(submitEngineBtn)
 
             engineCard.addView(engineNameInput)
             engineCard.addView(engineUrlInput)
-            engineCard.addView(addEngineBtnsRow)
+            engineCard.addView(destAndAddRow)
             addView(engineCard)
 
-            addView(label("\n02 // ALL CUSTOM COMMANDS & REGEX PIPES (rules.txt)", 12f, p.fgSecondary))
+            // Section 3: Visual List of Active Custom Commands & Regex Pipes
+            addView(label("\n03 // ACTIVE CUSTOM TOOLS & REGEX PIPES", 11.5f, p.fgSecondary, bold = true))
             addView(
                 label(
-                    "Syntax: ICON | LABEL | TARGET\n" +
-                        "• SEARCH/LABEL → adds to WEB SEARCH > subgroup.\n" +
-                        "• YT/LABEL → adds to YOUTUBE > subfolder.\n" +
-                        "• FOLDER/LABEL → places inside your custom folder.\n" +
-                        "• MD/LABEL → adds to MARKDOWN >.  PIPE/LABEL → adds to REGEX / PIPE >.",
+                    "Tap [ × ] to remove any custom rule, or open the raw rules.txt editor below for regex pipes:",
                     10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(4), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
+
+            visualRulesContainer = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.border))
+                    cornerRadius = dp(2).toFloat()
+                }
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            }
+            addView(visualRulesContainer)
+
+            // Collapsible Raw rules.txt Editor for Power Users
+            val rawEditorContainer = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                setPadding(0, dp(6), 0, 0)
+            }
 
             val tplRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(8))
+                setPadding(0, 0, 0, dp(6))
             }
-
-            tplRow.addView(buttonPill("[+ SEARCH]", p.accentGreen) {
-                rulesView.append("\nSP | SEARCH/STARTPAGE | https://www.startpage.com/sp/search?query={text}")
-            })
-
-            tplRow.addView(buttonPill("[+ YT]", p.accentGreen) {
-                rulesView.append("\n|> | YT/CHANNELS | https://www.youtube.com/results?search_query={text}&sp=EgIQAg%3D%3D")
-            })
-
-            tplRow.addView(buttonPill("[+ FOLDER]", p.accentGreen) {
-                rulesView.append("\nAI | AI/PERPLEXITY | https://www.perplexity.ai/search?q={text}")
-            })
-
-            tplRow.addView(buttonPill("[+ REGEX]", p.accentGreen) {
+            tplRow.addView(equalButtonPill("[+ REGEX PIPE]", p.accentCyan) {
                 rulesView.append("\ns/ | PIPE/TRIM SPACES | s/\\s+/ /g")
             })
-
-            addView(tplRow)
+            tplRow.addView(equalButtonPill("[+ MD RULE]", p.accentCyan) {
+                rulesView.append("\nH1 | MD/HEADING 1 | # {text}")
+            })
+            rawEditorContainer.addView(tplRow)
 
             rulesView = EditText(this@MainActivity).apply {
                 typeface = Typeface.MONOSPACE
-                textSize = 12f
+                textSize = 11.5f
                 setTextColor(Color.parseColor(p.fgPrimary))
                 setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(12), dp(12), dp(12), dp(12))
-                minLines = 8
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                minLines = 6
                 setText(rulesFile.readText())
             }
-            addView(rulesView)
+            rawEditorContainer.addView(rulesView)
 
-            addView(buttonPill("[ ✓ SAVE COMMANDS ]", p.accentGreen) {
+            rawEditorContainer.addView(buttonPill("[ ✓ SAVE RAW rules.txt ]", p.accentGreen) {
                 rulesFile.writeText(rulesView.text.toString())
                 FaviconManager.prefetchAllForTools(this@MainActivity)
+                refreshRulesTabViews()
                 refreshReorderList()
-                Toast.makeText(this@MainActivity, "Custom commands saved", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "✓ Saved rules.txt", Toast.LENGTH_SHORT).show()
             })
+
+            lateinit var rawRulesToggleBtn: TextView
+            rawRulesToggleBtn = buttonPill("[ ADVANCED: RAW rules.txt EDITOR ▾ ]", p.fgMuted) {
+                val show = rawEditorContainer.visibility != View.VISIBLE
+                if (show) {
+                    rulesView.setText(ToolPrefs.ensureRulesFile(this@MainActivity).readText())
+                }
+                rawEditorContainer.visibility = if (show) View.VISIBLE else View.GONE
+                rawRulesToggleBtn.text =
+                    if (show) "[ ADVANCED: RAW rules.txt EDITOR ▴ ]" else "[ ADVANCED: RAW rules.txt EDITOR ▾ ]"
+            }.apply {
+                this.layoutParams = (this.layoutParams as LinearLayout.LayoutParams).apply {
+                    topMargin = dp(8)
+                }
+            }
+
+            addView(rawRulesToggleBtn)
+            addView(rawEditorContainer)
         }
     }
 
-    // --- TAB 5: CLIPS & SCRATCHPAD LOG ---
+    // --- TAB 5: CLIPS & SCRATCHPAD LOG (Clean Non-Wrapping Header & Real Hint on Scratchpad) ---
     private fun buildClipsAndLogTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            val clipHeaderRow = LinearLayout(this@MainActivity).apply {
+            addView(label("01 // [≡] CLIPBOARD HISTORY (MAX 20)", 11.5f, p.fgSecondary, bold = true))
+            addView(
+                label(
+                    "Tap any clip to copy it, tap [*] to pin it forever, or save your current clipboard below:",
+                    10.5f,
+                    p.fgMuted
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
+            )
+
+            val clipBtnRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(6))
             }
-            clipHeaderRow.addView(label("01 // [≡] CLIPBOARD HISTORY (RING BUFFER)", 12f, p.fgSecondary).apply {
-                this.layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    1f
-                )
+            clipBtnRow.addView(equalButtonPill("[ + SAVE CURRENT CLIP ]", p.accentGreen) {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString()?.trim().orEmpty()
+                if (clip.isNotEmpty()) {
+                    ToolPrefs.addClipToHistory(this@MainActivity, clip)
+                    refreshClipHistory()
+                    Toast.makeText(this@MainActivity, "✓ Saved clipboard to history", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Clipboard is currently empty", Toast.LENGTH_SHORT).show()
+                }
             })
-            clipHeaderRow.addView(buttonPill("[ CLEAR UNPINNED ]", p.dangerRed) {
+            clipBtnRow.addView(equalButtonPill("[ × CLEAR UNPINNED ]", p.dangerRed) {
                 ToolPrefs.clearUnpinnedClips(this@MainActivity)
                 refreshClipHistory()
             })
-            addView(clipHeaderRow)
+            addView(clipBtnRow)
 
             clipListContainer = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -866,16 +1240,19 @@ class MainActivity : Activity() {
             }
             addView(clipListContainer)
 
-            addView(label("\n02 // [>>] SCRATCHPAD LOG (APPEND LOG)", 12f, p.fgSecondary))
+            addView(label("\n02 // [>>] SCRATCHPAD LOG (NOTES)", 11.5f, p.fgSecondary, bold = true))
             val logBtnRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(4), 0, dp(8))
+                setPadding(0, dp(4), 0, dp(6))
             }
-            logBtnRow.addView(buttonPill("[ [^C] COPY ALL LOG ]", p.accentGreen) {
+            logBtnRow.addView(equalButtonPill("[ ✓ SAVE NOTES ]", p.accentGreen) {
+                File(filesDir, "scratchpad.txt").writeText(logView.text.toString())
+                Toast.makeText(this@MainActivity, "✓ Scratchpad saved", Toast.LENGTH_SHORT).show()
+            })
+            logBtnRow.addView(equalButtonPill("[ [^C] COPY ALL ]", p.accentCyan) {
                 copyPlain(logView.text.toString(), "Copied scratchpad log")
             })
-
-            logBtnRow.addView(buttonPill("[ × CLEAR LOG ]", p.dangerRed) {
+            logBtnRow.addView(equalButtonPill("[ × CLEAR ]", p.dangerRed) {
                 File(filesDir, "scratchpad.txt").writeText("")
                 logView.setText("")
             })
@@ -883,14 +1260,395 @@ class MainActivity : Activity() {
 
             logView = EditText(this@MainActivity).apply {
                 typeface = Typeface.MONOSPACE
-                textSize = 12f
+                textSize = 11.8f
                 setTextColor(Color.parseColor(p.fgPrimary))
-                setBackgroundColor(Color.parseColor(p.bgSurface))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.border))
+                    cornerRadius = dp(2).toFloat()
+                }
                 setPadding(dp(12), dp(12), dp(12), dp(12))
-                minLines = 8
+                minLines = 7
+                gravity = Gravity.TOP or Gravity.START
+                hint = "Scratchpad is empty — type notes here or use APPEND LOG in the popup…"
+                setHintTextColor(Color.parseColor(p.fgMuted))
             }
             addView(logView)
         }
+    }
+
+    // --- Plain-Text Terminal Dialogs for Seamless UX ---
+
+    /**
+     * Opens a plain-text terminal dialog to pick which tool occupies a slot in Top Row 1 or Row 2.
+     */
+    private fun showTopRowSlotPickerDialog(rowNumber: Int, clickedTool: ToolSpec?) {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        val allCandidates = ToolPrefs.loadAllTools(this).filter { it.id != "copy" }
+
+        val dialogRoot = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor(p.bgPrimary))
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+
+        val titleStr = if (clickedTool != null) {
+            "ROW $rowNumber // [${clickedTool.glyph}] ${clickedTool.label}"
+        } else {
+            "ASSIGN ICON TO TOP ROW $rowNumber (MAX 4)"
+        }
+        dialogRoot.addView(label(titleStr, 12f, p.accentPurple, bold = true).apply {
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        var alert: AlertDialog? = null
+
+        if (clickedTool != null) {
+            dialogRoot.addView(
+                buttonPill("[ × REMOVE [${clickedTool.glyph}] FROM ROW $rowNumber ]", p.dangerRed) {
+                    ToolPrefs.setToolIconRow(this, clickedTool.id, 0)
+                    refreshReorderList()
+                    alert?.dismiss()
+                }
+            )
+            dialogRoot.addView(
+                label("Or replace with another tool below:", 10.2f, p.fgMuted).apply {
+                    setPadding(0, dp(6), 0, dp(6))
+                }
+            )
+        }
+
+        val scroll = ScrollView(this).apply {
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (resources.displayMetrics.heightPixels * 0.48f).toInt()
+            )
+        }
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        allCandidates.forEach { tool ->
+            val currentRow = ToolPrefs.getToolIconRow(this, tool.id)
+            val tok = "[${tool.glyph.trim().removePrefix("[").removeSuffix("]")}]"
+            val statusBadge = when (currentRow) {
+                1 -> " (in R1)"
+                2 -> " (in R2)"
+                else -> ""
+            }
+            val itemView = label(
+                "${tok.padEnd(6, ' ')} ${tool.label}$statusBadge",
+                11.2f,
+                if (currentRow == rowNumber) p.accentGreen else p.fgPrimary
+            ).apply {
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.divider))
+                }
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(3)
+                }
+                setOnClickListener {
+                    if (clickedTool != null && clickedTool.id != tool.id) {
+                        val currentIds = ToolPrefs.getIconRowIds(this@MainActivity, rowNumber).toMutableList()
+                        val otherRow = if (rowNumber == 1) 2 else 1
+                        val otherIds = ToolPrefs.getIconRowIds(this@MainActivity, otherRow).toMutableList()
+                        otherIds.remove(tool.id)
+                        ToolPrefs.setIconRowIds(this@MainActivity, otherRow, otherIds)
+
+                        val replaceIdx = currentIds.indexOf(clickedTool.id)
+                        if (replaceIdx >= 0 && tool.id !in currentIds) {
+                            currentIds[replaceIdx] = tool.id
+                            ToolPrefs.setIconRowIds(this@MainActivity, rowNumber, currentIds)
+                        } else {
+                            ToolPrefs.setToolIconRow(this@MainActivity, tool.id, rowNumber)
+                        }
+                    } else {
+                        val ok = ToolPrefs.setToolIconRow(this@MainActivity, tool.id, rowNumber)
+                        if (!ok) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Row $rowNumber already has 4 icons — tap an existing slot to replace it",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                    refreshReorderList()
+                    alert?.dismiss()
+                }
+            }
+            list.addView(itemView)
+        }
+
+        scroll.addView(list)
+        dialogRoot.addView(scroll)
+        dialogRoot.addView(buttonPill("[ CLOSE ]", p.fgMuted) { alert?.dismiss() })
+
+        alert = AlertDialog.Builder(this)
+            .setView(dialogRoot)
+            .create()
+        alert.show()
+    }
+
+    /**
+     * Opens a multi-select checklist dialog so users can check/uncheck which tools belong inside [folderName >].
+     */
+    private fun showFolderChecklistDialog(folderName: String) {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        val tools = ToolPrefs.loadAssignableToolsForFolder(this)
+
+        val dialogRoot = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor(p.bgPrimary))
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+
+        dialogRoot.addView(
+            label("FOLDER // [$folderName >] — CHECK ITEMS TO KEEP INSIDE", 11.5f, p.accentOrange, bold = true).apply {
+                setPadding(0, 0, 0, dp(4))
+            }
+        )
+        dialogRoot.addView(
+            label("Checked tools move from the root list into [$folderName >]:", 10f, p.fgMuted).apply {
+                setPadding(0, 0, 0, dp(8))
+            }
+        )
+
+        val scroll = ScrollView(this).apply {
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (resources.displayMetrics.heightPixels * 0.50f).toInt()
+            )
+        }
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        fun renderChecklistRows() {
+            list.removeAllViews()
+            tools.forEach { tool ->
+                val assigned = ToolPrefs.getToolFolderAssignment(this, tool.id)
+                val inThisFolder = assigned == folderName
+                val otherSuffix = if (assigned != null && !inThisFolder) " (in $assigned)" else ""
+                val boxGlyph = if (inThisFolder) "[x]" else "[ ]"
+                val row = label(
+                    "$boxGlyph  ${tool.label}$otherSuffix",
+                    11.2f,
+                    if (inThisFolder) p.accentGreen else p.fgPrimary
+                ).apply {
+                    setPadding(dp(10), dp(9), dp(10), dp(9))
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor(p.bgSurface))
+                        setStroke(dp(1), Color.parseColor(p.divider))
+                    }
+                    this.layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        bottomMargin = dp(3)
+                    }
+                    setOnClickListener {
+                        ToolPrefs.setToolFolderAssignment(
+                            this@MainActivity,
+                            tool.id,
+                            if (inThisFolder) null else folderName
+                        )
+                        renderChecklistRows()
+                        refreshReorderList()
+                    }
+                }
+                list.addView(row)
+            }
+        }
+
+        renderChecklistRows()
+        scroll.addView(list)
+        dialogRoot.addView(scroll)
+
+        var alert: AlertDialog? = null
+        dialogRoot.addView(buttonPill("[ ✓ DONE ]", p.accentGreen) {
+            refreshReorderList()
+            alert?.dismiss()
+        })
+
+        alert = AlertDialog.Builder(this)
+            .setView(dialogRoot)
+            .create()
+        alert.show()
+    }
+
+    /**
+     * Opens a searchable plain-text checklist of installed launcher apps so users can mute/unmute apps without typing package IDs.
+     */
+    private fun showInstalledAppsBlacklistDialog() {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+
+        val pm = packageManager
+        val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val resolved = runCatching { pm.queryIntentActivities(mainIntent, 0) }.getOrNull().orEmpty()
+        val appEntries = resolved
+            .mapNotNull { info ->
+                val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+                if (pkg == packageName) return@mapNotNull null
+                val appLabel = runCatching { info.loadLabel(pm).toString().trim() }.getOrDefault(pkg)
+                appLabel to pkg
+            }
+            .distinctBy { it.second }
+            .sortedBy { it.first.lowercase() }
+
+        val dialogRoot = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor(p.bgPrimary))
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+
+        dialogRoot.addView(
+            label("MUTE APPS // TAP TO TOGGLE [⊘]", 11.5f, p.accentGreen, bold = true).apply {
+                setPadding(0, 0, 0, dp(6))
+            }
+        )
+
+        val searchBox = EditText(this).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 11.5f
+            setTextColor(Color.parseColor(p.fgPrimary))
+            setBackgroundColor(Color.parseColor(p.bgSurface))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            hint = "Filter apps by name or package…"
+            setHintTextColor(Color.parseColor(p.fgMuted))
+            isSingleLine = true
+        }
+        dialogRoot.addView(searchBox)
+
+        val scroll = ScrollView(this).apply {
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (resources.displayMetrics.heightPixels * 0.48f).toInt()
+            ).apply {
+                topMargin = dp(6)
+            }
+        }
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        fun renderApps(filterQuery: String) {
+            list.removeAllViews()
+            val q = filterQuery.trim().lowercase()
+            val filtered = if (q.isEmpty()) {
+                appEntries
+            } else {
+                appEntries.filter { it.first.lowercase().contains(q) || it.second.lowercase().contains(q) }
+            }
+
+            if (filtered.isEmpty()) {
+                list.addView(label("No matching apps found.", 10.5f, p.fgMuted).apply {
+                    setPadding(dp(8), dp(10), dp(8), dp(10))
+                })
+                return
+            }
+
+            filtered.forEach { (appName, pkg) ->
+                val muted = ToolPrefs.isAppBlacklisted(this, pkg)
+                val mark = if (muted) "[⊘ MUTED]" else "[  ALLOW]"
+                val row = label(
+                    "$mark  $appName\n           $pkg",
+                    10.5f,
+                    if (muted) p.dangerRed else p.fgPrimary
+                ).apply {
+                    setPadding(dp(10), dp(8), dp(10), dp(8))
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor(p.bgSurface))
+                        setStroke(dp(1), Color.parseColor(p.divider))
+                    }
+                    this.layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        bottomMargin = dp(3)
+                    }
+                    setOnClickListener {
+                        ToolPrefs.setAppBlacklisted(this@MainActivity, pkg, !muted)
+                        renderApps(searchBox.text.toString())
+                        refreshBlacklistView()
+                    }
+                }
+                list.addView(row)
+            }
+        }
+
+        searchBox.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                renderApps(s?.toString().orEmpty())
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+
+        renderApps("")
+        scroll.addView(list)
+        dialogRoot.addView(scroll)
+
+        var alert: AlertDialog? = null
+        dialogRoot.addView(buttonPill("[ ✓ DONE ]", p.accentGreen) {
+            refreshBlacklistView()
+            alert?.dismiss()
+        })
+
+        alert = AlertDialog.Builder(this)
+            .setView(dialogRoot)
+            .create()
+        alert.show()
+    }
+
+    private fun showPlainChoiceDialog(title: String, items: List<String>, onPick: (Int) -> Unit) {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        val dialogRoot = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor(p.bgPrimary))
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+        dialogRoot.addView(label(title, 11.5f, p.accentPurple, bold = true).apply {
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        var alert: AlertDialog? = null
+        items.forEachIndexed { idx, item ->
+            val row = label("• $item", 11.2f, p.fgPrimary).apply {
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.divider))
+                }
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(4)
+                }
+                setOnClickListener {
+                    onPick(idx)
+                    alert?.dismiss()
+                }
+            }
+            dialogRoot.addView(row)
+        }
+        dialogRoot.addView(buttonPill("[ CANCEL ]", p.fgMuted) { alert?.dismiss() })
+
+        alert = AlertDialog.Builder(this)
+            .setView(dialogRoot)
+            .create()
+        alert.show()
     }
 
     private fun launchExportJsonFile() {
@@ -950,18 +1708,90 @@ class MainActivity : Activity() {
     private fun refreshAllTabs() {
         val p = pal()
         val active = SelAccessibilityService.instance != null
-        serviceStatusBadge.text = if (active) "● SERVICE ACTIVE" else "○ SERVICE INACTIVE"
+        serviceStatusBadge.text = if (active) "[ ● ACTIVE ↗ ]" else "[ ○ ENABLE ↗ ]"
         serviceStatusBadge.setTextColor(Color.parseColor(if (active) p.accentGreen else p.dangerRed))
+
+        refreshHomeOnboardingCard()
 
         val logFile = File(filesDir, "scratchpad.txt")
         if (::logView.isInitialized) {
-            logView.setText(if (logFile.exists()) logFile.readText() else "(Empty)")
+            val currentTxt = if (logFile.exists()) logFile.readText() else ""
+            logView.setText(if (currentTxt == "(Empty)") "" else currentTxt)
         }
         if (::reorderListContainer.isInitialized) refreshReorderList()
+        if (::visualRulesContainer.isInitialized) refreshRulesTabViews()
         if (::clipListContainer.isInitialized) refreshClipHistory()
         if (::blacklistContainer.isInitialized) refreshBlacklistView()
-        if (::backupPreviewBox.isInitialized && activeTab == Tab.BACKUP) {
+        if (::backupPreviewBox.isInitialized && activeTab == Tab.BACKUP && backupPreviewBox.visibility == View.VISIBLE) {
             backupPreviewBox.setText(ToolPrefs.exportBackupJson(this))
+        }
+    }
+
+    private fun refreshRulesTabViews() {
+        if (!::visualRulesContainer.isInitialized) return
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        visualRulesContainer.removeAllViews()
+
+        val entries = ToolPrefs.getCustomRuleEntries(this)
+        if (::rulesView.isInitialized) {
+            rulesView.setText(ToolPrefs.ensureRulesFile(this).readText())
+        }
+
+        if (entries.isEmpty()) {
+            visualRulesContainer.addView(
+                label("(No custom rules yet — tap a preset or add a URL above)", 10.5f, p.fgMuted)
+            )
+            return
+        }
+
+        entries.forEach { entry ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                this.layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(2)
+                    bottomMargin = dp(2)
+                }
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgPrimary))
+                    setStroke(dp(1), Color.parseColor(p.divider))
+                    cornerRadius = dp(2).toFloat()
+                }
+            }
+
+            val leftCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            leftCol.addView(
+                label("[${entry.glyph}] ${entry.rawLabel}", 11f, p.accentGreen, bold = true)
+            )
+            leftCol.addView(
+                label(entry.target, 9.8f, p.fgMuted).apply {
+                    isSingleLine = true
+                    ellipsize = TextUtils.TruncateAt.END
+                }
+            )
+
+            val delBtn = label("[ × ]", 12f, p.dangerRed, bold = true).apply {
+                setPadding(dp(10), dp(4), dp(4), dp(4))
+                setOnClickListener {
+                    ToolPrefs.deleteCustomRuleAtLine(this@MainActivity, entry.lineIndex)
+                    refreshRulesTabViews()
+                    refreshReorderList()
+                    Toast.makeText(this@MainActivity, "Removed ${entry.rawLabel}", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            row.addView(leftCol)
+            row.addView(delBtn)
+            visualRulesContainer.addView(row)
         }
     }
 
@@ -971,20 +1801,22 @@ class MainActivity : Activity() {
         clipListContainer.removeAllViews()
         val clips = ToolPrefs.getClipHistory(this)
         if (clips.isEmpty()) {
-            clipListContainer.addView(label("(No recent clips yet)", 11.5f, p.fgMuted))
+            clipListContainer.addView(
+                label("(No recent clips yet — copy text anywhere or tap [ + SAVE CURRENT CLIP ])", 10.5f, p.fgMuted)
+            )
             return
         }
         clips.forEach { entry ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(11), dp(12), dp(11))
+                setPadding(dp(10), dp(10), dp(10), dp(10))
                 this.layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    topMargin = dp(3)
-                    bottomMargin = dp(3)
+                    topMargin = dp(2)
+                    bottomMargin = dp(2)
                 }
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor(p.bgPrimary))
@@ -993,24 +1825,30 @@ class MainActivity : Activity() {
                 }
             }
 
-            val pinBtn = label(if (entry.pinned) "[*]" else "[·]", 11.5f, if (entry.pinned) p.accentGreen else p.fgMuted).apply {
-                setPadding(dp(4), dp(4), dp(12), dp(4))
+            val pinBtn = label(
+                if (entry.pinned) "[★]" else "[·]",
+                11.5f,
+                if (entry.pinned) p.accentGreen else p.fgMuted,
+                bold = true
+            ).apply {
+                setPadding(dp(4), dp(4), dp(10), dp(4))
                 setOnClickListener {
                     ToolPrefs.togglePinClip(this@MainActivity, entry.text)
                     refreshClipHistory()
                 }
             }
 
-            val txtView = label("│ " + entry.text.replace("\n", " ↵ "), 12f, p.fgPrimary).apply {
+            val txtView = label(entry.text.replace("\n", " ↵ "), 11.5f, p.fgPrimary).apply {
                 isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener {
-                    copyPlain(entry.text, "Copied clip")
+                    copyPlain(entry.text, "[^C] Copied clip")
                 }
             }
 
-            val delBtn = label("[ × ]", 13f, p.dangerRed).apply {
-                setPadding(dp(10), dp(4), dp(6), dp(4))
+            val delBtn = label("[ × ]", 12f, p.dangerRed, bold = true).apply {
+                setPadding(dp(10), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     ToolPrefs.deleteClip(this@MainActivity, entry.text)
                     refreshClipHistory()
@@ -1030,20 +1868,22 @@ class MainActivity : Activity() {
         blacklistContainer.removeAllViews()
         val apps = ToolPrefs.getBlacklistedApps(this)
         if (apps.isEmpty()) {
-            blacklistContainer.addView(label("(No muted apps)", 11.5f, p.fgMuted))
+            blacklistContainer.addView(
+                label("(No muted apps — tap [ + PICK INSTALLED APP ] above to mute any app)", 10.5f, p.fgMuted)
+            )
             return
         }
         apps.forEach { pkg ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setPadding(dp(10), dp(9), dp(10), dp(9))
                 this.layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    topMargin = dp(3)
-                    bottomMargin = dp(3)
+                    topMargin = dp(2)
+                    bottomMargin = dp(2)
                 }
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor(p.bgPrimary))
@@ -1051,10 +1891,12 @@ class MainActivity : Activity() {
                     cornerRadius = dp(2).toFloat()
                 }
             }
-            val pkgLabel = label("⊘ │ $pkg", 12f, p.fgPrimary).apply {
+            val pkgLabel = label("⊘ $pkg", 11.2f, p.fgPrimary).apply {
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
-            val removeBtn = label("[ UNMUTE ]", 11.5f, p.accentGreen).apply {
+            val removeBtn = label("[ UNMUTE ]", 10.5f, p.accentGreen, bold = true).apply {
                 setPadding(dp(10), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     ToolPrefs.setAppBlacklisted(this@MainActivity, pkg, false)
@@ -1077,8 +1919,8 @@ class MainActivity : Activity() {
         if (folders.isEmpty()) {
             customFoldersContainer.addView(
                 label(
-                    "(No custom folders created yet — enter a name above and tap [ + CREATE FOLDER ])",
-                    11f,
+                    "(No custom folders yet — enter a name above and tap [ + CREATE ] to group tools)",
+                    10.5f,
                     p.fgMuted
                 )
             )
@@ -1106,17 +1948,27 @@ class MainActivity : Activity() {
             }
 
             val summary = if (itemsInside.isEmpty()) {
-                "[D/] $folderName >  (0 items — tap [DIR:ROOT] on tools below)"
+                "[D/] $folderName > (0 items)"
             } else {
-                "[D/] $folderName >  (${itemsInside.size}: ${itemsInside.joinToString(", ") { it.label.replace(" >", "") }})"
+                "[D/] $folderName > (${itemsInside.size}: ${itemsInside.joinToString(", ") { it.label.replace(" >", "") }})"
             }
 
-            val folderLabel = label(summary, 11f, p.accentOrange).apply {
+            val folderLabel = label(summary, 10.8f, p.accentOrange, bold = true).apply {
                 this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener {
+                    showFolderChecklistDialog(folderName)
+                }
             }
 
-            val delBtn = label("[ × DELETE ]", 11f, p.dangerRed).apply {
-                setPadding(dp(8), dp(4), dp(4), dp(4))
+            val pickItemsBtn = label("[ + ITEMS ]", 10.5f, p.accentGreen, bold = true).apply {
+                setPadding(dp(8), dp(4), dp(6), dp(4))
+                setOnClickListener {
+                    showFolderChecklistDialog(folderName)
+                }
+            }
+
+            val delBtn = label("[ × ]", 11.5f, p.dangerRed, bold = true).apply {
+                setPadding(dp(6), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     ToolPrefs.deleteCustomFolder(this@MainActivity, folderName)
                     if (::rulesView.isInitialized) {
@@ -1128,6 +1980,7 @@ class MainActivity : Activity() {
             }
 
             row.addView(folderLabel)
+            row.addView(pickItemsBtn)
             row.addView(delBtn)
             customFoldersContainer.addView(row)
         }
@@ -1137,48 +1990,79 @@ class MainActivity : Activity() {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         val mostUsed = ToolPrefs.isSortMostUsed(this)
-        sortModeButton.text = if (mostUsed) "[ ★ MOST USED TOP: ON ]" else "[ ★ MOST USED TOP: OFF ]"
+        sortModeButton.text = if (mostUsed) "[ ★ MOST USED: ON ]" else "[ ★ MOST USED: OFF ]"
 
         refreshCustomFoldersView()
 
+        // Interactive 4-Slot Top Row Matrix
         if (::iconRowsSummaryContainer.isInitialized) {
             iconRowsSummaryContainer.removeAllViews()
-            val r1Tools = ToolPrefs.getIconRowTools(this, 1)
-            val r2Tools = ToolPrefs.getIconRowTools(this, 2)
-            val tok = { g: String ->
-                val clean = g.trim().removePrefix("[").removeSuffix("]").trim()
-                "[$clean]"
-            }
 
-            iconRowsSummaryContainer.addView(
-                label("EDIT ROW | [^C]  [^V]  [^X]  [^A]   (Copy · Paste · Cut · Select All — 4/4)", 11f, p.accentGreen).apply {
-                    setPadding(0, dp(2), 0, dp(4))
-                }
-            )
-
-            val r1Text = if (r1Tools.isEmpty()) {
-                "ROW 1    | (Empty — tap [LIST] on up to 4 tools below to show their icons here)"
-            } else {
-                "ROW 1    | " + r1Tools.joinToString("  ") { tok(it.glyph) } +
-                    "   (${r1Tools.size}/4: " + r1Tools.joinToString(" · ") { it.label.replace(" >", "") } + ")"
+            // Fixed Edit Row
+            val editRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(2), 0, dp(4))
             }
-            iconRowsSummaryContainer.addView(
-                label(r1Text, 11.5f, if (r1Tools.isEmpty()) p.fgMuted else p.accentPurple).apply {
-                    setPadding(0, dp(3), 0, dp(4))
-                }
-            )
-
-            val r2Text = if (r2Tools.isEmpty()) {
-                "ROW 2    | (Empty — tap [★R1] on up to 4 tools below to move to Row 2)"
-            } else {
-                "ROW 2    | " + r2Tools.joinToString("  ") { tok(it.glyph) } +
-                    "   (${r2Tools.size}/4: " + r2Tools.joinToString(" · ") { it.label.replace(" >", "") } + ")"
+            editRow.addView(label("EDIT  ", 10.5f, p.fgMuted, bold = true))
+            listOf("[^C]", "[^V]", "[^X]", "[^A]").forEach { g ->
+                editRow.addView(
+                    label(g, 11f, p.accentGreen, bold = true).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(dp(2), dp(5), dp(2), dp(5))
+                        this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                )
             }
-            iconRowsSummaryContainer.addView(
-                label(r2Text, 11.5f, if (r2Tools.isEmpty()) p.fgMuted else p.accentCyan).apply {
-                    setPadding(0, dp(3), 0, dp(2))
+            iconRowsSummaryContainer.addView(editRow)
+
+            // Interactive Row 1 & Row 2 (4 clickable slots each)
+            for (rNum in 1..2) {
+                val rTools = ToolPrefs.getIconRowTools(this, rNum)
+                val rowColor = if (rNum == 1) p.accentPurple else p.accentCyan
+                val slotRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(3), 0, dp(3))
                 }
-            )
+                slotRow.addView(label("ROW $rNum ", 10.5f, rowColor, bold = true))
+
+                for (slotIdx in 0 until ToolPrefs.MAX_TOOLS_PER_ICON_ROW) {
+                    val tool = rTools.getOrNull(slotIdx)
+                    val slotText = if (tool != null) {
+                        "[${tool.glyph.trim().removePrefix("[").removeSuffix("]")}]"
+                    } else {
+                        "[ + ]"
+                    }
+                    val cell = label(
+                        slotText,
+                        11f,
+                        if (tool != null) rowColor else p.fgMuted,
+                        bold = true
+                    ).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(dp(2), dp(6), dp(2), dp(6))
+                        background = GradientDrawable().apply {
+                            setColor(Color.parseColor(p.bgPrimary))
+                            setStroke(dp(1), Color.parseColor(if (tool != null) rowColor else p.divider))
+                            cornerRadius = dp(2).toFloat()
+                        }
+                        this.layoutParams = LinearLayout.LayoutParams(
+                            0,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            1f
+                        ).apply {
+                            marginStart = dp(2)
+                            marginEnd = dp(2)
+                        }
+                        setOnClickListener {
+                            showTopRowSlotPickerDialog(rNum, tool)
+                        }
+                    }
+                    slotRow.addView(cell)
+                }
+                iconRowsSummaryContainer.addView(slotRow)
+            }
         }
 
         reorderListContainer.removeAllViews()
@@ -1191,13 +2075,13 @@ class MainActivity : Activity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(10), dp(8), dp(10))
+                setPadding(dp(8), dp(9), dp(8), dp(9))
                 this.layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    topMargin = dp(3)
-                    bottomMargin = dp(3)
+                    topMargin = dp(2)
+                    bottomMargin = dp(2)
                 }
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor(p.bgPrimary))
@@ -1210,9 +2094,9 @@ class MainActivity : Activity() {
             val dragHandle = TextView(this).apply {
                 text = "≡"
                 typeface = Typeface.MONOSPACE
-                textSize = 17f
+                textSize = 16f
                 setTextColor(Color.parseColor(p.accentGreen))
-                setPadding(dp(4), dp(4), dp(10), dp(4))
+                setPadding(dp(4), dp(2), dp(8), dp(2))
             }
 
             val count = ToolPrefs.getUseCount(this, tool.id)
@@ -1222,7 +2106,9 @@ class MainActivity : Activity() {
             val nameView = TextView(this).apply {
                 text = "$numStr | ${bracketIcon.padEnd(5, ' ')} ${tool.label}" + if (count > 0) " ($count)" else ""
                 typeface = Typeface.MONOSPACE
-                textSize = 11f
+                textSize = 10.8f
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
                 setTextColor(Color.parseColor(if (hidden) p.fgMuted else p.fgPrimary))
                 this.layoutParams = LinearLayout.LayoutParams(
                     0,
@@ -1234,30 +2120,23 @@ class MainActivity : Activity() {
             row.addView(dragHandle)
             row.addView(nameView)
 
-            if (tool.id != "copy" && !tool.id.startsWith("folder_custom_")) {
+            // Only show folder assignment pill when custom folders exist (keeps tool rows ultra-clean!)
+            if (customFolders.isNotEmpty() && tool.id != "copy" && !tool.id.startsWith("folder_custom_")) {
                 val dirBtn = TextView(this).apply {
-                    text = if (assignedFolder != null) "[DIR:$assignedFolder]" else "[DIR:ROOT]"
+                    text = if (assignedFolder != null) "[$assignedFolder/]" else "[+DIR]"
                     typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                    textSize = 10f
+                    textSize = 9.8f
                     setTextColor(Color.parseColor(if (assignedFolder != null) p.accentOrange else p.fgMuted))
-                    setPadding(dp(6), dp(4), dp(6), dp(4))
+                    setPadding(dp(5), dp(4), dp(5), dp(4))
                     setOnClickListener {
-                        if (customFolders.isEmpty()) {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Create a folder in Section 02 above first!",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                        val nextFolder = ToolPrefs.cycleToolFolderAssignment(this@MainActivity, tool.id)
+                        refreshReorderList()
+                        val msg = if (nextFolder != null) {
+                            "Moved ${tool.label} inside [$nextFolder >]"
                         } else {
-                            val nextFolder = ToolPrefs.cycleToolFolderAssignment(this@MainActivity, tool.id)
-                            refreshReorderList()
-                            val msg = if (nextFolder != null) {
-                                "Moved ${tool.label} inside [$nextFolder >]"
-                            } else {
-                                "Returned ${tool.label} to root popup list"
-                            }
-                            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                            "Returned ${tool.label} to root popup list"
                         }
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
                     }
                 }
                 row.addView(dirBtn)
@@ -1271,7 +2150,7 @@ class MainActivity : Activity() {
                         else -> "[LIST]"
                     }
                     typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                    textSize = 10.5f
+                    textSize = 10f
                     setTextColor(
                         Color.parseColor(
                             when (assignedRow) {
@@ -1281,13 +2160,13 @@ class MainActivity : Activity() {
                             }
                         )
                     )
-                    setPadding(dp(6), dp(4), dp(6), dp(4))
+                    setPadding(dp(5), dp(4), dp(5), dp(4))
                     setOnClickListener {
                         val next = ToolPrefs.cycleToolIconRow(this@MainActivity, tool.id)
                         if (next == 0 && assignedRow == 0) {
                             Toast.makeText(
                                 this@MainActivity,
-                                "Top rows R1 & R2 already have 4 items max!",
+                                "Top rows R1 & R2 already have 4 items max — tap a slot above to swap!",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
@@ -1298,11 +2177,11 @@ class MainActivity : Activity() {
             }
 
             val visToggle = TextView(this).apply {
-                text = if (hidden) "[HIDE]" else "[SHOW]"
+                text = if (hidden) "[OFF]" else "[ON]"
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                textSize = 10.5f
+                textSize = 10f
                 setTextColor(Color.parseColor(if (hidden) p.fgMuted else p.accentGreen))
-                setPadding(dp(6), dp(4), dp(4), dp(4))
+                setPadding(dp(5), dp(4), dp(4), dp(4))
                 setOnClickListener {
                     ToolPrefs.setToolHidden(this@MainActivity, tool.id, !hidden)
                     refreshReorderList()
@@ -1331,8 +2210,9 @@ class MainActivity : Activity() {
     private fun buttonPill(content: String, hexColor: String, onClick: () -> Unit): TextView {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
-        return label(content, 11f, hexColor).apply {
+        return label(content, 10.8f, hexColor, bold = true).apply {
             setPadding(dp(10), dp(8), dp(10), dp(8))
+            isSingleLine = true
             background = GradientDrawable().apply {
                 setColor(Color.parseColor(p.bgPrimary))
                 setStroke(dp(1), Color.parseColor(p.border))
@@ -1350,11 +2230,38 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun label(content: String, sizeSp: Float, hexColor: String): TextView {
+    private fun equalButtonPill(content: String, hexColor: String, onClick: () -> Unit): TextView {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        return label(content, 10.2f, hexColor, bold = true).apply {
+            gravity = Gravity.CENTER
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor(p.bgPrimary))
+                setStroke(dp(1), Color.parseColor(p.border))
+                cornerRadius = dp(2).toFloat()
+            }
+            this.layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply {
+                topMargin = dp(3)
+                bottomMargin = dp(3)
+                marginStart = dp(2)
+                marginEnd = dp(2)
+            }
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun label(content: String, sizeSp: Float, hexColor: String, bold: Boolean = false): TextView {
         return TextView(this).apply {
             text = content
             textSize = sizeSp
-            typeface = Typeface.MONOSPACE
+            typeface = if (bold) Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) else Typeface.MONOSPACE
             setTextColor(Color.parseColor(hexColor))
         }
     }

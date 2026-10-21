@@ -40,6 +40,13 @@ data class ToolSpec(
     val faviconUrl: String? = null
 )
 
+data class CustomRuleEntry(
+    val lineIndex: Int,
+    val glyph: String,
+    val rawLabel: String,
+    val target: String
+)
+
 data class ClipEntry(
     val text: String,
     val pinned: Boolean,
@@ -444,6 +451,58 @@ object ToolPrefs {
         }
         setToolFolderAssignment(context, toolId, next)
         return next
+    }
+
+
+    fun loadAssignableToolsForFolder(context: Context): List<ToolSpec> {
+        return loadBaseToolsWithoutFolderEntries(context).filter { it.id != "copy" }
+    }
+
+    fun getCustomRuleEntries(context: Context): List<CustomRuleEntry> {
+        val rulesFile = ensureRulesFile(context)
+        if (!rulesFile.exists()) return emptyList()
+        val out = mutableListOf<CustomRuleEntry>()
+        rulesFile.readLines().forEachIndexed { idx, line ->
+            val trimmed = line.trim()
+            if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                val parts = trimmed.split("|").map { it.trim() }
+                if (parts.size >= 3) {
+                    val g = toPlainAsciiCode(parts[0], parts[1], parts[2])
+                    out.add(CustomRuleEntry(idx, g, parts[1].uppercase(), parts[2]))
+                }
+            }
+        }
+        return out
+    }
+
+    fun deleteCustomRuleAtLine(context: Context, targetLineIndex: Int) {
+        val rulesFile = ensureRulesFile(context)
+        if (!rulesFile.exists()) return
+        val lines = rulesFile.readLines().toMutableList()
+        if (targetLineIndex in lines.indices) {
+            lines.removeAt(targetLineIndex)
+            rulesFile.writeText(lines.joinToString("\n"))
+        }
+    }
+
+    fun appendCustomRuleLine(context: Context, glyph: String, rawLabel: String, target: String): Boolean {
+        val cleanGlyph = glyph.trim().take(4).ifEmpty { "CMD" }
+        val cleanLabel = rawLabel.trim().uppercase()
+        val cleanTarget = target.trim()
+        if (cleanLabel.isEmpty() || cleanTarget.isEmpty()) return false
+        val rulesFile = ensureRulesFile(context)
+        val existing = if (rulesFile.exists()) rulesFile.readText() else ""
+        val newLine = "$cleanGlyph | $cleanLabel | $cleanTarget"
+        if (existing.lines().any { it.trim().equals(newLine, ignoreCase = true) }) {
+            return false
+        }
+        val updated = if (existing.endsWith("\n") || existing.isEmpty()) {
+            existing + newLine
+        } else {
+            "$existing\n$newLine"
+        }
+        rulesFile.writeText(updated)
+        return true
     }
 
     private fun loadBaseToolsWithoutFolderEntries(context: Context): List<ToolSpec> {
@@ -1015,7 +1074,7 @@ object ToolPrefs {
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "2.5.0")
+        root.put("version", "2.6.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("follow_system_theme", isFollowSystemTheme(context))
         root.put("dark_theme_manual", isDarkThemeManual(context))

@@ -4,10 +4,14 @@
     <!-- Needed for in-popup Define Word, Translate & Favicon fetching -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Package visibility for WhatsApp, WhatsApp Business & Web Browsers on Android 11+ -->
+    <!-- Package visibility for WhatsApp, WhatsApp Business, Web Browsers & Installed App Picker on Android 11+ -->
     <queries>
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />
