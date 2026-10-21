@@ -1181,7 +1181,7 @@ object ToolPrefs {
                         rowView.translationY = dy
 
                         val shiftSlots = (dy / rowHeight.toFloat()).roundToInt()
-                        val newTarget = (origIndex + shiftSlots).coerceIn(0, container.childCount - 1)
+                        val newTarget = (origIndex + shiftSlots).coerceIn(0, (container.childCount - 1).coerceAtLeast(0))
                         if (newTarget != targetIndex) {
                             targetIndex = newTarget
                             runCatching { v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }

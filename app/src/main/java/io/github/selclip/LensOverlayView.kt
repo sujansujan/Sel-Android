@@ -43,6 +43,10 @@ class LensOverlayView(
 
     private val density = resources.displayMetrics.density
     private fun dp(v: Float): Float = v * density
+    private fun Int.safeCoerceIn(minVal: Int, maxVal: Int): Int =
+        if (minVal <= maxVal) this.coerceIn(minVal, maxVal) else minVal
+    private fun Float.safeCoerceIn(minVal: Float, maxVal: Float): Float =
+        if (minVal <= maxVal) this.coerceIn(minVal, maxVal) else minVal
     private val pal = ToolPrefs.resolvePalette(context)
 
     private val words = mutableListOf<LensWord>()
@@ -222,7 +226,7 @@ class LensOverlayView(
             }
 
             val lineCount = estLines.size.coerceAtLeast(1)
-            val lineH = (b.height().toFloat() / lineCount).coerceIn(dp(18f), dp(42f))
+            val lineH = (b.height().toFloat() / lineCount).safeCoerceIn(dp(18f), dp(42f))
 
             estLines.forEachIndexed { lineIdx, lineText ->
                 val tokens = lineText.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -286,8 +290,8 @@ class LensOverlayView(
     }
 
     private fun normalizedRange(): IntRange {
-        val s = minOf(selStart, selEnd).coerceIn(0, (words.size - 1).coerceAtLeast(0))
-        val e = maxOf(selStart, selEnd).coerceIn(0, (words.size - 1).coerceAtLeast(0))
+        val s = minOf(selStart, selEnd).safeCoerceIn(0, (words.size - 1).coerceAtLeast(0))
+        val e = maxOf(selStart, selEnd).safeCoerceIn(0, (words.size - 1).coerceAtLeast(0))
         return s..e
     }
 
@@ -378,8 +382,8 @@ class LensOverlayView(
             }
 
             val paint = if (isSel) wordSelectedTextPaint else wordTextPaint
-            val maxTextH = (r.height() * 0.62f).coerceIn(dp(9.5f), dp(14f))
-            val fitTextW = ((r.width() - dp(4f)) / (w.text.length.coerceAtLeast(1) * 0.62f)).coerceIn(dp(8.5f), maxTextH)
+            val maxTextH = (r.height() * 0.62f).safeCoerceIn(dp(9.5f), dp(14f))
+            val fitTextW = ((r.width() - dp(4f)) / (w.text.length.coerceAtLeast(1) * 0.62f)).safeCoerceIn(dp(8.5f), maxTextH)
             paint.textSize = fitTextW
 
             val textY = r.centerY() - (paint.descent() + paint.ascent()) / 2f
@@ -396,8 +400,8 @@ class LensOverlayView(
             val handleH = dp(26f)
 
             startHandleCenter.set(
-                (firstWord.left - handleW * 0.55f).coerceIn(dp(6f), viewW - handleW - dp(6f)),
-                (firstWord.bottom + dp(3f)).coerceIn(dp(40f), viewH - handleH - dp(8f)),
+                (firstWord.left - handleW * 0.55f).safeCoerceIn(dp(6f), viewW - handleW - dp(6f)),
+                (firstWord.bottom + dp(3f)).safeCoerceIn(dp(40f), viewH - handleH - dp(8f)),
                 0f,
                 0f
             )
@@ -405,8 +409,8 @@ class LensOverlayView(
             startHandleCenter.bottom = startHandleCenter.top + handleH
 
             endHandleCenter.set(
-                (lastWord.right - handleW * 0.45f).coerceIn(dp(6f), viewW - handleW - dp(6f)),
-                (lastWord.bottom + dp(3f)).coerceIn(dp(40f), viewH - handleH - dp(8f)),
+                (lastWord.right - handleW * 0.45f).safeCoerceIn(dp(6f), viewW - handleW - dp(6f)),
+                (lastWord.bottom + dp(3f)).safeCoerceIn(dp(40f), viewH - handleH - dp(8f)),
                 0f,
                 0f
             )

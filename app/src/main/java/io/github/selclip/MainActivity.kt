@@ -15,7 +15,6 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.EditText
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -29,15 +28,17 @@ class MainActivity : Activity() {
         private const val REQ_IMPORT_JSON = 1002
     }
 
+    // All 5 tabs fit on a single screen width (zero horizontal scrolling), with SET right next to HOME
     private enum class Tab(val title: String) {
-        HOME("01:HOME"),
-        TOOLS("02:TOOLS"),
-        RULES("03:RULES"),
-        CLIPS("04:CLIPS"),
-        BACKUP("05:SETTINGS")
+        HOME("HOME"),
+        BACKUP("SET"),
+        TOOLS("TOOLS"),
+        RULES("RULES"),
+        CLIPS("CLIPS")
     }
 
     private var activeTab: Tab = Tab.HOME
+    private var lastRenderedIsDark: Boolean? = null
     private val tabButtons = mutableMapOf<Tab, TextView>()
     private val tabPanels = mutableMapOf<Tab, View>()
 
@@ -64,8 +65,11 @@ class MainActivity : Activity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         if (ToolPrefs.isFollowSystemTheme(this)) {
-            rebuildUi()
-            SelAccessibilityService.instance?.refreshOpenPopupTheme()
+            val nowDark = ToolPrefs.resolvePalette(this).isDark
+            if (lastRenderedIsDark != null && lastRenderedIsDark != nowDark) {
+                rebuildUi()
+                SelAccessibilityService.instance?.refreshOpenPopupTheme()
+            }
         }
     }
 
@@ -74,6 +78,7 @@ class MainActivity : Activity() {
     private fun rebuildUi() {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
+        lastRenderedIsDark = p.isDark
 
         runCatching {
             window.statusBarColor = Color.parseColor(p.bgHeader)
@@ -92,7 +97,7 @@ class MainActivity : Activity() {
         val topHeader = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor(p.bgHeader))
-            setPadding(dp(18), dp(20), dp(18), dp(12))
+            setPadding(dp(14), dp(14), dp(14), dp(10))
         }
 
         val titleRow = LinearLayout(this).apply {
@@ -100,58 +105,62 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val titleLabel = label("[sel_] // PLAIN-TEXT PALETTE", 15.5f, p.fgPrimary).apply {
+        val titleLabel = label("[sel_] // PLAIN-TEXT PALETTE", 14.5f, p.fgPrimary).apply {
             this.layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+                0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 1f
             )
         }
 
-        serviceStatusBadge = label("○ INACTIVE", 11f, p.dangerRed)
+        serviceStatusBadge = label("○ INACTIVE", 10.5f, p.dangerRed)
         titleRow.addView(titleLabel)
         titleRow.addView(serviceStatusBadge)
         topHeader.addView(titleRow)
         topHeader.addView(
             label(
-                "+-- v2.5 · ${p.name} theme · max 4 top-row icons · custom folders --+",
-                10.5f,
+                "+-- v2.5.1 · ${p.name} theme · max 4 top-row icons · custom folders --+",
+                10f,
                 p.fgMuted
             )
         )
         root.addView(topHeader)
 
-        // 2. Horizontal Terminal Tab Bar
-        val tabScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(Color.parseColor(p.bgSurface))
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-        }
-
+        // 2. Full-Width Non-Scrolling 5-Column Tab Bar (HOME | SET | TOOLS | RULES | CLIPS)
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor(p.bgSurface))
+            setPadding(dp(6), dp(5), dp(6), dp(5))
+            this.layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }
 
         Tab.values().forEach { tab ->
             val btn = TextView(this).apply {
-                text = "[ ${tab.title} ]"
+                text = "[${tab.title}]"
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setPadding(dp(14), dp(10), dp(14), dp(10))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                gravity = Gravity.CENTER
+                isSingleLine = true
+                includeFontPadding = false
+                setPadding(dp(2), dp(8), dp(2), dp(8))
                 this.layoutParams = LinearLayout.LayoutParams(
+                    0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
+                    1f
                 ).apply {
-                    marginEnd = dp(6)
+                    marginStart = dp(2)
+                    marginEnd = dp(2)
                 }
                 setOnClickListener { switchTab(tab) }
             }
             tabButtons[tab] = btn
             tabRow.addView(btn)
         }
-        tabScroll.addView(tabRow)
-        root.addView(tabScroll)
+        root.addView(tabRow)
 
         // 1px Divider under tabs
         root.addView(View(this).apply {
@@ -170,14 +179,14 @@ class MainActivity : Activity() {
 
         val bodyHost = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(28))
+            setPadding(dp(14), dp(14), dp(14), dp(24))
         }
 
         tabPanels[Tab.HOME] = buildHomeTab()
+        tabPanels[Tab.BACKUP] = buildBackupAndSettingsTab()
         tabPanels[Tab.TOOLS] = buildToolsTab()
         tabPanels[Tab.RULES] = buildRulesTab()
         tabPanels[Tab.CLIPS] = buildClipsAndLogTab()
-        tabPanels[Tab.BACKUP] = buildBackupAndSettingsTab()
 
         Tab.values().forEach { t ->
             tabPanels[t]?.let { bodyHost.addView(it) }
@@ -205,7 +214,7 @@ class MainActivity : Activity() {
                         cornerRadius = dp(3).toFloat()
                     }
                 } else {
-                    setTextColor(Color.parseColor(p.fgMuted))
+                    setTextColor(Color.parseColor(p.fgPrimary))
                     background = null
                 }
             }
@@ -226,15 +235,15 @@ class MainActivity : Activity() {
                 setStroke(dp(1), Color.parseColor(p.border))
                 cornerRadius = dp(3).toFloat()
             }
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
 
             addView(
                 label(
-                    "ACTIVE THEME: ${p.name} (${if (p.isDark) "DARK #282A36" else "LIGHT #FFFBEB"})" +
-                        if (followSys) " · FOLLOWING SYSTEM (${if (sysDark) "DARK" else "LIGHT"})" else " · MANUAL OVERRIDE",
-                    11f,
+                    "THEME: ${p.name} (${if (p.isDark) "DARK #282A36" else "LIGHT #FFFBEB"})" +
+                        if (followSys) " · SYSTEM AUTO (${if (sysDark) "DARK" else "LIGHT"})" else " · MANUAL",
+                    10.5f,
                     p.accentGreen
-                ).apply { setPadding(0, 0, 0, dp(6)) }
+                ).apply { setPadding(0, 0, 0, dp(4)) }
             )
 
             val btnRow = LinearLayout(this@MainActivity).apply {
@@ -244,7 +253,7 @@ class MainActivity : Activity() {
 
             btnRow.addView(
                 buttonPill(
-                    if (followSys) "[ FOLLOW SYSTEM: ON ]" else "[ FOLLOW SYSTEM: OFF ]",
+                    if (followSys) "[ SYSTEM AUTO: ON ]" else "[ SYSTEM AUTO: OFF ]",
                     if (followSys) p.accentGreen else p.fgMuted
                 ) {
                     ToolPrefs.setFollowSystemTheme(this@MainActivity, !followSys)
@@ -255,7 +264,7 @@ class MainActivity : Activity() {
 
             btnRow.addView(
                 buttonPill(
-                    if (p.isDark) "[ SWITCH TO ALUCARD LIGHT ]" else "[ SWITCH TO DRACULA DARK ]",
+                    if (p.isDark) "[ USE ALUCARD LIGHT ]" else "[ USE DRACULA DARK ]",
                     p.accentPurple
                 ) {
                     val targetDark = !p.isDark
@@ -270,56 +279,59 @@ class MainActivity : Activity() {
         }
     }
 
-    // --- TAB 1: HOME (Permissions, Theme Toggle, Lens Grabber Trigger, & Interactive Context Sandbox) ---
+    // --- TAB 1: HOME (Quick Permission/Theme Bar, Context-Aware Test Sandbox at Top, & Lens Grabber) ---
     private fun buildHomeTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
 
-            addView(label("01 // ACCESSIBILITY PERMISSION", 12f, p.fgSecondary))
+            addView(label("01 // PERMISSION & THEME", 11.5f, p.fgSecondary))
             addView(buttonPill("[ ENABLE / MANAGE IN ACCESSIBILITY SETTINGS ↗ ]", p.accentGreen) {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             })
+            addView(buildThemeToggleCard())
 
-            addView(label("\n02 // THEME: DRACULA (DARK) & ALUCARD (LIGHT)", 12f, p.fgSecondary))
+            // Placed right near the top of HOME so it sits well above the soft keyboard and requires zero scrolling
+            addView(label("\n02 // CONTEXT-AWARE TEST SANDBOX", 11.5f, p.fgSecondary))
             addView(
                 label(
-                    "Popup and app colors follow system dark/light mode by default (Dracula in Dark mode, Alucard in Light mode).",
+                    "Highlight any word or number below to test the popup:",
                     10.5f,
                     p.fgMuted
                 ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
-            addView(buildThemeToggleCard())
 
-            addView(label("\n03 // [+] LENS SCREEN TEXT GRABBER", 12f, p.fgSecondary))
+            val sandbox = EditText(this@MainActivity).apply {
+                typeface = Typeface.MONOSPACE
+                textSize = 12f
+                setTextColor(Color.parseColor(p.fgPrimary))
+                setBackgroundColor(Color.parseColor(p.bgSurface))
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                setText(
+                    "Nepal Phone (Call/SMS/WA/W4B): 9841234567  or  +977 9801234567\n" +
+                        "Word (Define [?=]): serendipity\n" +
+                        "Torrent Hash (Magnet [0x]): dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\n" +
+                        "Math / Unit: 145 * 12   or   72 F   or   0xFF\n" +
+                        "Unix Timestamp: 1730000000\n" +
+                        "Base64: aGVsbG8gd29ybGQ=\n" +
+                        "Dirty URL ([?x]): https://example.com/item?utm_source=ads&fbclid=123"
+                )
+            }
+            addView(sandbox)
+
+            addView(label("\n03 // [+] LENS SCREEN TEXT GRABBER", 11.5f, p.fgSecondary))
             addView(
                 label(
                     "Extract unselectable text anywhere on screen with word chips, [+ADD] multi-select, and '[' / ']' handles.",
-                    11f,
+                    10.5f,
                     p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+                ).apply { setPadding(0, dp(2), 0, dp(6)) }
             )
-
-            val intentInfo = """
-                Action:    io.github.selclip.ACTION_GRAB_SCREEN
-                Package:   io.github.selclip
-                Activity:  io.github.selclip.ScreenGrabTriggerActivity
-                Deep Link: sel://grab
-            """.trimIndent()
-
-            addView(TextView(this@MainActivity).apply {
-                text = intentInfo
-                typeface = Typeface.MONOSPACE
-                textSize = 11f
-                setTextColor(Color.parseColor(p.fgPrimary))
-                setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(12), dp(10), dp(12), dp(10))
-            })
 
             val rowBtns = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(8), 0, dp(14))
+                setPadding(0, 0, 0, dp(6))
             }
 
             rowBtns.addView(buttonPill("[ [+] LAUNCH LENS GRAB ]", p.accentGreen) {
@@ -332,36 +344,163 @@ class MainActivity : Activity() {
 
             addView(rowBtns)
 
-            addView(label("04 // CONTEXT-AWARE TEST SANDBOX", 12f, p.fgSecondary))
+            val intentInfo = """
+                Action:    io.github.selclip.ACTION_GRAB_SCREEN
+                Activity:  io.github.selclip.ScreenGrabTriggerActivity
+                Deep Link: sel://grab
+            """.trimIndent()
+
+            addView(TextView(this@MainActivity).apply {
+                text = intentInfo
+                typeface = Typeface.MONOSPACE
+                textSize = 10.5f
+                setTextColor(Color.parseColor(p.fgPrimary))
+                setBackgroundColor(Color.parseColor(p.bgSurface))
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            })
+        }
+    }
+
+    // --- TAB 2 (SET): THEME SETTINGS, BACKUP / EXPORT / IMPORT & PER-APP BLACKLIST ---
+    private fun buildBackupAndSettingsTab(): View {
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+        val p = pal()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+
+            addView(label("01 // THEME PALETTE (DRACULA DARK / ALUCARD LIGHT)", 12f, p.fgSecondary))
             addView(
                 label(
-                    "Highlight any item below to test top-row computer-shortcut icons, clean text-only list rows, and instant math/unit rows:",
-                    11f,
+                    "Follow system dark/light mode automatically or lock the popup and app to Dracula (Dark) or Alucard (Light):",
+                    10.5f,
+                    p.fgMuted
+                ).apply { setPadding(0, dp(2), 0, dp(8)) }
+            )
+            addView(buildThemeToggleCard())
+
+            addView(label("\n02 // PER-APP BLACKLIST (⊘ MUTED APPS)", 12f, p.fgSecondary))
+            addView(
+                label(
+                    "Muted apps will not trigger automatic selection popups (manual Lens Grab still works).",
+                    10.5f,
                     p.fgMuted
                 ).apply { setPadding(0, dp(2), 0, dp(8)) }
             )
 
-            val sandbox = EditText(this@MainActivity).apply {
+            val addBlkRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(8))
+            }
+
+            blacklistInput = EditText(this@MainActivity).apply {
                 typeface = Typeface.MONOSPACE
-                textSize = 12.5f
+                textSize = 11.5f
                 setTextColor(Color.parseColor(p.fgPrimary))
                 setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(12), dp(12), dp(12), dp(12))
-                setText(
-                    "Nepal Phone (Call/SMS/WA/W4B): 9841234567  or  +977 9801234567\n" +
-                        "Word (Define [?=]): serendipity\n" +
-                        "Torrent Hash (Magnet [0x]): dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\n" +
-                        "Math / Unit: 145 * 12   or   72 F   or   0xFF\n" +
-                        "Unix Timestamp: 1730000000\n" +
-                        "Base64: aGVsbG8gd29ybGQ=\n" +
-                        "Dirty URL ([?x]): https://example.com/item?utm_source=ads&fbclid=123"
-                )
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                hint = "com.example.app"
+                setHintTextColor(Color.parseColor(p.fgMuted))
+                this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
-            addView(sandbox)
+
+            val addBlkBtn = buttonPill("  [ + MUTE ]", p.accentGreen) {
+                val pkg = blacklistInput.text.toString().trim()
+                if (pkg.isNotEmpty()) {
+                    ToolPrefs.setAppBlacklisted(this@MainActivity, pkg, true)
+                    blacklistInput.setText("")
+                    refreshBlacklistView()
+                }
+            }
+
+            addBlkRow.addView(blacklistInput)
+            addBlkRow.addView(addBlkBtn)
+            addView(addBlkRow)
+
+            blacklistContainer = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor(p.bgSurface))
+                    setStroke(dp(1), Color.parseColor(p.border))
+                    cornerRadius = dp(2).toFloat()
+                }
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            }
+            addView(blacklistContainer)
+
+            addView(label("\n03 // EXPORT & IMPORT SETTINGS + CUSTOM FOLDERS", 12f, p.fgSecondary))
+            addView(
+                label(
+                    "Exports theme mode, custom folders, tool folder assignments, top icon rows, tool order, blacklist, and rules.txt as a portable JSON file.",
+                    10.5f,
+                    p.fgMuted
+                ).apply { setPadding(0, dp(4), 0, dp(10)) }
+            )
+
+            val fileBtnRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 0, 0, dp(8))
+            }
+            fileBtnRow.addView(buttonPill("[ ⇩ EXPORT .JSON ]", p.accentGreen) {
+                launchExportJsonFile()
+            })
+
+            fileBtnRow.addView(buttonPill("[ ⇧ IMPORT .JSON ]", p.fgPrimary) {
+                launchImportJsonFile()
+            })
+            addView(fileBtnRow)
+
+            val clipBtnRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 0, 0, dp(8))
+            }
+            clipBtnRow.addView(buttonPill("[ [^C] COPY JSON ]", p.accentGreen) {
+                val json = ToolPrefs.exportBackupJson(this@MainActivity)
+                backupPreviewBox.setText(json)
+                copyPlain(json, "Exported config JSON to clipboard")
+            })
+
+            clipBtnRow.addView(buttonPill("[ [^V] RESTORE JSON ]", p.fgPrimary) {
+                val candidate = backupPreviewBox.text.toString().ifBlank {
+                    val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString() ?: ""
+                }
+                if (ToolPrefs.importBackupJson(this@MainActivity, candidate)) {
+                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                    rebuildUi()
+                    Toast.makeText(this@MainActivity, "✓ Settings & custom folders restored!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Invalid backup JSON", Toast.LENGTH_SHORT).show()
+                }
+            })
+            addView(clipBtnRow)
+
+            addView(buttonPill("[ ↗ SHARE CONFIG BUNDLE ]", p.accentPurple) {
+                val json = ToolPrefs.exportBackupJson(this@MainActivity)
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/json"
+                    putExtra(Intent.EXTRA_TEXT, json)
+                    putExtra(Intent.EXTRA_SUBJECT, "sel-android-backup.json")
+                }
+                startActivity(Intent.createChooser(share, "Export [sel] Config"))
+            })
+
+            backupPreviewBox = EditText(this@MainActivity).apply {
+                typeface = Typeface.MONOSPACE
+                textSize = 10.5f
+                setTextColor(Color.parseColor(p.fgPrimary))
+                setBackgroundColor(Color.parseColor(p.bgSurface))
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                minLines = 5
+                maxLines = 8
+                hint = "Config JSON preview (or paste backup JSON here to restore)…"
+                setHintTextColor(Color.parseColor(p.fgMuted))
+            }
+            addView(backupPreviewBox)
         }
     }
 
-    // --- TAB 2: TOOLS (Top Icon Rows max 4, Custom Folder Builder, & Tool Order / Folder Assignment) ---
+    // --- TAB 3: TOOLS (Top Icon Rows max 4, Custom Folder Builder, & Tool Order / Folder Assignment) ---
     private fun buildToolsTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
@@ -522,7 +661,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // --- TAB 3: RULES (Add Web Engines with Auto-Favicon, Custom Commands, & Regex Pipes) ---
+    // --- TAB 4: RULES (Add Web Engines with Auto-Favicon, Custom Commands, & Regex Pipes) ---
     private fun buildRulesTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
@@ -692,7 +831,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // --- TAB 4: CLIPS & SCRATCHPAD LOG ---
+    // --- TAB 5: CLIPS & SCRATCHPAD LOG ---
     private fun buildClipsAndLogTab(): View {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
@@ -751,145 +890,6 @@ class MainActivity : Activity() {
                 minLines = 8
             }
             addView(logView)
-        }
-    }
-
-    // --- TAB 5: THEME SETTINGS, BACKUP / EXPORT / IMPORT & PER-APP BLACKLIST ---
-    private fun buildBackupAndSettingsTab(): View {
-        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
-        val p = pal()
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-
-            addView(label("01 // THEME PALETTE (DRACULA DARK / ALUCARD LIGHT)", 12f, p.fgSecondary))
-            addView(
-                label(
-                    "Toggle automatic system dark/light mode tracking or lock the popup and app to Dracula (Dark) or Alucard (Light):",
-                    10.5f,
-                    p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
-            )
-            addView(buildThemeToggleCard())
-
-            addView(label("\n02 // EXPORT & IMPORT SETTINGS + CUSTOM FOLDERS", 12f, p.fgSecondary))
-            addView(
-                label(
-                    "Exports theme mode, custom folders, tool folder assignments, top icon rows, tool order, blacklist, and rules.txt as a single portable JSON file.",
-                    10.5f,
-                    p.fgMuted
-                ).apply { setPadding(0, dp(4), 0, dp(10)) }
-            )
-
-            val fileBtnRow = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(8))
-            }
-            fileBtnRow.addView(buttonPill("[ ⇩ EXPORT TO .JSON FILE ]", p.accentGreen) {
-                launchExportJsonFile()
-            })
-
-            fileBtnRow.addView(buttonPill("[ ⇧ IMPORT .JSON FILE ]", p.fgPrimary) {
-                launchImportJsonFile()
-            })
-            addView(fileBtnRow)
-
-            val clipBtnRow = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(8))
-            }
-            clipBtnRow.addView(buttonPill("[ [^C] COPY CONFIG JSON ]", p.accentGreen) {
-                val json = ToolPrefs.exportBackupJson(this@MainActivity)
-                backupPreviewBox.setText(json)
-                copyPlain(json, "Exported config JSON to clipboard")
-            })
-
-            clipBtnRow.addView(buttonPill("[ [^V] RESTORE FROM BOX / CLIP ]", p.fgPrimary) {
-                val candidate = backupPreviewBox.text.toString().ifBlank {
-                    val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.primaryClip?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString() ?: ""
-                }
-                if (ToolPrefs.importBackupJson(this@MainActivity, candidate)) {
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
-                    rebuildUi()
-                    Toast.makeText(this@MainActivity, "✓ Settings & custom folders restored!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this@MainActivity, "Invalid backup JSON", Toast.LENGTH_SHORT).show()
-                }
-            })
-            addView(clipBtnRow)
-
-            addView(buttonPill("[ ↗ SHARE CONFIG BUNDLE ]", p.accentPurple) {
-                val json = ToolPrefs.exportBackupJson(this@MainActivity)
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/json"
-                    putExtra(Intent.EXTRA_TEXT, json)
-                    putExtra(Intent.EXTRA_SUBJECT, "sel-android-backup.json")
-                }
-                startActivity(Intent.createChooser(share, "Export [sel] Config"))
-            })
-
-            backupPreviewBox = EditText(this@MainActivity).apply {
-                typeface = Typeface.MONOSPACE
-                textSize = 10.5f
-                setTextColor(Color.parseColor(p.fgPrimary))
-                setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                minLines = 5
-                maxLines = 8
-                hint = "Config JSON preview (or paste backup JSON here to restore)…"
-                setHintTextColor(Color.parseColor(p.fgMuted))
-            }
-            addView(backupPreviewBox)
-
-            addView(label("\n03 // PER-APP BLACKLIST (⊘ MUTED APPS)", 12f, p.fgSecondary))
-            addView(
-                label(
-                    "Muted apps will not trigger automatic selection popups (manual Lens Grab still works).",
-                    10.5f,
-                    p.fgMuted
-                ).apply { setPadding(0, dp(2), 0, dp(8)) }
-            )
-
-            val addBlkRow = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, dp(8))
-            }
-
-            blacklistInput = EditText(this@MainActivity).apply {
-                typeface = Typeface.MONOSPACE
-                textSize = 11.5f
-                setTextColor(Color.parseColor(p.fgPrimary))
-                setBackgroundColor(Color.parseColor(p.bgSurface))
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                hint = "com.example.app"
-                setHintTextColor(Color.parseColor(p.fgMuted))
-                this.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-
-            val addBlkBtn = buttonPill("  [ + MUTE ]", p.accentGreen) {
-                val pkg = blacklistInput.text.toString().trim()
-                if (pkg.isNotEmpty()) {
-                    ToolPrefs.setAppBlacklisted(this@MainActivity, pkg, true)
-                    blacklistInput.setText("")
-                    refreshBlacklistView()
-                }
-            }
-
-            addBlkRow.addView(blacklistInput)
-            addBlkRow.addView(addBlkBtn)
-            addView(addBlkRow)
-
-            blacklistContainer = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor(p.bgSurface))
-                    setStroke(dp(1), Color.parseColor(p.border))
-                    cornerRadius = dp(2).toFloat()
-                }
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-            }
-            addView(blacklistContainer)
         }
     }
 
@@ -1234,7 +1234,6 @@ class MainActivity : Activity() {
             row.addView(dragHandle)
             row.addView(nameView)
 
-            // Folder Assignment Button ([DIR:ROOT] -> [DIR:<FOLDER>])
             if (tool.id != "copy" && !tool.id.startsWith("folder_custom_")) {
                 val dirBtn = TextView(this).apply {
                     text = if (assignedFolder != null) "[DIR:$assignedFolder]" else "[DIR:ROOT]"
@@ -1332,8 +1331,8 @@ class MainActivity : Activity() {
     private fun buttonPill(content: String, hexColor: String, onClick: () -> Unit): TextView {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val p = pal()
-        return label(content, 11.5f, hexColor).apply {
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+        return label(content, 11f, hexColor).apply {
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor(p.bgPrimary))
                 setStroke(dp(1), Color.parseColor(p.border))
@@ -1343,9 +1342,9 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(4)
-                bottomMargin = dp(4)
-                marginEnd = dp(8)
+                topMargin = dp(3)
+                bottomMargin = dp(3)
+                marginEnd = dp(6)
             }
             setOnClickListener { onClick() }
         }

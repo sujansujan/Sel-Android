@@ -160,6 +160,14 @@ class SelAccessibilityService : AccessibilityService() {
         RegexOption.IGNORE_CASE
     )
 
+    private fun Int.safeCoerceIn(minVal: Int, maxVal: Int): Int {
+        return if (minVal <= maxVal) this.coerceIn(minVal, maxVal) else minVal
+    }
+
+    private fun Float.safeCoerceIn(minVal: Float, maxVal: Float): Float {
+        return if (minVal <= maxVal) this.coerceIn(minVal, maxVal) else minVal
+    }
+
     override fun onServiceConnected() {
         instance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -629,6 +637,12 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        runCatching {
+            handleAccessibilityEventInternal(event)
+        }
+    }
+
+    private fun handleAccessibilityEventInternal(event: AccessibilityEvent?) {
         event ?: return
         if (screenGrabOverlayView != null) return
         val pkg = event.packageName?.toString() ?: ""
@@ -997,37 +1011,39 @@ class SelAccessibilityService : AccessibilityService() {
                 zoneTop = minOf(zoneTop, toolbarRect.top - dp(10))
                 zoneBottom = maxOf(zoneBottom, toolbarRect.bottom + dp(14))
             }
-            return Rect(
-                rawCandidate.left.coerceAtLeast(dp(12)),
-                zoneTop.coerceIn(dp(48), (visibleBottom - dp(64)).coerceAtLeast(dp(48))),
-                rawCandidate.right.coerceAtMost(dm.widthPixels - dp(12)),
-                zoneBottom.coerceIn(zoneTop + dp(32), visibleBottom - dp(8))
+            val clampedTop = zoneTop.safeCoerceIn(dp(48), (visibleBottom - dp(64)).coerceAtLeast(dp(48)))
+            val clampedBottom = zoneBottom.safeCoerceIn(
+                clampedTop + dp(28),
+                (visibleBottom - dp(8)).coerceAtLeast(clampedTop + dp(28))
             )
+            val left = rawCandidate.left.coerceAtLeast(dp(12))
+            val right = rawCandidate.right.coerceAtMost(dm.widthPixels - dp(12)).coerceAtLeast(left + dp(24))
+            return Rect(left, clampedTop, right, clampedBottom)
         }
 
         if (toolbarRect != null) {
-            val zoneTop = (toolbarRect.top - dp(14)).coerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
-            val zoneBottom = (toolbarRect.bottom + dp(66)).coerceIn(zoneTop + dp(44), visibleBottom - dp(8))
-            return Rect(
-                toolbarRect.left.coerceAtLeast(dp(12)),
-                zoneTop,
-                toolbarRect.right.coerceAtMost(dm.widthPixels - dp(12)),
-                zoneBottom
+            val clampedTop = (toolbarRect.top - dp(14)).safeCoerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
+            val clampedBottom = (toolbarRect.bottom + dp(66)).safeCoerceIn(
+                clampedTop + dp(36),
+                (visibleBottom - dp(8)).coerceAtLeast(clampedTop + dp(36))
             )
+            val left = toolbarRect.left.coerceAtLeast(dp(12))
+            val right = toolbarRect.right.coerceAtMost(dm.widthPixels - dp(12)).coerceAtLeast(left + dp(24))
+            return Rect(left, clampedTop, right, clampedBottom)
         }
 
         if (isMediumCandidate && rawCandidate != null) {
-            val zoneTop = (rawCandidate.top - dp(10)).coerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
-            val zoneBottom = (rawCandidate.bottom + dp(20)).coerceIn(zoneTop + dp(36), visibleBottom - dp(8))
-            return Rect(
-                rawCandidate.left.coerceAtLeast(dp(12)),
-                zoneTop,
-                rawCandidate.right.coerceAtMost(dm.widthPixels - dp(12)),
-                zoneBottom
+            val clampedTop = (rawCandidate.top - dp(10)).safeCoerceIn(dp(48), (visibleBottom - dp(80)).coerceAtLeast(dp(48)))
+            val clampedBottom = (rawCandidate.bottom + dp(20)).safeCoerceIn(
+                clampedTop + dp(32),
+                (visibleBottom - dp(8)).coerceAtLeast(clampedTop + dp(32))
             )
+            val left = rawCandidate.left.coerceAtLeast(dp(12))
+            val right = rawCandidate.right.coerceAtMost(dm.widthPixels - dp(12)).coerceAtLeast(left + dp(24))
+            return Rect(left, clampedTop, right, clampedBottom)
         }
 
-        val fallbackMidY = (visibleBottom * 0.36f).toInt().coerceIn(dp(96), visibleBottom - dp(96))
+        val fallbackMidY = (visibleBottom * 0.36f).toInt().safeCoerceIn(dp(96), (visibleBottom - dp(96)).coerceAtLeast(dp(96)))
         return Rect(dp(16), fallbackMidY - dp(28), dm.widthPixels - dp(16), fallbackMidY + dp(36))
     }
 
@@ -1047,7 +1063,7 @@ class SelAccessibilityService : AccessibilityService() {
         }
 
         if (nodeRect.height() in dp(84)..(realH * 0.45f).toInt() && raw.isNotEmpty()) {
-            val avgCharsPerLine = ((nodeRect.width() / dp(7).coerceAtLeast(1))).coerceIn(22, 72)
+            val avgCharsPerLine = ((nodeRect.width() / dp(7).coerceAtLeast(1))).safeCoerceIn(22, 72)
             var currentLine = 0
             var startLine = 0
             var endLine = 0
@@ -1070,10 +1086,10 @@ class SelAccessibilityService : AccessibilityService() {
             }
             if (end >= limit) endLine = currentLine
             val totalLines = (currentLine + 1).coerceAtLeast(1)
-            val estLineH = (nodeRect.height().toFloat() / totalLines.toFloat()).coerceIn(dp(16).toFloat(), dp(25).toFloat())
-            val bandTop = (nodeRect.top + startLine * estLineH).toInt().coerceIn(nodeRect.top, nodeRect.bottom - dp(28))
+            val estLineH = (nodeRect.height().toFloat() / totalLines.toFloat()).safeCoerceIn(dp(16).toFloat(), dp(25).toFloat())
+            val bandTop = (nodeRect.top + startLine * estLineH).toInt().safeCoerceIn(nodeRect.top, nodeRect.bottom - dp(28))
             val bandBottom = (nodeRect.top + (endLine + 1) * estLineH).toInt()
-                .coerceIn(bandTop + dp(24), nodeRect.bottom)
+                .safeCoerceIn(bandTop + dp(24), nodeRect.bottom)
             return Rect(nodeRect.left, bandTop, nodeRect.right, bandBottom)
         }
 
@@ -1174,9 +1190,9 @@ class SelAccessibilityService : AccessibilityService() {
         anchoredAboveSelection = placeAbove
 
         val chosenSpace = if (placeAbove) spaceAbove else spaceBelow
-        currentMaxTotalHeight = chosenSpace.coerceIn(dp(100), (realH * 0.40f).toInt())
+        currentMaxTotalHeight = chosenSpace.safeCoerceIn(dp(100), (realH * 0.40f).toInt())
         val headerHeightEst = dp(32)
-        dynamicMaxScrollHeight = (currentMaxTotalHeight - headerHeightEst).coerceIn(dp(54), dp(290))
+        dynamicMaxScrollHeight = (currentMaxTotalHeight - headerHeightEst).safeCoerceIn(dp(54), dp(290))
 
         val tightVertical = chosenSpace < dp(220)
         val twoColGrid = ToolPrefs.isTwoColumnGrid(this) && currentMode == PopupMode.ACTIONS
@@ -1209,7 +1225,7 @@ class SelAccessibilityService : AccessibilityService() {
                 params.y = (safeZone.top - gap - estH).coerceAtLeast(topSafe)
             } else {
                 val maxTopY = (visibleBottom - estH).coerceAtLeast(topSafe)
-                params.y = (safeZone.bottom + gap).coerceIn(topSafe, maxTopY)
+                params.y = (safeZone.bottom + gap).safeCoerceIn(topSafe, maxTopY)
             }
         }
     }
@@ -1299,7 +1315,7 @@ class SelAccessibilityService : AccessibilityService() {
                         (currentSafeZone.top - gap - actualH).coerceAtLeast(topSafe)
                     } else {
                         val maxTop = (visBottom - actualH).coerceAtLeast(topSafe)
-                        (currentSafeZone.bottom + gap).coerceIn(topSafe, maxTop)
+                        (currentSafeZone.bottom + gap).safeCoerceIn(topSafe, maxTop)
                     }
                     if (kotlin.math.abs(p.y - desiredY) > dp(3)) {
                         p.y = desiredY
@@ -3413,9 +3429,9 @@ class SelAccessibilityService : AccessibilityService() {
                             userManuallyDragged = true
                         }
                         params.x = (initialX + dx)
-                            .coerceIn(dp(6), (dm.widthPixels - rootView.width - dp(6)).coerceAtLeast(dp(6)))
+                            .safeCoerceIn(dp(6), (dm.widthPixels - rootView.width - dp(6)).coerceAtLeast(dp(6)))
                         params.y = (initialY + dy)
-                            .coerceIn(dp(44), (dm.heightPixels - dp(84)).coerceAtLeast(dp(48)))
+                            .safeCoerceIn(dp(44), (dm.heightPixels - dp(84)).coerceAtLeast(dp(48)))
                         if (rootView.isAttachedToWindow) {
                             windowManager.updateViewLayout(rootView, params)
                         }
