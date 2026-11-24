@@ -58,6 +58,13 @@ class LensOverlayView(
     private val onDismiss: () -> Unit
 ) : FrameLayout(context) {
 
+    private enum class DragMode {
+        NONE,
+        SWEEP_SELECT,
+        HANDLE_START,
+        HANDLE_END
+    }
+
     private val density = resources.displayMetrics.density
     private fun dp(v: Float): Float = v * density
     private fun dpInt(v: Int): Int = (v * density).toInt()
@@ -691,13 +698,6 @@ class LensOverlayView(
      * - Renders a floating word-loupe pill above the user's thumb while dragging a handle.
      */
     private inner class LensCanvasView(context: Context) : View(context) {
-
-        private enum class DragMode {
-            NONE,
-            SWEEP_SELECT,
-            HANDLE_START,
-            HANDLE_END
-        }
 
         private var dragMode = DragMode.NONE
         private var anchorWordIndex = -1
