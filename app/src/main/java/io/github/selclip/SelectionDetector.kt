@@ -168,7 +168,7 @@ class SelectionDetector(
 
                 val wRect = Rect()
                 w.getBoundsInScreen(wRect)
-                val isFloating = wRect.height() in dp(24)..dp(150) && wRect.width() < (realW * 0.96f).toInt()
+                val isFloating = wRect.height() in dp(24)..dp(180) && wRect.width() < (realW * 0.98f).toInt()
                 if (isFloating || w.isActive || w.isFocused) {
                     val hit = detectSelectionToolbarInRoot(root, w.id, isFloating, realH, visBottom)
                     if (hit != null) {
@@ -216,7 +216,7 @@ class SelectionDetector(
         return snap.toolbar?.takeIf { System.currentTimeMillis() - lastToolbarTime < 500L }
     }
 
-    private val toolbarKeywords = listOf("Copy", "Cut", "Select all")
+    private val toolbarKeywords = listOf("Copy", "Cut", "Select all", "Share")
     private val toolbarIdHints = listOf(
         "android:id/copy",
         "android:id/cut",
@@ -369,6 +369,25 @@ class SelectionDetector(
             }
         }
 
+        // Chromium / WebView quirk: TYPE_VIEW_TEXT_SELECTION_CHANGED sometimes puts ONLY the
+        // selected snippet directly in event.text while leaving fromIndex/toIndex unset (-1).
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED &&
+            eventText.isNotBlank() &&
+            eventText.length <= 500 &&
+            (event.fromIndex < 0 || event.toIndex < 0)
+        ) {
+            val srcFull = source?.text?.toString() ?: ""
+            if (srcFull.isEmpty() || srcFull != eventText) {
+                val rect = if (source != null) {
+                    Rect().also { source.getBoundsInScreen(it) }
+                } else {
+                    val b = getRealScreenBounds()
+                    Rect(dp(24), b.height() / 3, b.width() - dp(24), b.height() / 3 + dp(48))
+                }
+                return SelectionResult(eventText.trim(), source, rect)
+            }
+        }
+
         val focused = findFocusedEditableOrSelectableNode()
         if (focused != null && focused != source) {
             extractFromNode(focused)?.let { return it }
@@ -494,12 +513,22 @@ class SelectionDetector(
             }
         }
 
-        // BFS for any visible node explicitly advertising ACTION_COPY (WebView, GeckoView, Compose, etc.)
-        if (root != null) {
+        // BFS across active windows for any visible node explicitly advertising ACTION_COPY
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        if (root != null) roots.add(root)
+        runCatching { service.windows }.getOrNull()?.forEach { w ->
+            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && (w.isActive || w.isFocused)) {
+                runCatching { w.root }.getOrNull()?.let { wr ->
+                    if (wr != root) roots.add(wr)
+                }
+            }
+        }
+
+        for (scanRoot in roots) {
             val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
-            queue.add(root to 0)
+            queue.add(scanRoot to 0)
             var visited = 0
-            while (queue.isNotEmpty() && visited < 120) {
+            while (queue.isNotEmpty() && visited < 150) {
                 val (node, depth) = queue.removeFirst()
                 visited++
                 if (node.isVisibleToUser && supportsAction(node, AccessibilityNodeInfo.ACTION_COPY)) {
@@ -507,8 +536,8 @@ class SelectionDetector(
                         return true
                     }
                 }
-                if (depth < 14) {
-                    val count = minOf(node.childCount, 18)
+                if (depth < 16) {
+                    val count = minOf(node.childCount, 20)
                     for (i in 0 until count) {
                         val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
                         queue.add(child to depth + 1)

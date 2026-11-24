@@ -40,7 +40,7 @@ class HomeTabController(private val activity: Activity) {
             addView(
                 UiKit.label(
                     activity,
-                    "Tap a sample or highlight text below — the bar adapts automatically:",
+                    "Tap a sample or highlight text below — Search, YouTube & pinned actions always appear alongside smart context buttons (long-press Search/YT for more):",
                     10.2f,
                     p.fgMutedInt
                 ).apply { setPadding(0, 0, 0, dp(6)) }

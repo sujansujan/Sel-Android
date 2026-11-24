@@ -2,19 +2,15 @@
 
 A minimal, context-aware PopClip alternative for Android styled with crisp ASCII / Dracula & Alucard aesthetics, built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and optional on-device Google Play Services ML Kit OCR.
 
-## v2.9.0 Highlights
-- **True Context-Aware macOS PopClip Horizontal ASCII Bar (`PopupContextEngine`):**
-  - Shows **only the 3–5 actions relevant to what you selected**—never dumping 20 buttons on every highlight:
-    - Phone → `CALL | SMS | WA | W4B | ^C | +`
-    - Dirty URL → `OPEN | CLEAN | ^C | QR | +`
-    - Email → `MAIL | ^C | WEB | +`
-    - Math / Unit / Timestamp / Base64 → `= <answer> | ^C | +`
-    - Torrent Hash → `MAGNET | OPEN | ^C | +`
-    - 1–3 Words (read-only) → `^C | DEF | TR | WEB | YT | +` (omits useless Cut/Paste!)
-    - Editable text box → automatically includes `^X` (Cut), `^V` (Paste), and `UNDO`
-  - Tap `[+]` on the right of the bar whenever you want the full compact ASCII tools drawer.
-- **Instant, Pixel-Aligned Tap-to-Select Screen Grab (`LensOverlayView`):**
-  - Launches in `<15ms` with crystal-clear screen visibility and `getLocationOnScreen()` offset correction so every tap hits the exact word under your finger on every notch/cutout device.
-  - Tap any word to select it, double-tap for paragraph, drag to sweep-select, or drag `[` / `]` handles—with the context-aware ASCII PopClip bar floating right beside your selection and `[OCR]` 1 tap away for images & videos.
-- **Simplified 3-Tab ASCII App (`[HOME]`, `[ACTIONS]`, `[SETTINGS]`):**
-  - Removed all duplicate toggles, top-row slot clutter, and redundant backup buttons for a clean, effortless experience.
+## v3.0.0 Highlights
+- **Zero Native Redundancy + Bigger Thumb-Friendly ASCII PopClip Bar:**
+  - Removed redundant `Copy`, `Cut`, `Paste`, and `Select All` from the main selection bar (since Android's native selection toolbar cannot be suppressed without root).
+  - Larger, effortless **46dp+ touch targets** (`13sp` bold monospace) that wrap cleanly into 1–2 tidy rows with hairline `1dp` borders and `|` separators.
+- **Always-On Customizable Search, YouTube & Pinned Actions:**
+  - **Default Search (`GGL`/`DDG`/`BRV`/custom)**: Always on the bar — tap for instant search, **long-press** to open all search engines (and long-press any engine in the drawer to make it default!).
+  - **YouTube (`YT`)**: Always on the bar — tap for instant YouTube search, **long-press** for time-filtered YouTube searches (`1H`, `24H`, `7D`, `30D`, `1Y`).
+  - **Pin Anything (`[*]`)**: Pin any built-in or custom action in `[ACTIONS]` so it always stays on the bar alongside smart context actions (`CALL/SMS/WA/W4B`, `OPEN/CLEAN`, `MAIL`, `= answer`, `MAGNET`, `DEF/TR`, `LINKS`, `JSON`, `UNDO`).
+- **Rock-Solid Selection Detection Across All Apps:**
+  - Listens to `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_LONG_CLICKED`, `TYPE_VIEW_SELECTED`, and `TYPE_VIEW_TEXT_SELECTION_CHANGED` with two-stage delayed probes (`100ms` + `190ms`), Chromium/WebView `event.text` fallback, automatic toolbar-signature reset on dismissal, and a reliable `360ms` Android 10+ clipboard focus probe.
+- **Overhauled Block-First Screen Text Grab (`LensOverlayView`):**
+  - Built on mobile-first **block-first tapping** (Universal Copy pattern + Fitts's Law thumb-zone dock): generous `+6dp` padded hitboxes with `getLocationOnScreen()` pixel alignment, multi-block tap stacking (`[1]`, `[2]`), double-tap / `[EDIT]` native Android `EditText` for real OS word/substring selection handles, `[LIST]` scrollable full-screen text reader, and `[OCR]` on-device ML Kit OCR for images & videos.

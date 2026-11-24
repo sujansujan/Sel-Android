@@ -98,6 +98,8 @@ object ToolPrefs {
     private const val KEY_FOLLOW_SYSTEM_THEME = "follow_system_theme"
     private const val KEY_DARK_THEME_MANUAL = "dark_theme_manual"
     private const val KEY_CUSTOM_FOLDERS = "user_custom_folders"
+    private const val KEY_DEFAULT_SEARCH_ID = "default_search_engine_id"
+    private const val KEY_PINNED_TOOLS = "pinned_bar_tool_ids"
     private const val PREFIX_TOOL_FOLDER = "tool_folder_"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
@@ -766,6 +768,59 @@ object ToolPrefs {
         prefs(context).edit().putBoolean(KEY_GRID_COLUMNS, enabled).apply()
     }
 
+    // --- Customizable Default Search Engine (1-tap [WEB] action; long-press shows all engines) ---
+    fun getDefaultSearchEngineId(context: Context): String {
+        return prefs(context).getString(KEY_DEFAULT_SEARCH_ID, "web_google")
+            ?.takeIf { it.isNotBlank() } ?: "web_google"
+    }
+
+    fun setDefaultSearchEngineId(context: Context, engineId: String) {
+        prefs(context).edit().putString(KEY_DEFAULT_SEARCH_ID, engineId.trim()).apply()
+    }
+
+    fun resolveDefaultSearchEngine(context: Context): ToolSpec {
+        val targetId = getDefaultSearchEngineId(context)
+        val engines = loadWebSearchTools(context)
+        return engines.firstOrNull { it.id == targetId } ?: webSearchSubTools.first()
+    }
+
+    // --- Always-Visible Pinned Actions on the PopClip Bar ---
+    fun getPinnedToolIds(context: Context): List<String> {
+        val raw = prefs(context).getString(KEY_PINNED_TOOLS, "") ?: ""
+        return raw.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "copy" && it != "web_search_folder" && it != "youtube_folder" }
+            .distinct()
+    }
+
+    fun isToolPinned(context: Context, toolId: String): Boolean {
+        return toolId in getPinnedToolIds(context)
+    }
+
+    fun toggleToolPinned(context: Context, toolId: String): Boolean {
+        if (toolId == "copy" || toolId == "web_search_folder" || toolId == "youtube_folder") return false
+        val current = getPinnedToolIds(context).toMutableList()
+        val nowPinned = if (toolId in current) {
+            current.remove(toolId)
+            false
+        } else {
+            current.add(toolId)
+            true
+        }
+        prefs(context).edit().putString(KEY_PINNED_TOOLS, current.joinToString(",")).apply()
+        return nowPinned
+    }
+
+    fun getPinnedToolSpecs(context: Context): List<ToolSpec> {
+        val ids = getPinnedToolIds(context)
+        if (ids.isEmpty()) return emptyList()
+        val allMap = (loadAllTools(context) + loadWebSearchTools(context)).associateBy { it.id }
+        return ids.mapNotNull { id ->
+            val spec = allMap[id]
+            if (spec != null && !isToolHidden(context, id)) spec else null
+        }
+    }
+
     // --- Up to 2 Custom Icon-Only Tool Rows (Row 1 & Row 2, max 4 items per row) ---
     private fun ensureDefaultIconRows(context: Context) {
         val p = prefs(context)
@@ -976,6 +1031,8 @@ object ToolPrefs {
         root.put("sort_most_used", isSortMostUsed(context))
         root.put("snap_edge_left", isSnapLeftEdge(context))
         root.put("grid_two_columns", isTwoColumnGrid(context))
+        root.put("default_search_id", getDefaultSearchEngineId(context))
+        root.put("pinned_tools", getPinnedToolIds(context).joinToString(","))
         root.put("icon_row_1", getIconRowIds(context, 1).joinToString(","))
         root.put("icon_row_2", getIconRowIds(context, 2).joinToString(","))
         root.put("custom_folders", getCustomFolders(context).joinToString(","))
@@ -1027,6 +1084,12 @@ object ToolPrefs {
             }
             if (root.has("grid_two_columns")) {
                 editor.putBoolean(KEY_GRID_COLUMNS, root.optBoolean("grid_two_columns", false))
+            }
+            if (root.has("default_search_id")) {
+                editor.putString(KEY_DEFAULT_SEARCH_ID, root.optString("default_search_id", "web_google"))
+            }
+            if (root.has("pinned_tools")) {
+                editor.putString(KEY_PINNED_TOOLS, root.optString("pinned_tools", ""))
             }
             if (root.has("icon_row_1")) {
                 editor.putString(KEY_ICON_ROW_1, root.optString("icon_row_1", ""))

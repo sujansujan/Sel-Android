@@ -99,7 +99,7 @@ class MainActivity : Activity() {
             setPadding(dp(14), dp(12), dp(14), dp(10))
         }
 
-        topHeader.addView(UiKit.label(this, "[sel_]  v2.9", 14.5f, p.fgPrimaryInt, bold = true).apply {
+        topHeader.addView(UiKit.label(this, "[sel_]  v3.0", 14.5f, p.fgPrimaryInt, bold = true).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
 

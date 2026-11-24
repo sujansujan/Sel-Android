@@ -22,19 +22,24 @@ import android.view.WindowInsets
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
-import kotlin.math.hypot
+import kotlin.math.abs
 
 /**
- * Effortless tap-to-select Screen Text Grab overlay with crisp ASCII PopClip aesthetics:
+ * Mobile-first, block-first Screen Text Grab overlay with crisp ASCII PopClip aesthetics.
  *
- * - Compensates for WindowManager status-bar/cutout offsets via getLocationOnScreen()
- *   so every tap target aligns to the exact pixel under your finger on every device.
- * - Keeps the real screen crystal clear with subtle underlines/tints on tappable text.
- * - Tap any word to select it, double-tap for the full paragraph, drag across words to
- *   sweep-select, or drag `[` and `]` handles with a floating ASCII word loupe.
- * - Spawns a compact, context-aware ASCII PopClip bar right next to your selection.
+ * Design principles (Universal Copy + Fitts's Law thumb-zone ergonomics):
+ * - Tappable text blocks with generous +6dp hitboxes & exact getLocationOnScreen() alignment.
+ * - Single-tap any block to select it; tap multiple blocks to combine in tap order ([1], [2]).
+ * - Double-tap any block (or tap [EDIT]) to open a native Android EditText with real OS
+ *   word/substring selection handles — zero janky custom drag handles.
+ * - [LIST] toggle switches to a clean scrollable reader of every block on screen (great for
+ *   tiny or overlapping text) with 1-tap [COPY].
+ * - [OCR] triggers on-device ML Kit OCR for text inside images, videos, and canvases.
+ * - Bottom thumb-zone ASCII action dock with 48dp buttons powered by PopupContextEngine.
  */
 class LensOverlayView(
     context: Context,
@@ -46,41 +51,52 @@ class LensOverlayView(
     private val onDismiss: () -> Unit
 ) : FrameLayout(context) {
 
-    private enum class DragMode {
-        NONE,
-        SWEEP_SELECT,
-        HANDLE_START,
-        HANDLE_END
-    }
+    private data class GrabBlock(
+        val id: Int,
+        val text: String,
+        val bounds: RectF,
+        val lineRects: List<RectF>
+    )
 
     private val density = resources.displayMetrics.density
     private fun dp(v: Float): Float = v * density
     private fun dpInt(v: Int): Int = (v * density).toInt()
     private val pal = ToolPrefs.resolvePalette(context)
 
-    private var words: List<LensWord> = emptyList()
-    private var lines: List<LensLine> = emptyList()
+    private var blocks: List<GrabBlock> = emptyList()
+    private var quickEntities: List<ExtractedEntity> = emptyList()
+    private val selectedBlockIds = ArrayList<Int>()
+    private var customEditedText: String? = null
+
     private var isOcrResult: Boolean = initialSnapshot?.isFromOcr == true
     private var isScanning: Boolean = initialSnapshot == null
-
-    private var selStart: Int = -1
-    private var selEnd: Int = -1
+    private var isListMode: Boolean = false
     private var isEditingInline: Boolean = false
 
     private var topInsetPx: Int = dpInt(34)
     private var bottomInsetPx: Int = dpInt(20)
     private val locOnScreen = IntArray(2)
 
-    private lateinit var grabCanvas: GrabCanvasView
+    private lateinit var grabCanvas: BlockCanvasView
+    private lateinit var listOverlayScroll: ScrollView
+    private lateinit var listOverlayContent: LinearLayout
+
     private lateinit var topBar: LinearLayout
     private lateinit var topStatusText: TextView
-    private lateinit var allBtn: TextView
-    private lateinit var floatingBar: LinearLayout
-    private lateinit var barActionsRow: LinearLayout
-    private lateinit var inlineEditContainer: LinearLayout
-    private lateinit var inlineEditInput: EditText
+    private lateinit var listToggleBtn: TextView
 
-    private var currentSelectionText: String = ""
+    private lateinit var bottomDock: LinearLayout
+    private lateinit var idlePanel: LinearLayout
+    private lateinit var idleHintText: TextView
+    private lateinit var entitiesRow: LinearLayout
+    private lateinit var entitiesScroll: HorizontalScrollView
+
+    private lateinit var selectionPanel: LinearLayout
+    private lateinit var selectionPreviewText: TextView
+    private lateinit var dockActionsRow: LinearLayout
+
+    private lateinit var inlineEditBackdrop: FrameLayout
+    private lateinit var inlineEditInput: EditText
 
     init {
         isFocusable = true
@@ -99,49 +115,669 @@ class LensOverlayView(
     private fun applySnapshot(snapshot: LensSnapshot) {
         isScanning = false
         isOcrResult = snapshot.isFromOcr
-        words = snapshot.words
-        lines = snapshot.lines
+        quickEntities = snapshot.quickEntities
+        blocks = buildGrabBlocks(snapshot)
+        selectedBlockIds.clear()
+        customEditedText = null
+
         updateTopStatus()
+        rebuildListView()
+        refreshBottomDock()
         grabCanvas.invalidate()
     }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        requestFocus()
-        requestApplyInsets()
+    private fun buildGrabBlocks(snapshot: LensSnapshot): List<GrabBlock> {
+        if (snapshot.words.isEmpty()) return emptyList()
+
+        val wordsByBlock = snapshot.words.groupBy { it.blockIndex }
+        val linesByBlock = snapshot.lines.groupBy { it.blockIndex }
+        val blockKeys = wordsByBlock.keys.sorted()
+
+        val out = ArrayList<GrabBlock>(blockKeys.size)
+        var nextId = 0
+
+        for (bKey in blockKeys) {
+            val bWords = wordsByBlock[bKey].orEmpty()
+            if (bWords.isEmpty()) continue
+
+            val bLines = linesByBlock[bKey].orEmpty().sortedBy { it.lineIndex }
+            val textBuilder = StringBuilder()
+            val lineRects = ArrayList<RectF>()
+            var unionBounds: RectF? = null
+
+            if (bLines.isNotEmpty()) {
+                for (ln in bLines) {
+                    val start = ln.wordStartIndex.coerceIn(0, snapshot.words.lastIndex)
+                    val end = ln.wordEndIndex.coerceIn(start, snapshot.words.lastIndex)
+                    val lineWords = (start..end)
+                        .map { snapshot.words[it] }
+                        .filter { it.blockIndex == bKey }
+                    val lineText = lineWords.joinToString(" ") { it.text }.trim()
+                    if (lineText.isEmpty()) continue
+                    if (textBuilder.isNotEmpty()) textBuilder.append('\n')
+                    textBuilder.append(lineText)
+
+                    val lr = RectF(ln.bounds)
+                    lineRects.add(lr)
+                    if (unionBounds == null) unionBounds = RectF(lr) else unionBounds.union(lr)
+                }
+            }
+
+            if (textBuilder.isEmpty()) {
+                val sortedW = bWords.sortedBy { it.index }
+                textBuilder.append(sortedW.joinToString(" ") { it.text }.trim())
+                for (w in sortedW) {
+                    if (unionBounds == null) unionBounds = RectF(w.rect) else unionBounds.union(w.rect)
+                }
+                if (unionBounds != null) lineRects.add(RectF(unionBounds))
+            }
+
+            val finalText = textBuilder.toString().trim()
+            val finalBounds = unionBounds
+            if (finalText.isNotEmpty() && finalBounds != null && finalBounds.width() >= 4f && finalBounds.height() >= 4f) {
+                out.add(
+                    GrabBlock(
+                        id = nextId++,
+                        text = finalText,
+                        bounds = finalBounds,
+                        lineRects = lineRects
+                    )
+                )
+            }
+        }
+
+        val bandPx = dp(24f).coerceAtLeast(20f)
+        return out.sortedWith(
+            compareBy<GrabBlock> { (it.bounds.top / bandPx).toInt() }
+                .thenBy { it.bounds.left }
+                .thenBy { it.bounds.top }
+        )
     }
 
-    override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
-        backgroundBitmap?.let { bmp ->
-            if (!bmp.isRecycled) runCatching { bmp.recycle() }
+    private fun getActiveText(): String {
+        customEditedText?.let { if (it.isNotBlank()) return it.trim() }
+        if (selectedBlockIds.isEmpty()) return ""
+        val byId = blocks.associateBy { it.id }
+        return selectedBlockIds.mapNotNull { byId[it]?.text }.joinToString("\n").trim()
+    }
+
+    private fun toggleBlockSelection(blockId: Int) {
+        customEditedText = null
+        if (blockId in selectedBlockIds) {
+            selectedBlockIds.remove(blockId)
+        } else {
+            selectedBlockIds.add(blockId)
+        }
+        runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+        grabCanvas.invalidate()
+        if (isListMode) rebuildListView()
+        refreshBottomDock()
+    }
+
+    private fun clearSelection() {
+        selectedBlockIds.clear()
+        customEditedText = null
+        grabCanvas.invalidate()
+        if (isListMode) rebuildListView()
+        refreshBottomDock()
+    }
+
+    private fun buildHierarchy() {
+        // 1. Full-screen visual block overlay canvas
+        grabCanvas = BlockCanvasView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        }
+        addView(grabCanvas)
+
+        // 2. Scrollable List Mode reader (hidden by default)
+        listOverlayContent = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpInt(12), dpInt(8), dpInt(12), dpInt(120))
+        }
+        listOverlayScroll = ScrollView(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            setBackgroundColor(Color.argb(238, Color.red(pal.bgPrimaryInt), Color.green(pal.bgPrimaryInt), Color.blue(pal.bgPrimaryInt)))
+            visibility = View.GONE
+            addView(listOverlayContent)
+        }
+        addView(listOverlayScroll)
+
+        // 3. Minimal ASCII Top Bar
+        topBar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(pal.bgHeaderInt)
+                setStroke(dpInt(1), pal.borderInt)
+                cornerRadius = dp(2f)
+            }
+            elevation = dp(10f)
+            setPadding(dpInt(8), dpInt(4), dpInt(6), dpInt(4))
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                topMargin = topInsetPx + dpInt(6)
+                marginStart = dpInt(10)
+                marginEnd = dpInt(10)
+            }
+        }
+
+        topStatusText = TextView(context).apply {
+            text = if (isScanning) "[sel:ocr] scanning..." else "[sel:grab]"
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(pal.accentPurpleInt)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setPadding(dpInt(4), dpInt(6), dpInt(6), dpInt(6))
+        }
+        topBar.addView(topStatusText)
+
+        listToggleBtn = makeTopChip("LIST", pal.accentCyanInt) {
+            toggleListMode()
+        }
+        topBar.addView(listToggleBtn)
+        topBar.addView(makeVertPipe(18))
+
+        topBar.addView(makeTopChip("OCR", pal.accentOrangeInt) {
+            onRequestOcr()
+        })
+        topBar.addView(makeVertPipe(18))
+
+        topBar.addView(makeTopChip("X", pal.dangerRedInt) {
+            onDismiss()
+        })
+        addView(topBar)
+
+        // 4. Thumb-Zone Bottom ASCII Action Dock (Fitts's Law)
+        bottomDock = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(pal.bgPrimaryInt)
+                setStroke(dpInt(1), pal.borderInt)
+                cornerRadius = dp(2f)
+            }
+            elevation = dp(14f)
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                bottomMargin = bottomInsetPx + dpInt(8)
+                marginStart = dpInt(8)
+                marginEnd = dpInt(8)
+            }
+        }
+
+        // 4a. Idle hint + quick detected entities
+        idlePanel = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpInt(10), dpInt(8), dpInt(10), dpInt(8))
+        }
+        idleHintText = TextView(context).apply {
+            text = "Tap any text block · Double-tap to pick words"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            setTextColor(pal.fgMutedInt)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        idlePanel.addView(idleHintText)
+
+        entitiesRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        entitiesScroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            setPadding(0, dpInt(6), 0, 0)
+            addView(entitiesRow)
+        }
+        idlePanel.addView(entitiesScroll)
+        bottomDock.addView(idlePanel)
+
+        // 4b. Active Selection Preview + 48dp Context Action Row
+        selectionPanel = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+
+        val previewRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(pal.bgHeaderInt)
+            setPadding(dpInt(10), dpInt(4), dpInt(6), dpInt(4))
+        }
+        selectionPreviewText = TextView(context).apply {
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            setTextColor(pal.fgPrimaryInt)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setPadding(0, dpInt(2), dpInt(6), dpInt(2))
+        }
+        previewRow.addView(selectionPreviewText)
+        previewRow.addView(makeTopChip("EDIT", pal.accentPurpleInt) {
+            openInlineEditor(getActiveText())
+        })
+        previewRow.addView(makeVertPipe(16))
+        previewRow.addView(makeTopChip("CLR", pal.fgMutedInt) {
+            clearSelection()
+        })
+        selectionPanel.addView(previewRow)
+
+        selectionPanel.addView(View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dpInt(1))
+            setBackgroundColor(pal.dividerInt)
+        })
+
+        dockActionsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val dockActionsScroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(dockActionsRow)
+        }
+        selectionPanel.addView(dockActionsScroll)
+        bottomDock.addView(selectionPanel)
+
+        addView(bottomDock)
+
+        // 5. Native EditText Modal for Effortless Word / Substring Selection
+        inlineEditBackdrop = FrameLayout(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            setBackgroundColor(Color.argb(190, 0, 0, 0))
+            visibility = View.GONE
+            setOnClickListener { closeInlineEditor() }
+        }
+
+        val editCard = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(pal.bgPrimaryInt)
+                setStroke(dpInt(1), pal.accentPurpleInt)
+                cornerRadius = dp(2f)
+            }
+            elevation = dp(18f)
+            setPadding(dpInt(12), dpInt(10), dpInt(12), dpInt(10))
+            setOnClickListener { /* consume click */ }
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER
+                marginStart = dpInt(14)
+                marginEnd = dpInt(14)
+            }
+        }
+
+        editCard.addView(TextView(context).apply {
+            text = "[ EDIT / HIGHLIGHT SUBSTRING ]"
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            setTextColor(pal.accentCyanInt)
+            setPadding(0, 0, 0, dpInt(6))
+        })
+
+        inlineEditInput = EditText(context).apply {
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+            setTextColor(pal.fgPrimaryInt)
+            setBackgroundColor(pal.bgInputInt)
+            setPadding(dpInt(10), dpInt(10), dpInt(10), dpInt(10))
+            setTextIsSelectable(true)
+            minLines = 3
+            maxLines = 8
+            gravity = Gravity.TOP or Gravity.START
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        editCard.addView(inlineEditInput)
+
+        editCard.addView(TextView(context).apply {
+            text = "Tip: Long-press any word above to pick an exact substring."
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setTextColor(pal.fgMutedInt)
+            setPadding(0, dpInt(6), 0, dpInt(8))
+        })
+
+        val editBtnRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        editBtnRow.addView(makeEqualDockBtn("COPY", pal.accentGreenInt) {
+            val chosen = extractEditedOrHighlightedText()
+            closeInlineEditor()
+            if (chosen.isNotBlank()) onRunAction(PopAction("copy", "COPY", accent = true), chosen)
+        })
+        editBtnRow.addView(makeVertPipe(22))
+        editBtnRow.addView(makeEqualDockBtn("USE TEXT", pal.accentCyanInt) {
+            val chosen = extractEditedOrHighlightedText()
+            closeInlineEditor()
+            if (chosen.isNotBlank()) {
+                customEditedText = chosen
+                refreshBottomDock()
+            }
+        })
+        editBtnRow.addView(makeVertPipe(22))
+        editBtnRow.addView(makeEqualDockBtn("CANCEL", pal.fgMutedInt) {
+            closeInlineEditor()
+        })
+        editCard.addView(editBtnRow)
+
+        inlineEditBackdrop.addView(editCard)
+        addView(inlineEditBackdrop)
+    }
+
+    private fun extractEditedOrHighlightedText(): String {
+        val full = inlineEditInput.text?.toString().orEmpty()
+        val s = inlineEditInput.selectionStart
+        val e = inlineEditInput.selectionEnd
+        if (s >= 0 && e > s && e <= full.length) {
+            val sub = full.substring(s, e).trim()
+            if (sub.isNotEmpty()) return sub
+        }
+        return full.trim()
+    }
+
+    private fun toggleListMode() {
+        isListMode = !isListMode
+        listOverlayScroll.visibility = if (isListMode) View.VISIBLE else View.GONE
+        listToggleBtn.text = if (isListMode) "SCREEN" else "LIST"
+        listToggleBtn.setTextColor(if (isListMode) pal.accentGreenInt else pal.accentCyanInt)
+        if (isListMode) {
+            rebuildListView()
+        }
+    }
+
+    private fun updateTopStatus() {
+        val tag = if (isOcrResult) "ocr" else "grab"
+        topStatusText.text = when {
+            isScanning -> "[sel:ocr] scanning..."
+            blocks.isEmpty() -> "[sel:$tag] 0 blocks — try [OCR]"
+            else -> "[sel:$tag] ${blocks.size} blocks"
+        }
+    }
+
+    private fun rebuildListView() {
+        listOverlayContent.removeAllViews()
+        listOverlayScroll.setPadding(0, topInsetPx + dpInt(58), 0, bottomInsetPx + dpInt(12))
+
+        if (blocks.isEmpty()) {
+            listOverlayContent.addView(TextView(context).apply {
+                text = "No readable text blocks found.\nTap [OCR] at the top to scan pixels on screen."
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(pal.fgMutedInt)
+                setPadding(dpInt(8), dpInt(20), dpInt(8), dpInt(12))
+            })
+            return
+        }
+
+        blocks.forEach { block ->
+            val orderIdx = selectedBlockIds.indexOf(block.id)
+            val isSel = orderIdx >= 0
+
+            val card = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(if (isSel) pal.bgPressedInt else pal.bgSurfaceInt)
+                    setStroke(dpInt(1), if (isSel) pal.accentGreenInt else pal.borderInt)
+                    cornerRadius = dp(2f)
+                }
+                setPadding(dpInt(10), dpInt(8), dpInt(6), dpInt(8))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dpInt(6) }
+                setOnClickListener { toggleBlockSelection(block.id) }
+            }
+
+            val prefix = if (isSel) "[${orderIdx + 1}] " else ""
+            card.addView(TextView(context).apply {
+                text = prefix + block.text
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(if (isSel) pal.accentGreenInt else pal.fgPrimaryInt)
+                maxLines = 4
+                ellipsize = TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+
+            card.addView(makeTopChip("COPY", pal.accentGreenInt) {
+                onRunAction(PopAction("copy", "COPY", accent = true), block.text)
+            })
+            listOverlayContent.addView(card)
+        }
+    }
+
+    private fun refreshBottomDock() {
+        val active = getActiveText()
+        if (active.isEmpty()) {
+            idlePanel.visibility = View.VISIBLE
+            selectionPanel.visibility = View.GONE
+            idleHintText.text = when {
+                isScanning -> "Scanning screen pixels with on-device OCR..."
+                blocks.isEmpty() -> "No text found — tap [OCR] above to scan images/videos"
+                else -> "Tap any text block · Double-tap to pick exact words"
+            }
+
+            entitiesRow.removeAllViews()
+            if (quickEntities.isNotEmpty()) {
+                entitiesScroll.visibility = View.VISIBLE
+                quickEntities.forEachIndexed { idx, entity ->
+                    if (idx > 0) entitiesRow.addView(makeVertPipe(16))
+                    val shortVal = entity.value.replace("\n", " ").let { if (it.length > 18) it.take(17) + "…" else it }
+                    entitiesRow.addView(makeDockChip("[${entity.kind}] $shortVal", pal.accentCyanInt) {
+                        customEditedText = entity.value
+                        refreshBottomDock()
+                    })
+                }
+            } else {
+                entitiesScroll.visibility = View.GONE
+            }
+            return
+        }
+
+        idlePanel.visibility = View.GONE
+        selectionPanel.visibility = View.VISIBLE
+
+        val countPrefix = when {
+            customEditedText != null -> "[EDITED] "
+            selectedBlockIds.size > 1 -> "[${selectedBlockIds.size} BLOCKS] "
+            else -> ""
+        }
+        selectionPreviewText.text = countPrefix + active.replace("\n", " ")
+
+        dockActionsRow.removeAllViews()
+        val hiddenIds = ToolPrefs.loadAllTools(context)
+            .filter { ToolPrefs.isToolHidden(context, it.id) }
+            .map { it.id }
+            .toSet()
+        val pinnedTools = ToolPrefs.getPinnedToolSpecs(context)
+        val defaultEngine = ToolPrefs.resolveDefaultSearchEngine(context)
+        val searchLabel = defaultEngine.glyph.take(4).ifEmpty { "WEB" }
+
+        val ctx = PopupContextEngine.analyze(active, isEditable = false, hasUndo = false)
+        val actions = PopupContextEngine.resolveBarActions(
+            ctx = ctx,
+            hiddenToolIds = hiddenIds,
+            pinnedTools = pinnedTools,
+            searchLabel = searchLabel,
+            includeCopy = true
+        )
+
+        actions.forEachIndexed { idx, act ->
+            if (idx > 0) dockActionsRow.addView(makeVertPipe(24))
+            dockActionsRow.addView(
+                makeDockActionButton(
+                    label = act.label,
+                    fgColor = if (act.accent) pal.accentGreenInt else pal.fgPrimaryInt,
+                    onLongClick = {
+                        when (act.id) {
+                            "default_search" -> onRunAction(PopAction("web_search_folder", act.label), active)
+                            "youtube_direct" -> onRunAction(PopAction("youtube_folder", act.label), active)
+                            else -> onRunAction(act, active)
+                        }
+                    }
+                ) {
+                    onRunAction(act, active)
+                }
+            )
+        }
+
+        dockActionsRow.addView(makeVertPipe(24))
+        dockActionsRow.addView(makeDockActionButton("+", pal.accentCyanInt) {
+            onOpenFullPalette(active)
+        })
+    }
+
+    private fun openInlineEditor(initialText: String) {
+        if (initialText.isBlank()) return
+        isEditingInline = true
+        inlineEditInput.setText(initialText)
+        inlineEditInput.setSelection(0, initialText.length)
+        inlineEditBackdrop.visibility = View.VISIBLE
+        inlineEditInput.requestFocus()
+        postDelayed({
+            runCatching {
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showSoftInput(inlineEditInput, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }, 80L)
+    }
+
+    private fun closeInlineEditor() {
+        isEditingInline = false
+        inlineEditBackdrop.visibility = View.GONE
+        runCatching {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(inlineEditInput.windowToken, 0)
+        }
+    }
+
+    private fun makeTopChip(label: String, fgColor: Int, onClick: () -> Unit): TextView {
+        return TextView(context).apply {
+            text = label
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextColor(fgColor)
+            gravity = Gravity.CENTER
+            minHeight = dpInt(38)
+            minWidth = dpInt(42)
+            setPadding(dpInt(10), dpInt(6), dpInt(10), dpInt(6))
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
+                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+            }
+            setOnClickListener {
+                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                onClick()
+            }
+        }
+    }
+
+    private fun makeDockChip(label: String, fgColor: Int, onClick: () -> Unit): TextView {
+        return TextView(context).apply {
+            text = label
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(fgColor)
+            gravity = Gravity.CENTER
+            minHeight = dpInt(36)
+            setPadding(dpInt(9), dpInt(6), dpInt(9), dpInt(6))
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
+                addState(intArrayOf(), GradientDrawable().apply {
+                    setColor(pal.bgSurfaceInt)
+                    setStroke(dpInt(1), pal.borderInt)
+                    cornerRadius = dp(2f)
+                })
+            }
+            setOnClickListener {
+                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                onClick()
+            }
+        }
+    }
+
+    private fun makeDockActionButton(
+        label: String,
+        fgColor: Int,
+        onLongClick: (() -> Unit)? = null,
+        onClick: () -> Unit
+    ): TextView {
+        return TextView(context).apply {
+            text = label
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(fgColor)
+            gravity = Gravity.CENTER
+            isSingleLine = true
+            minHeight = dpInt(48)
+            minWidth = dpInt(52)
+            setPadding(dpInt(14), dpInt(12), dpInt(14), dpInt(12))
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
+                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+            }
+            setOnClickListener {
+                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                onClick()
+            }
+            if (onLongClick != null) {
+                setOnLongClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                    onLongClick()
+                    true
+                }
+            }
+        }
+    }
+
+    private fun makeEqualDockBtn(label: String, fgColor: Int, onClick: () -> Unit): TextView {
+        return makeDockActionButton(label, fgColor, onClick = onClick).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+    }
+
+    private fun makeVertPipe(heightDp: Int): View {
+        return View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dpInt(1), dpInt(heightDp))
+            setBackgroundColor(pal.dividerInt)
         }
     }
 
     override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
         if (Build.VERSION.SDK_INT >= 30) {
             val sys = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            val ime = insets.getInsets(WindowInsets.Type.ime())
-            topInsetPx = maxOf(sys.top + dpInt(6), dpInt(24))
-            bottomInsetPx = maxOf(maxOf(sys.bottom, ime.bottom) + dpInt(8), dpInt(16))
+            topInsetPx = sys.top.coerceAtLeast(dpInt(24))
+            bottomInsetPx = sys.bottom.coerceAtLeast(dpInt(14))
         } else {
             @Suppress("DEPRECATION")
-            topInsetPx = maxOf(insets.systemWindowInsetTop + dpInt(6), dpInt(24))
+            topInsetPx = insets.systemWindowInsetTop.coerceAtLeast(dpInt(24))
             @Suppress("DEPRECATION")
-            bottomInsetPx = maxOf(insets.systemWindowInsetBottom + dpInt(8), dpInt(16))
+            bottomInsetPx = insets.systemWindowInsetBottom.coerceAtLeast(dpInt(14))
         }
+
         (topBar.layoutParams as? LayoutParams)?.let { lp ->
-            lp.topMargin = topInsetPx
+            lp.topMargin = topInsetPx + dpInt(6)
             topBar.layoutParams = lp
         }
-        return insets
+        (bottomDock.layoutParams as? LayoutParams)?.let { lp ->
+            lp.bottomMargin = bottomInsetPx + dpInt(8)
+            bottomDock.layoutParams = lp
+        }
+        return super.onApplyWindowInsets(insets)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
             when {
                 isEditingInline -> closeInlineEditor()
-                hasSelection() -> clearSelection()
+                isListMode -> toggleListMode()
+                selectedBlockIds.isNotEmpty() || customEditedText != null -> clearSelection()
                 else -> onDismiss()
             }
             return true
@@ -149,645 +785,179 @@ class LensOverlayView(
         return super.dispatchKeyEvent(event)
     }
 
-    private fun hasSelection(): Boolean = selStart in words.indices && selEnd in words.indices
-
-    private fun normalizedRange(): IntRange {
-        val maxIdx = (words.size - 1).coerceAtLeast(0)
-        val s = minOf(selStart, selEnd).coerceIn(0, maxIdx)
-        val e = maxOf(selStart, selEnd).coerceIn(0, maxIdx)
-        return s..e
-    }
-
-    private fun computeSelectedText(): String {
-        if (!hasSelection()) return ""
-        val range = normalizedRange()
-        val sb = StringBuilder()
-        var prevBlock = -1
-        for (i in range) {
-            val w = words[i]
-            if (prevBlock != -1) {
-                if (w.blockIndex != prevBlock) sb.append('\n') else sb.append(' ')
-            }
-            sb.append(w.text)
-            prevBlock = w.blockIndex
-        }
-        return sb.toString().trim()
-    }
-
-    private fun clearSelection() {
-        selStart = -1
-        selEnd = -1
-        isEditingInline = false
-        hideKeyboard()
-        currentSelectionText = ""
-        floatingBar.visibility = View.GONE
-        inlineEditContainer.visibility = View.GONE
-        updateTopStatus()
-        grabCanvas.invalidate()
-    }
-
-    private fun updateTopStatus() {
-        val modeTag = if (isOcrResult) "ocr" else "grab"
-        topStatusText.text = when {
-            isScanning -> "[sel:ocr] scanning…"
-            hasSelection() -> {
-                val r = normalizedRange()
-                "[sel:$modeTag] ${r.last - r.first + 1}w"
-            }
-            words.isEmpty() -> "[sel:$modeTag] no text · try [OCR]"
-            else -> "[sel:$modeTag] tap any text"
-        }
-        allBtn.text = if (words.isNotEmpty() && selStart == 0 && selEnd == words.lastIndex) "[CLR]" else "[ALL]"
-    }
-
-    private fun hideKeyboard() {
-        runCatching {
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.hideSoftInputFromWindow(windowToken, 0)
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        if (backgroundBitmap != null && !backgroundBitmap.isRecycled) {
+            runCatching { backgroundBitmap.recycle() }
         }
     }
-
-    private fun openInlineEditor() {
-        isEditingInline = true
-        inlineEditContainer.visibility = View.VISIBLE
-        inlineEditInput.setText(currentSelectionText)
-        inlineEditInput.setSelection(inlineEditInput.text?.length ?: 0)
-        inlineEditInput.post {
-            inlineEditInput.requestFocus()
-            runCatching {
-                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                imm?.showSoftInput(inlineEditInput, InputMethodManager.SHOW_IMPLICIT)
-            }
-        }
-    }
-
-    private fun closeInlineEditor() {
-        isEditingInline = false
-        hideKeyboard()
-        val edited = inlineEditInput.text?.toString()?.trim().orEmpty()
-        if (edited.isNotEmpty()) currentSelectionText = edited
-        inlineEditContainer.visibility = View.GONE
-    }
-
-    private fun updateFloatingPopBar(anchorLocalRect: RectF?) {
-        currentSelectionText = computeSelectedText()
-        updateTopStatus()
-
-        if (currentSelectionText.isEmpty()) {
-            floatingBar.visibility = View.GONE
-            return
-        }
-
-        // Build compact, context-aware ASCII PopClip bar right next to the selected text!
-        barActionsRow.removeAllViews()
-        val ctx = PopupContextEngine.analyze(currentSelectionText, isEditable = false)
-        val actions = PopupContextEngine.resolveBarActions(ctx, maxItems = 4)
-
-        actions.forEachIndexed { idx, act ->
-            if (idx > 0) barActionsRow.addView(makeBarDivider())
-            barActionsRow.addView(makeBarCell(act.label, act.accent) {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                val finalText = if (isEditingInline) inlineEditInput.text?.toString()?.trim().orEmpty().ifEmpty { currentSelectionText } else currentSelectionText
-                onRunAction(act, finalText)
-            })
-        }
-
-        barActionsRow.addView(makeBarDivider())
-        barActionsRow.addView(makeBarCell("EDIT", false) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            if (isEditingInline) closeInlineEditor() else openInlineEditor()
-        })
-
-        barActionsRow.addView(makeBarDivider())
-        barActionsRow.addView(makeBarCell("+", false) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            val finalText = if (isEditingInline) inlineEditInput.text?.toString()?.trim().orEmpty().ifEmpty { currentSelectionText } else currentSelectionText
-            onOpenFullPalette(finalText)
-        })
-
-        floatingBar.visibility = View.VISIBLE
-
-        // Position floating PopClip bar neatly right ABOVE (or BELOW) the selected text!
-        if (anchorLocalRect != null && height > 0) {
-            floatingBar.post {
-                val barW = floatingBar.width.coerceAtLeast(dpInt(220))
-                val barH = floatingBar.height.coerceAtLeast(dpInt(44))
-                val lp = floatingBar.layoutParams as LayoutParams
-                val minTop = topInsetPx + dpInt(46)
-                val maxBottom = height - bottomInsetPx - dpInt(8)
-                val gap = dpInt(14)
-                val handleClearance = dpInt(36)
-
-                val aboveY = anchorLocalRect.top.toInt() - gap - barH
-                val belowY = anchorLocalRect.bottom.toInt() + handleClearance
-                val targetY = when {
-                    aboveY >= minTop -> aboveY
-                    belowY + barH <= maxBottom -> belowY
-                    else -> (maxBottom - barH).coerceAtLeast(minTop)
-                }
-
-                val targetX = (anchorLocalRect.centerX().toInt() - barW / 2)
-                    .coerceIn(dpInt(8), (width - barW - dpInt(8)).coerceAtLeast(dpInt(8)))
-
-                lp.gravity = Gravity.TOP or Gravity.START
-                lp.leftMargin = targetX
-                lp.topMargin = targetY
-                floatingBar.layoutParams = lp
-            }
-        }
-    }
-
-    private fun buildHierarchy() {
-        grabCanvas = GrabCanvasView(context)
-        addView(grabCanvas, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-
-        // Ultra-compact minimal ASCII top pill bar
-        topBar = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dpInt(10), dpInt(5), dpInt(6), dpInt(5))
-            background = GradientDrawable().apply {
-                setColor(withAlpha(pal.bgHeaderInt, 240))
-                setStroke(dpInt(1), pal.borderInt)
-                cornerRadius = dp(3f)
-            }
-            elevation = dp(4f)
-        }
-
-        topStatusText = TextView(context).apply {
-            text = "[sel:grab] tap any text"
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-            setTextColor(pal.accentGreenInt)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        allBtn = makeTopAction("[ALL]", pal.fgPrimaryInt) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            if (words.isNotEmpty() && selStart == 0 && selEnd == words.lastIndex) {
-                clearSelection()
-            } else if (words.isNotEmpty()) {
-                selStart = 0
-                selEnd = words.lastIndex
-                grabCanvas.invalidate()
-                updateFloatingPopBar(grabCanvas.selectionLocalBounds())
-            }
-        }
-
-        val ocrBtn = makeTopAction("[OCR]", pal.accentCyanInt) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            onRequestOcr()
-        }
-
-        val closeBtn = makeTopAction("[X]", pal.dangerRedInt) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            onDismiss()
-        }
-
-        topBar.addView(topStatusText)
-        topBar.addView(allBtn)
-        topBar.addView(ocrBtn)
-        topBar.addView(closeBtn)
-
-        addView(
-            topBar,
-            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP).apply {
-                leftMargin = dpInt(10)
-                rightMargin = dpInt(10)
-                topMargin = topInsetPx
-            }
-        )
-
-        // Floating Context-Aware ASCII PopClip Bar (appears right next to tapped text!)
-        floatingBar = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-            background = GradientDrawable().apply {
-                setColor(pal.bgPrimaryInt)
-                setStroke(dpInt(1), pal.accentGreenInt)
-                cornerRadius = dp(3f)
-            }
-            elevation = dp(8f)
-        }
-
-        barActionsRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        floatingBar.addView(barActionsRow)
-
-        inlineEditContainer = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-            setPadding(dpInt(8), dpInt(6), dpInt(8), dpInt(8))
-        }
-        inlineEditInput = EditText(context).apply {
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(pal.fgPrimaryInt)
-            setBackgroundColor(pal.bgInputInt)
-            setPadding(dpInt(8), dpInt(6), dpInt(8), dpInt(6))
-            maxLines = 4
-            minWidth = dpInt(220)
-        }
-        inlineEditContainer.addView(inlineEditInput)
-        floatingBar.addView(inlineEditContainer)
-
-        addView(
-            floatingBar,
-            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
-        )
-    }
-
-    private fun makeTopAction(label: String, fgColor: Int, onClick: () -> Unit): TextView {
-        return TextView(context).apply {
-            text = label
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-            setTextColor(fgColor)
-            setPadding(dpInt(6), dpInt(4), dpInt(6), dpInt(4))
-            background = StateListDrawable().apply {
-                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
-                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
-            }
-            setOnClickListener { onClick() }
-        }
-    }
-
-    private fun makeBarCell(label: String, accent: Boolean, onClick: () -> Unit): TextView {
-        return TextView(context).apply {
-            text = label
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(if (accent) pal.accentGreenInt else pal.fgPrimaryInt)
-            gravity = Gravity.CENTER
-            isSingleLine = true
-            setPadding(dpInt(10), dpInt(10), dpInt(10), dpInt(10))
-            background = StateListDrawable().apply {
-                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
-                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
-            }
-            setOnClickListener { onClick() }
-        }
-    }
-
-    private fun makeBarDivider(): View {
-        return View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dpInt(1), dpInt(20))
-            setBackgroundColor(pal.dividerInt)
-        }
-    }
-
-    private fun withAlpha(color: Int, alpha: Int): Int =
-        Color.argb(alpha.coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
 
     /**
-     * Pixel-aligned tap-to-select Canvas.
-     * Always offsets screen coordinates by -getLocationOnScreen() so taps match exact pixels!
+     * Full-screen block overlay canvas with exact screen-coordinate compensation via
+     * getLocationOnScreen() and generous +6dp tap hitboxes.
      */
-    private inner class GrabCanvasView(context: Context) : View(context) {
+    private inner class BlockCanvasView(ctx: Context) : View(ctx) {
 
-        private var dragMode = DragMode.NONE
-        private var anchorWordIndex = -1
-        private var touchX = 0f
-        private var touchY = 0f
-        private var lastTapWord = -1
-        private var lastTapTime = 0L
-
-        private val startHandleRect = RectF()
-        private val endHandleRect = RectF()
-        private val startHandleHit = RectF()
-        private val endHandleHit = RectF()
-
-        private val bgDst = Rect()
-        private val bgPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-
-        private val clearScrimPaint = Paint().apply {
-            color = Color.argb(if (pal.isDark) 28 else 16, 0, 0, 0)
+        private val dimPaint = Paint().apply {
+            color = Color.argb(46, 0, 0, 0)
             style = Paint.Style.FILL
         }
-
-        // Ultra-subtle underline/tint so real text stays 100% readable
-        private val tappableTintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = withAlpha(pal.accentCyanInt, if (pal.isDark) 22 else 18)
+        private val blockFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(30, Color.red(pal.accentCyanInt), Color.green(pal.accentCyanInt), Color.blue(pal.accentCyanInt))
             style = Paint.Style.FILL
         }
-        private val tappableUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = withAlpha(pal.accentCyanInt, if (pal.isDark) 110 else 130)
+        private val blockStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(140, Color.red(pal.accentCyanInt), Color.green(pal.accentCyanInt), Color.blue(pal.accentCyanInt))
             style = Paint.Style.STROKE
             strokeWidth = dp(1f)
         }
-
         private val selectedFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = withAlpha(pal.accentGreenInt, if (pal.isDark) 96 else 80)
+            color = Color.argb(92, Color.red(pal.accentGreenInt), Color.green(pal.accentGreenInt), Color.blue(pal.accentGreenInt))
             style = Paint.Style.FILL
         }
-        private val selectedBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val selectedStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = pal.accentGreenInt
             style = Paint.Style.STROKE
-            strokeWidth = dp(1.4f)
+            strokeWidth = dp(2f)
         }
-
-        private val handleBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = pal.bgHeaderInt
+        private val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = pal.accentGreenInt
             style = Paint.Style.FILL
         }
-        private val handleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = pal.accentGreenInt
-            style = Paint.Style.STROKE
-            strokeWidth = dp(1.6f)
-        }
-        private val handleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val badgeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = pal.onAccentInt
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            color = pal.accentGreenInt
-            textSize = dp(13f)
-            textAlign = Paint.Align.CENTER
+            textSize = dp(10.5f)
         }
 
-        private val loupeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = pal.bgHeaderInt
-            style = Paint.Style.FILL
-        }
-        private val loupeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            color = pal.fgPrimaryInt
-            textSize = dp(12f)
-            textAlign = Paint.Align.CENTER
-        }
+        private val dstRect = Rect()
+        private val drawRect = RectF()
+        private val padPx = dp(3f)
+        private val hitPadPx = dp(6f)
 
-        private val tempRect = RectF()
-        private val padX = dp(2.5f)
-        private val padY = dp(1.5f)
-        private val handleW = dp(24f)
-        private val handleH = dp(26f)
-        private val hitSlop = dp(20f)
-
-        private fun refreshScreenOffset() {
-            getLocationOnScreen(locOnScreen)
-        }
-
-        private fun toLocal(src: RectF, dst: RectF): RectF {
-            dst.set(
-                src.left - locOnScreen[0],
-                src.top - locOnScreen[1],
-                src.right - locOnScreen[0],
-                src.bottom - locOnScreen[1]
-            )
-            return dst
-        }
-
-        fun selectionLocalBounds(): RectF? {
-            if (!hasSelection()) return null
-            refreshScreenOffset()
-            val r = normalizedRange()
-            val union = RectF()
-            var first = true
-            for (i in r) {
-                val local = toLocal(words[i].rect, RectF())
-                if (first) {
-                    union.set(local)
-                    first = false
-                } else {
-                    union.union(local)
-                }
-            }
-            return union
-        }
+        private var downX = 0f
+        private var downY = 0f
+        private var lastTapBlockId = -1
+        private var lastTapTime = 0L
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            refreshScreenOffset()
+            getLocationOnScreen(locOnScreen)
+            val offX = locOnScreen[0].toFloat()
+            val offY = locOnScreen[1].toFloat()
 
-            val bmp = backgroundBitmap
-            if (bmp != null && !bmp.isRecycled) {
-                bgDst.set(-locOnScreen[0], -locOnScreen[1], bmp.width - locOnScreen[0], bmp.height - locOnScreen[1])
-                canvas.drawBitmap(bmp, null, bgDst, bgPaint)
+            // Optional frozen bitmap when in OCR mode
+            if (backgroundBitmap != null && !backgroundBitmap.isRecycled) {
+                dstRect.set(
+                    (-offX).toInt(),
+                    (-offY).toInt(),
+                    (backgroundBitmap.width - offX).toInt(),
+                    (backgroundBitmap.height - offY).toInt()
+                )
+                canvas.drawBitmap(backgroundBitmap, null, dstRect, null)
             }
 
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), clearScrimPaint)
+            // Subtle dim so the real screen stays crystal clear
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), dimPaint)
 
-            // 1. Subtle underlines & faint tint over tappable lines (keeps screen super clean!)
-            for (line in lines) {
-                toLocal(line.bounds, tempRect)
-                canvas.drawRect(tempRect, tappableTintPaint)
-                canvas.drawLine(tempRect.left, tempRect.bottom, tempRect.right, tempRect.bottom, tappableUnderlinePaint)
-            }
+            if (blocks.isEmpty()) return
 
-            // 2. Crisp continuous per-line highlight + ASCII `[` `]` handles
-            if (hasSelection()) {
-                val range = normalizedRange()
-                var curLine = -1
-                var lineUnion: RectF? = null
-                for (i in range) {
-                    val w = words[i]
-                    val localW = toLocal(w.rect, RectF())
-                    if (w.lineIndex != curLine) {
-                        lineUnion?.let { u ->
-                            tempRect.set(u.left - padX, u.top - padY, u.right + padX, u.bottom + padY)
-                            canvas.drawRoundRect(tempRect, dp(2f), dp(2f), selectedFillPaint)
-                            canvas.drawRoundRect(tempRect, dp(2f), dp(2f), selectedBorderPaint)
-                        }
-                        curLine = w.lineIndex
-                        lineUnion = localW
-                    } else {
-                        lineUnion?.union(localW)
-                    }
-                }
-                lineUnion?.let { u ->
-                    tempRect.set(u.left - padX, u.top - padY, u.right + padX, u.bottom + padY)
-                    canvas.drawRoundRect(tempRect, dp(2f), dp(2f), selectedFillPaint)
-                    canvas.drawRoundRect(tempRect, dp(2f), dp(2f), selectedBorderPaint)
-                }
+            for (block in blocks) {
+                val orderIdx = selectedBlockIds.indexOf(block.id)
+                val isSelected = orderIdx >= 0
 
-                // Draw `[` and `]` ASCII selection handles
-                val firstL = toLocal(words[range.first].rect, RectF())
-                val lastL = toLocal(words[range.last].rect, RectF())
+                drawRect.set(
+                    block.bounds.left - offX - padPx,
+                    block.bounds.top - offY - padPx,
+                    block.bounds.right - offX + padPx,
+                    block.bounds.bottom - offY + padPx
+                )
 
-                val sx = (firstL.left - handleW * 0.55f).coerceIn(dp(4f), (width - handleW - dp(4f)).coerceAtLeast(dp(4f)))
-                val sy = (firstL.bottom + dp(3f)).coerceIn(topInsetPx.toFloat(), (height - handleH - dp(4f)).coerceAtLeast(dp(4f)))
-                startHandleRect.set(sx, sy, sx + handleW, sy + handleH)
-                startHandleHit.set(sx - hitSlop, sy - hitSlop, sx + handleW + hitSlop, sy + handleH + hitSlop)
+                canvas.drawRoundRect(
+                    drawRect,
+                    dp(2f),
+                    dp(2f),
+                    if (isSelected) selectedFillPaint else blockFillPaint
+                )
+                canvas.drawRoundRect(
+                    drawRect,
+                    dp(2f),
+                    dp(2f),
+                    if (isSelected) selectedStrokePaint else blockStrokePaint
+                )
 
-                val ex = (lastL.right - handleW * 0.45f).coerceIn(dp(4f), (width - handleW - dp(4f)).coerceAtLeast(dp(4f)))
-                val ey = (lastL.bottom + dp(3f)).coerceIn(topInsetPx.toFloat(), (height - handleH - dp(4f)).coerceAtLeast(dp(4f)))
-                endHandleRect.set(ex, ey, ex + handleW, ey + handleH)
-                endHandleHit.set(ex - hitSlop, ey - hitSlop, ex + handleW + hitSlop, ey + handleH + hitSlop)
-
-                drawAsciiHandle(canvas, firstL.left, firstL.top, startHandleRect, "[")
-                drawAsciiHandle(canvas, lastL.right, lastL.top, endHandleRect, "]")
-
-                // Floating ASCII loupe while dragging a handle
-                if (dragMode == DragMode.HANDLE_START || dragMode == DragMode.HANDLE_END) {
-                    val idx = if (dragMode == DragMode.HANDLE_START) selStart else selEnd
-                    if (idx in words.indices) {
-                        val txt = "[ ${words[idx].text.take(20)} ]"
-                        val tw = loupeTextPaint.measureText(txt) + dp(20f)
-                        val th = dp(30f)
-                        val cx = touchX.coerceIn(tw / 2f + dp(8f), (width - tw / 2f - dp(8f)).coerceAtLeast(tw / 2f))
-                        val cy = (touchY - dp(62f)).coerceIn(topInsetPx + dp(52f), (height - dp(100f)).coerceAtLeast(topInsetPx + dp(52f)))
-                        tempRect.set(cx - tw / 2f, cy - th / 2f, cx + tw / 2f, cy + th / 2f)
-                        canvas.drawRoundRect(tempRect, dp(3f), dp(3f), loupeBgPaint)
-                        canvas.drawRoundRect(tempRect, dp(3f), dp(3f), handleStrokePaint)
-                        val ty = tempRect.centerY() - (loupeTextPaint.descent() + loupeTextPaint.ascent()) / 2f
-                        canvas.drawText(txt, tempRect.centerX(), ty, loupeTextPaint)
-                    }
+                if (isSelected) {
+                    val tag = "[${orderIdx + 1}]"
+                    val tw = badgeTextPaint.measureText(tag)
+                    val bh = dp(16f)
+                    val bx = drawRect.left.coerceAtLeast(dp(4f))
+                    val by = (drawRect.top - bh).coerceAtLeast(topInsetPx + dp(52f))
+                    canvas.drawRect(bx, by, bx + tw + dp(6f), by + bh, badgeBgPaint)
+                    canvas.drawText(tag, bx + dp(3f), by + bh - dp(3.5f), badgeTextPaint)
                 }
             }
         }
 
-        private fun drawAsciiHandle(canvas: Canvas, edgeX: Float, topY: Float, rect: RectF, glyph: String) {
-            canvas.drawLine(edgeX, topY, edgeX, rect.top, handleStrokePaint)
-            canvas.drawRoundRect(rect, dp(3f), dp(3f), handleBgPaint)
-            canvas.drawRoundRect(rect, dp(3f), dp(3f), handleStrokePaint)
-            val ty = rect.centerY() - (handleTextPaint.descent() + handleTextPaint.ascent()) / 2f
-            canvas.drawText(glyph, rect.centerX(), ty, handleTextPaint)
+        private fun findBestBlockAt(screenX: Float, screenY: Float): GrabBlock? {
+            var best: GrabBlock? = null
+            var bestArea = Float.MAX_VALUE
+            for (b in blocks) {
+                if (screenX in (b.bounds.left - hitPadPx)..(b.bounds.right + hitPadPx) &&
+                    screenY in (b.bounds.top - hitPadPx)..(b.bounds.bottom + hitPadPx)
+                ) {
+                    val area = b.bounds.width() * b.bounds.height()
+                    if (area < bestArea) {
+                        bestArea = area
+                        best = b
+                    }
+                }
+            }
+            return best
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (isScanning || isEditingInline) return false
-            refreshScreenOffset()
-            val x = event.x
-            val y = event.y
-            touchX = x
-            touchY = y
+            if (isEditingInline || isListMode) return false
+            getLocationOnScreen(locOnScreen)
+            val screenX = event.x + locOnScreen[0]
+            val screenY = event.y + locOnScreen[1]
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    if (hasSelection()) {
-                        val hitStart = startHandleHit.contains(x, y)
-                        val hitEnd = endHandleHit.contains(x, y)
-                        if (hitStart || hitEnd) {
-                            val r = normalizedRange()
-                            selStart = r.first
-                            selEnd = r.last
-                            dragMode = if (hitStart && (!hitEnd || hypot(x - startHandleRect.centerX(), y - startHandleRect.centerY()) <= hypot(x - endHandleRect.centerX(), y - endHandleRect.centerY()))) {
-                                DragMode.HANDLE_START
-                            } else {
-                                DragMode.HANDLE_END
-                            }
-                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            invalidate()
-                            return true
-                        }
-                    }
+                    downX = event.x
+                    downY = event.y
+                    return true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val moveDist = abs(event.x - downX) + abs(event.y - downY)
+                    if (moveDist > dp(24f)) return true
 
-                    val hitIdx = findWordAtLocal(x, y, maxDist = dp(24f))
-                    if (hitIdx != -1) {
-                        val now = System.currentTimeMillis()
-                        if (hitIdx == lastTapWord && now - lastTapTime < 340L) {
-                            // Double-tap -> select full block/paragraph
-                            val blk = words[hitIdx].blockIndex
-                            selStart = words.indexOfFirst { it.blockIndex == blk }.coerceAtLeast(0)
-                            selEnd = words.indexOfLast { it.blockIndex == blk }.coerceAtLeast(selStart)
-                            dragMode = DragMode.NONE
-                            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                            invalidate()
-                            updateFloatingPopBar(selectionLocalBounds())
-                        } else {
-                            // Single tap -> select tapped word (and sweep if dragged!)
-                            dragMode = DragMode.SWEEP_SELECT
-                            anchorWordIndex = hitIdx
-                            selStart = hitIdx
-                            selEnd = hitIdx
-                            lastTapWord = hitIdx
-                            lastTapTime = now
-                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            invalidate()
-                            updateFloatingPopBar(selectionLocalBounds())
+                    val hit = findBestBlockAt(screenX, screenY)
+                    if (hit == null) {
+                        if (selectedBlockIds.isNotEmpty() || customEditedText != null) {
+                            clearSelection()
                         }
                         return true
                     }
 
-                    if (hasSelection()) {
-                        clearSelection()
+                    val now = System.currentTimeMillis()
+                    if (hit.id == lastTapBlockId && now - lastTapTime < 340L) {
+                        // Double-tap -> immediately open native EditText word/substring picker!
+                        lastTapBlockId = -1
+                        if (hit.id !in selectedBlockIds) {
+                            selectedBlockIds.add(hit.id)
+                            invalidate()
+                            refreshBottomDock()
+                        }
+                        openInlineEditor(hit.text)
                     } else {
-                        onDismiss()
+                        lastTapBlockId = hit.id
+                        lastTapTime = now
+                        toggleBlockSelection(hit.id)
                     }
                     return true
                 }
-
-                MotionEvent.ACTION_MOVE -> {
-                    when (dragMode) {
-                        DragMode.SWEEP_SELECT -> {
-                            val hit = findWordAtLocal(x, y, maxDist = dp(40f))
-                            if (hit != -1 && hit != selEnd) {
-                                selStart = anchorWordIndex
-                                selEnd = hit
-                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                invalidate()
-                                updateFloatingPopBar(selectionLocalBounds())
-                            }
-                        }
-                        DragMode.HANDLE_START -> {
-                            val hit = findWordAtLocal(x, y - dp(20f), maxDist = dp(52f))
-                            if (hit != -1 && hit != selStart) {
-                                selStart = hit
-                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                updateFloatingPopBar(selectionLocalBounds())
-                            }
-                            invalidate()
-                        }
-                        DragMode.HANDLE_END -> {
-                            val hit = findWordAtLocal(x, y - dp(20f), maxDist = dp(52f))
-                            if (hit != -1 && hit != selEnd) {
-                                selEnd = hit
-                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                updateFloatingPopBar(selectionLocalBounds())
-                            }
-                            invalidate()
-                        }
-                        DragMode.NONE -> {}
-                    }
-                    return true
-                }
-
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (hasSelection()) {
-                        val r = normalizedRange()
-                        selStart = r.first
-                        selEnd = r.last
-                        updateFloatingPopBar(selectionLocalBounds())
-                    }
-                    dragMode = DragMode.NONE
-                    invalidate()
-                    return true
-                }
             }
-            return super.onTouchEvent(event)
-        }
-
-        private fun findWordAtLocal(lx: Float, ly: Float, maxDist: Float): Int {
-            val sx = lx + locOnScreen[0]
-            val sy = ly + locOnScreen[1]
-            for (w in words) {
-                if (sx >= w.rect.left - padX && sx <= w.rect.right + padX &&
-                    sy >= w.rect.top - padY && sy <= w.rect.bottom + padY
-                ) {
-                    return w.index
-                }
-            }
-            var bestIdx = -1
-            var bestDist = maxDist
-            for (w in words) {
-                val dx = when {
-                    sx < w.rect.left -> w.rect.left - sx
-                    sx > w.rect.right -> sx - w.rect.right
-                    else -> 0f
-                }
-                val dy = when {
-                    sy < w.rect.top -> w.rect.top - sy
-                    sy > w.rect.bottom -> sy - w.rect.bottom
-                    else -> 0f
-                }
-                val d = hypot(dx, dy)
-                if (d < bestDist) {
-                    bestDist = d
-                    bestIdx = w.index
-                }
-            }
-            return bestIdx
+            return true
         }
     }
 }

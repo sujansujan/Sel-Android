@@ -11,8 +11,10 @@ import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Tab 2 ([ACTIONS]): Unified, clutter-free management for custom search rules and built-in actions.
- * Replaces the old cluttered Tools + Rules tabs with zero duplicate settings.
+ * Tab 2 ([ACTIONS]): Unified, clutter-free management for:
+ * 1. Default Search Engine (always on the popup bar; 1-tap search, long-press for all engines).
+ * 2. Custom Web Search / Rules (with 1-tap quick presets).
+ * 3. Built-in & Pinned Actions (tap [*] to always pin onto the popup bar, drag :: to order).
  */
 class ActionsTabController(private val activity: Activity) {
 
@@ -26,6 +28,7 @@ class ActionsTabController(private val activity: Activity) {
         Preset("+GPT", "GPT", "SEARCH/CHATGPT", "https://chatgpt.com/?q={text}")
     )
 
+    private lateinit var defaultSearchContainer: LinearLayout
     private lateinit var customListContainer: LinearLayout
     private lateinit var builtInListContainer: LinearLayout
     private lateinit var rawRulesInput: EditText
@@ -38,7 +41,20 @@ class ActionsTabController(private val activity: Activity) {
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
 
-            // 1. Quick-Add Custom Web Search / Action
+            // 1. Default Search Engine Picker (Always visible on PopClip bar)
+            addView(UiKit.sectionTitle(activity, "DEFAULT SEARCH ENGINE"))
+            addView(
+                UiKit.label(
+                    activity,
+                    "Always on the popup bar · Tap to search, long-press for all engines:",
+                    10.2f,
+                    p.fgMutedInt
+                ).apply { setPadding(0, 0, 0, dp(6)) }
+            )
+            defaultSearchContainer = UiKit.surfaceCard(activity, padH = 8, padV = 8)
+            addView(defaultSearchContainer)
+
+            // 2. Quick-Add Custom Web Search / Action
             addView(UiKit.sectionTitle(activity, "CUSTOM WEB SEARCH"))
 
             val presetRow = LinearLayout(activity).apply {
@@ -153,12 +169,12 @@ class ActionsTabController(private val activity: Activity) {
             addView(rawToggle)
             addView(rawBox)
 
-            // 2. Built-in Context Actions (clean toggle & drag reorder)
-            addView(UiKit.sectionTitle(activity, "BUILT-IN ACTIONS (DRAG :: TO ORDER)"))
+            // 3. Built-in & Pinned Actions (clean [*] pin + [ON]/[OFF] + drag reorder)
+            addView(UiKit.sectionTitle(activity, "ACTIONS & BAR PINS (DRAG :: TO ORDER)"))
             addView(
                 UiKit.label(
                     activity,
-                    "Toggle which actions are allowed in the context bar and [+] drawer:",
+                    "Tap [*] to always pin an action on the popup bar (Search & YT are always shown):",
                     10.2f,
                     p.fgMutedInt
                 ).apply { setPadding(0, 0, 0, dp(6)) }
@@ -173,9 +189,43 @@ class ActionsTabController(private val activity: Activity) {
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
 
-        // Refresh Custom Rules
+        // 1. Refresh Default Search Engine Picker
+        defaultSearchContainer.removeAllViews()
+        val searchEngines = ToolPrefs.loadWebSearchTools(activity)
+        val currentDefaultId = ToolPrefs.resolveDefaultSearchEngine(activity).id
+        var idx = 0
+        while (idx < searchEngines.size) {
+            val row = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(2), 0, dp(2))
+            }
+            for (col in 0 until 2) {
+                val eng = searchEngines.getOrNull(idx + col) ?: continue
+                val isSelected = eng.id == currentDefaultId
+                val btnText = "${if (isSelected) "● " else ""}[${eng.glyph}] ${eng.label.take(10)}"
+                row.addView(
+                    UiKit.equalButtonPill(
+                        activity,
+                        btnText,
+                        if (isSelected) p.accentGreenInt else p.fgPrimaryInt,
+                        selected = isSelected
+                    ) {
+                        ToolPrefs.setDefaultSearchEngineId(activity, eng.id)
+                        refresh()
+                        SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                        Toast.makeText(activity, "Default search: ${eng.label}", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            defaultSearchContainer.addView(row)
+            idx += 2
+        }
+
+        // 2. Refresh Custom Rules (with Pin toggle for SEARCH/* engines too!)
         customListContainer.removeAllViews()
         val rules = ToolPrefs.getCustomRuleEntries(activity)
+        val webSearchByTarget = ToolPrefs.loadWebSearchTools(activity).associateBy { it.customTarget }
         if (rules.isEmpty()) {
             customListContainer.addView(UiKit.label(activity, "(No custom actions yet)", 10.2f, p.fgMutedInt))
         } else {
@@ -190,6 +240,32 @@ class ActionsTabController(private val activity: Activity) {
                     ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 })
+
+                val matchedEngine = webSearchByTarget[entry.target]
+                if (matchedEngine != null) {
+                    val pinned = ToolPrefs.isToolPinned(activity, matchedEngine.id)
+                    row.addView(
+                        UiKit.label(
+                            activity,
+                            if (pinned) "[*]" else "[·]",
+                            11f,
+                            if (pinned) p.accentGreenInt else p.fgMutedInt,
+                            bold = true
+                        ).apply {
+                            setPadding(dp(8), dp(2), dp(4), dp(2))
+                            setOnClickListener {
+                                val nowPinned = ToolPrefs.toggleToolPinned(activity, matchedEngine.id)
+                                refresh()
+                                Toast.makeText(
+                                    activity,
+                                    if (nowPinned) "Pinned ${matchedEngine.label} to popup bar" else "Unpinned ${matchedEngine.label}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    )
+                }
+
                 row.addView(UiKit.label(activity, "[x]", 11f, p.dangerRedInt, bold = true).apply {
                     setPadding(dp(8), dp(2), dp(2), dp(2))
                     setOnClickListener {
@@ -201,11 +277,14 @@ class ActionsTabController(private val activity: Activity) {
             }
         }
 
-        // Refresh Built-in Tools
+        // 3. Refresh Built-in & Top-Level Tools with [*] PIN and [ON]/[OFF]
         builtInListContainer.removeAllViews()
         val tools = ToolPrefs.getManualOrderedTools(activity).filter { it.id != "copy" }
         tools.forEach { tool ->
             val hidden = ToolPrefs.isToolHidden(activity, tool.id)
+            val isAlwaysOn = tool.id == "web_search_folder" || tool.id == "youtube_folder"
+            val pinned = ToolPrefs.isToolPinned(activity, tool.id)
+
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -225,6 +304,40 @@ class ActionsTabController(private val activity: Activity) {
                 ellipsize = TextUtils.TruncateAt.END
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
+
+            row.addView(handle)
+            row.addView(name)
+
+            if (isAlwaysOn) {
+                row.addView(
+                    UiKit.label(activity, "[BAR]", 9.8f, p.accentCyanInt, bold = true).apply {
+                        setPadding(dp(6), dp(2), dp(4), dp(2))
+                    }
+                )
+            } else {
+                row.addView(
+                    UiKit.label(
+                        activity,
+                        if (pinned) "[*]" else "[·]",
+                        11f,
+                        if (pinned) p.accentGreenInt else p.fgMutedInt,
+                        bold = true
+                    ).apply {
+                        setPadding(dp(6), dp(2), dp(4), dp(2))
+                        setOnClickListener {
+                            val nowPinned = ToolPrefs.toggleToolPinned(activity, tool.id)
+                            if (nowPinned && hidden) ToolPrefs.setToolHidden(activity, tool.id, false)
+                            refresh()
+                            Toast.makeText(
+                                activity,
+                                if (nowPinned) "Pinned ${tool.label} to popup bar" else "Unpinned ${tool.label}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                )
+            }
+
             val toggle = UiKit.label(
                 activity,
                 if (hidden) "[OFF]" else "[ON]",
@@ -232,14 +345,12 @@ class ActionsTabController(private val activity: Activity) {
                 if (hidden) p.fgMutedInt else p.accentGreenInt,
                 bold = true
             ).apply {
-                setPadding(dp(8), dp(2), dp(2), dp(2))
+                setPadding(dp(6), dp(2), dp(2), dp(2))
                 setOnClickListener {
                     ToolPrefs.setToolHidden(activity, tool.id, !hidden)
                     refresh()
                 }
             }
-            row.addView(handle)
-            row.addView(name)
             row.addView(toggle)
             ToolPrefs.attachDragHandle(handle, row, builtInListContainer) { refresh() }
             builtInListContainer.addView(row)

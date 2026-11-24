@@ -7,7 +7,8 @@ data class PopAction(
     val id: String,
     val label: String,
     val accent: Boolean = false,
-    val payload: String? = null
+    val payload: String? = null,
+    val customTool: ToolSpec? = null
 )
 
 /**
@@ -38,9 +39,16 @@ data class SelectionContext(
 )
 
 /**
- * Pure, deterministic PopClip-style context engine:
- * Analyzes selected text and picks ONLY the 3-5 most relevant actions for the primary
- * horizontal ASCII bar (never dumping 20 irrelevant buttons on every selection).
+ * Pure, deterministic PopClip-style context engine for Android:
+ *
+ * - Omits Copy/Cut/Paste/Select All on normal native selections (redundant with Android's
+ *   un-suppressible native floating toolbar), while optionally including Copy inside
+ *   Screen Text Grab where Android's native menu doesn't exist.
+ * - ALWAYS includes customizable Search ([WEB] / default engine) and YouTube ([YT]).
+ * - ALWAYS includes any user-pinned tools.
+ * - Dynamically injects high-value context actions (Call/SMS/WA, Open/Clean URL, Mail,
+ *   Math/Unit/Timestamp/Base64 answer, Magnet, Define, Translate, Links, Sort, JSON/HTML)
+ *   ONLY when relevant to the selected text.
  */
 object PopupContextEngine {
 
@@ -116,166 +124,136 @@ object PopupContextEngine {
         )
     }
 
+    fun shortLabelForPinnedTool(tool: ToolSpec): String {
+        return when (tool.id) {
+            "define" -> "DEF"
+            "translate" -> "TR"
+            "qr" -> "QR"
+            "screen_grab" -> "GRAB"
+            "clip_history" -> "CLIPS"
+            "markdown_folder" -> "MD"
+            "regex_pipe" -> "PIPE"
+            "clean_url" -> "CLEAN"
+            "clean_text" -> "TIDY"
+            "extract" -> "LINKS"
+            "sort" -> "SORT"
+            "case" -> "Aa"
+            "speak" -> "SPEAK"
+            "log" -> "NOTE"
+            "magnet" -> "MAG"
+            else -> tool.label.substringBefore(">").trim().take(7).uppercase()
+        }
+    }
+
     /**
-     * Returns the exact compact list of primary actions for the horizontal PopClip ASCII bar.
-     * Caller appends the `[+]` expander at the right end.
+     * Resolves the crisp list of actions for the PopClip ASCII bar:
+     * 1. High-priority context actions (only what matches the selected text)
+     * 2. Always-visible Search ([SEARCH] using user's default engine; long-press for all) & YouTube ([YT])
+     * 3. Always-visible user-pinned tools
+     *
+     * Note: Copy/Cut/Paste/Select All are intentionally excluded when `includeCopy = false`
+     * because Android's native selection toolbar already provides them.
      */
     fun resolveBarActions(
         ctx: SelectionContext,
         hiddenToolIds: Set<String> = emptySet(),
-        maxItems: Int = 5
+        pinnedTools: List<ToolSpec> = emptyList(),
+        searchLabel: String = "SEARCH",
+        includeCopy: Boolean = false
     ): List<PopAction> {
-        val actions = ArrayList<PopAction>(maxItems + 1)
+        val actions = ArrayList<PopAction>(10)
         fun isAllowed(toolId: String): Boolean = toolId !in hiddenToolIds
-        fun addIfRoom(action: PopAction) {
-            if (actions.size < maxItems && actions.none { it.id == action.id }) {
+        fun addUnique(action: PopAction) {
+            if (actions.none { it.id == action.id }) {
                 actions.add(action)
             }
         }
 
+        if (includeCopy) {
+            addUnique(PopAction("copy", "COPY", accent = true))
+        }
+
         if (ctx.hasUndo && ctx.isEditable) {
-            addIfRoom(PopAction("undo", "UNDO", accent = true))
+            addUnique(PopAction("undo", "UNDO", accent = true))
         }
 
-        // 1. Nepal Phone -> Call / SMS / WhatsApp / W4B / Copy
-        if (ctx.nepalPhone != null) {
-            addIfRoom(PopAction("phone_call", "CALL", accent = true, payload = ctx.nepalPhone.dialNumber))
-            addIfRoom(PopAction("phone_sms", "SMS", payload = ctx.nepalPhone.dialNumber))
-            addIfRoom(PopAction("phone_wa", "WA", accent = true, payload = ctx.nepalPhone.waDigits))
-            addIfRoom(PopAction("phone_w4b", "W4B", payload = ctx.nepalPhone.waDigits))
-            addIfRoom(PopAction("copy", "^C"))
-            return actions
+        // --- 1. Context-Specific Primary Actions (shown ONLY when relevant!) ---
+        when {
+            ctx.nepalPhone != null -> {
+                addUnique(PopAction("phone_call", "CALL", accent = true, payload = ctx.nepalPhone.dialNumber))
+                addUnique(PopAction("phone_sms", "SMS", payload = ctx.nepalPhone.dialNumber))
+                addUnique(PopAction("phone_wa", "WA", accent = true, payload = ctx.nepalPhone.waDigits))
+                addUnique(PopAction("phone_w4b", "W4B", payload = ctx.nepalPhone.waDigits))
+            }
+            ctx.genericPhone != null -> {
+                addUnique(PopAction("phone_call", "CALL", accent = true, payload = ctx.genericPhone))
+                addUnique(PopAction("phone_sms", "SMS", payload = ctx.genericPhone))
+            }
+            ctx.singleUrl != null -> {
+                addUnique(PopAction("open_url", "OPEN", accent = true, payload = ctx.singleUrl))
+                if (ctx.isDirtyUrl && isAllowed("clean_url")) {
+                    addUnique(PopAction("clean_url", "CLEAN", accent = true))
+                }
+                if (isAllowed("qr")) addUnique(PopAction("qr", "QR"))
+            }
+            ctx.singleEmail != null -> {
+                addUnique(PopAction("email_send", "MAIL", accent = true, payload = ctx.singleEmail))
+            }
+            ctx.torrentHash != null || ctx.isMagnetUri -> {
+                val magnetUri = ctx.torrentHash?.let { TextTransforms.buildMagnetUri(it) } ?: ctx.trimmed
+                if (isAllowed("magnet")) addUnique(PopAction("magnet", "MAGNET", accent = true))
+                addUnique(PopAction("open_magnet", "OPEN", payload = magnetUri))
+            }
+            ctx.mathAnswer != null -> {
+                addUnique(PopAction("apply_computed", "= ${ctx.mathAnswer}", accent = true, payload = ctx.mathAnswer))
+            }
+            ctx.unitAnswer != null -> {
+                addUnique(PopAction("apply_computed", ctx.unitAnswer, accent = true, payload = ctx.unitAnswer.removePrefix("= ").trim()))
+            }
+            ctx.timestampAnswer != null -> {
+                addUnique(PopAction("apply_computed", ctx.timestampAnswer.take(16), accent = true, payload = ctx.timestampAnswer))
+            }
+            ctx.base64Answer != null -> {
+                addUnique(PopAction("apply_computed", "-> ${ctx.base64Answer.take(12)}", accent = true, payload = ctx.base64Answer))
+            }
+            ctx.isJson -> {
+                addUnique(PopAction("pipe_json_pretty", "JSON", accent = true))
+            }
+            ctx.isHtml -> {
+                addUnique(PopAction("pipe_strip_html", "STRIP", accent = true))
+            }
+            ctx.wordCount in 1..3 && ctx.trimmed.any { it.isLetter() } && ctx.trimmed.length <= 40 -> {
+                if (isAllowed("define")) addUnique(PopAction("define", "DEF", accent = true))
+                if (isAllowed("translate")) addUnique(PopAction("translate", "TR"))
+            }
+            else -> {
+                if (ctx.hasExtractableEntities && isAllowed("extract")) {
+                    addUnique(PopAction("extract", "LINKS", accent = true))
+                }
+                if (isAllowed("translate")) addUnique(PopAction("translate", "TR", accent = true))
+                if (ctx.isMultiLine && isAllowed("sort")) {
+                    addUnique(PopAction("sort", "SORT"))
+                } else if (ctx.hasMessyWhitespace && isAllowed("clean_text")) {
+                    addUnique(PopAction("clean_text", "CLEAN"))
+                }
+            }
         }
 
-        // 2. Generic International Phone -> Call / SMS / Copy
-        if (ctx.genericPhone != null) {
-            addIfRoom(PopAction("phone_call", "CALL", accent = true, payload = ctx.genericPhone))
-            addIfRoom(PopAction("phone_sms", "SMS", payload = ctx.genericPhone))
-            addIfRoom(PopAction("copy", "^C"))
-            if (ctx.isEditable) {
-                addIfRoom(PopAction("cut", "^X"))
-                addIfRoom(PopAction("paste", "^V"))
-            }
-            return actions
-        }
+        // --- 2. Always-Visible Search & YouTube (1-tap direct search; long-press for options!) ---
+        addUnique(PopAction("default_search", searchLabel, accent = actions.isEmpty()))
+        addUnique(PopAction("youtube_direct", "YT"))
 
-        // 3. URL (Dirty -> Open + Clean + Copy + QR; Clean -> Open + Copy + QR)
-        if (ctx.singleUrl != null) {
-            addIfRoom(PopAction("open_url", "OPEN", accent = true, payload = ctx.singleUrl))
-            if (ctx.isDirtyUrl && isAllowed("clean_url")) {
-                addIfRoom(PopAction("clean_url", "CLEAN", accent = true))
-            }
-            addIfRoom(PopAction("copy", "^C"))
-            if (isAllowed("qr")) addIfRoom(PopAction("qr", "QR"))
-            if (ctx.isEditable) addIfRoom(PopAction("cut", "^X"))
-            return actions
-        }
-
-        // 4. Email Address -> Mail / Copy / Web
-        if (ctx.singleEmail != null) {
-            addIfRoom(PopAction("email_send", "MAIL", accent = true, payload = ctx.singleEmail))
-            addIfRoom(PopAction("copy", "^C"))
-            if (ctx.isEditable) {
-                addIfRoom(PopAction("cut", "^X"))
-                addIfRoom(PopAction("paste", "^V"))
-            } else if (isAllowed("web_search_folder")) {
-                addIfRoom(PopAction("web_search_folder", "WEB"))
-            }
-            return actions
-        }
-
-        // 5. Torrent Hash / Magnet -> Magnet / Open / Copy
-        if (ctx.torrentHash != null || ctx.isMagnetUri) {
-            val magnetUri = when {
-                ctx.torrentHash != null -> TextTransforms.buildMagnetUri(ctx.torrentHash)
-                else -> ctx.trimmed
-            }
-            if (isAllowed("magnet")) {
-                addIfRoom(PopAction("magnet", "MAGNET", accent = true))
-            }
-            addIfRoom(PopAction("open_magnet", "OPEN", payload = magnetUri))
-            addIfRoom(PopAction("copy", "^C"))
-            return actions
-        }
-
-        // 6. Instant Computed Evaluators (Math / Unit / Timestamp / Base64)
-        val computed = when {
-            ctx.mathAnswer != null -> PopAction("apply_computed", "= ${ctx.mathAnswer}", accent = true, payload = ctx.mathAnswer)
-            ctx.unitAnswer != null -> PopAction("apply_computed", ctx.unitAnswer, accent = true, payload = ctx.unitAnswer.removePrefix("= ").trim())
-            ctx.timestampAnswer != null -> PopAction("apply_computed", ctx.timestampAnswer.take(16), accent = true, payload = ctx.timestampAnswer)
-            ctx.base64Answer != null -> PopAction("apply_computed", "-> ${ctx.base64Answer.take(12)}", accent = true, payload = ctx.base64Answer)
-            else -> null
-        }
-        if (computed != null) {
-            addIfRoom(computed)
-            addIfRoom(PopAction("copy", "^C"))
-            if (ctx.isEditable) {
-                addIfRoom(PopAction("cut", "^X"))
-                addIfRoom(PopAction("paste", "^V"))
-            } else if (isAllowed("web_search_folder")) {
-                addIfRoom(PopAction("web_search_folder", "WEB"))
-            }
-            return actions
-        }
-
-        // 7. JSON or HTML Code
-        if (ctx.isJson || ctx.isHtml) {
-            addIfRoom(PopAction("copy", "^C", accent = true))
-            if (ctx.isJson) {
-                addIfRoom(PopAction("pipe_json_pretty", "JSON", accent = true))
-            } else {
-                addIfRoom(PopAction("pipe_strip_html", "STRIP", accent = true))
-            }
-            if (ctx.isEditable) {
-                addIfRoom(PopAction("cut", "^X"))
-                addIfRoom(PopAction("paste", "^V"))
-            } else if (isAllowed("regex_pipe")) {
-                addIfRoom(PopAction("regex_pipe", "PIPE"))
-            }
-            return actions
-        }
-
-        // 8. Standard Text (Smartly distinguishes Editable vs Read-Only, and Short Word vs Paragraph)
-        addIfRoom(PopAction("copy", "^C", accent = true))
-
-        if (ctx.isEditable) {
-            addIfRoom(PopAction("cut", "^X"))
-            addIfRoom(PopAction("paste", "^V"))
-            if (ctx.wordCount in 1..3 && ctx.trimmed.any { it.isLetter() } && isAllowed("define")) {
-                addIfRoom(PopAction("define", "DEF"))
-            } else if (ctx.hasMessyWhitespace && isAllowed("clean_text")) {
-                addIfRoom(PopAction("clean_text", "CLEAN"))
-            } else if (ctx.isMultiLine && isAllowed("sort")) {
-                addIfRoom(PopAction("sort", "SORT"))
-            } else if (isAllowed("case")) {
-                addIfRoom(PopAction("case", "Aa"))
-            }
-            if (isAllowed("translate")) {
-                addIfRoom(PopAction("translate", "TR"))
-            }
-            return actions
-        }
-
-        // Read-only text (Web pages, articles, chat messages, PDFs, etc.)
-        if (ctx.wordCount in 1..3 && ctx.trimmed.any { it.isLetter() } && ctx.trimmed.length <= 40) {
-            if (isAllowed("define")) addIfRoom(PopAction("define", "DEF"))
-            if (isAllowed("translate")) addIfRoom(PopAction("translate", "TR"))
-            if (isAllowed("web_search_folder")) addIfRoom(PopAction("web_search_folder", "WEB"))
-            if (isAllowed("youtube_folder")) addIfRoom(PopAction("youtube_folder", "YT"))
-        } else {
-            if (ctx.hasExtractableEntities && isAllowed("extract")) {
-                addIfRoom(PopAction("extract", "LINKS", accent = true))
-            }
-            if (isAllowed("translate")) addIfRoom(PopAction("translate", "TR"))
-            if (isAllowed("web_search_folder")) addIfRoom(PopAction("web_search_folder", "WEB"))
-            if (ctx.isMultiLine && isAllowed("sort")) {
-                addIfRoom(PopAction("sort", "SORT"))
-            } else if (ctx.hasMessyWhitespace && isAllowed("clean_text")) {
-                addIfRoom(PopAction("clean_text", "CLEAN"))
-            } else if (isAllowed("speak")) {
-                addIfRoom(PopAction("speak", "SPEAK"))
-            }
-            if (isAllowed("log")) addIfRoom(PopAction("log", "LOG"))
+        // --- 3. Always-Visible User-Pinned Actions ---
+        for (pinned in pinnedTools) {
+            if (!isAllowed(pinned.id)) continue
+            addUnique(
+                PopAction(
+                    id = pinned.id,
+                    label = shortLabelForPinnedTool(pinned),
+                    accent = false,
+                    customTool = pinned
+                )
+            )
         }
 
         return actions
