@@ -1,10 +1,9 @@
 package io.github.selclip
 
-import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -15,8 +14,8 @@ import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Shared modern native view builders used across all MainActivity tab controllers.
- * Uses crisp sans-serif typography, 12dp rounded cards, and generous pill touch targets.
+ * Minimal, cohesive ASCII aesthetic UI builders (Dracula Dark / Alucard Light).
+ * Crisp monospace typography, 1dp hairline borders, generous touch padding, zero clutter.
  */
 object UiKit {
 
@@ -33,9 +32,16 @@ object UiKit {
     ): TextView {
         return TextView(context).apply {
             text = content
-            textSize = sizeSp + 0.8f
-            typeface = if (bold) Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD) else Typeface.SANS_SERIF
+            textSize = sizeSp
+            typeface = if (bold) Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) else Typeface.MONOSPACE
             setTextColor(colorInt)
+        }
+    }
+
+    fun sectionTitle(context: Context, title: String): TextView {
+        val p = pal(context)
+        return label(context, "-- $title --", 11f, p.accentPurpleInt, bold = true).apply {
+            setPadding(0, dp(context, 12), 0, dp(context, 6))
         }
     }
 
@@ -46,15 +52,17 @@ object UiKit {
         onClick: () -> Unit
     ): TextView {
         val p = pal(context)
-        return label(context, content, 11.2f, colorInt, bold = true).apply {
-            setPadding(dp(context, 14), dp(context, 10), dp(context, 14), dp(context, 10))
+        return label(context, content, 11f, colorInt, bold = true).apply {
+            gravity = Gravity.CENTER
             isSingleLine = true
+            setPadding(dp(context, 12), dp(context, 9), dp(context, 12), dp(context, 9))
             background = StateListDrawable().apply {
                 addState(
                     intArrayOf(android.R.attr.state_pressed),
                     GradientDrawable().apply {
                         setColor(p.bgPressedInt)
-                        cornerRadius = dp(context, 10).toFloat()
+                        setStroke(dp(context, 1), colorInt)
+                        cornerRadius = dp(context, 2).toFloat()
                     }
                 )
                 addState(
@@ -62,17 +70,16 @@ object UiKit {
                     GradientDrawable().apply {
                         setColor(p.bgSurfaceInt)
                         setStroke(dp(context, 1), p.borderInt)
-                        cornerRadius = dp(context, 10).toFloat()
+                        cornerRadius = dp(context, 2).toFloat()
                     }
                 )
             }
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(context, 4)
-                bottomMargin = dp(context, 4)
-                marginEnd = dp(context, 6)
+                topMargin = dp(context, 3)
+                bottomMargin = dp(context, 3)
             }
             setOnClickListener { onClick() }
         }
@@ -82,55 +89,60 @@ object UiKit {
         context: Context,
         content: String,
         colorInt: Int,
+        selected: Boolean = false,
         onClick: () -> Unit
     ): TextView {
         val p = pal(context)
-        return label(context, content, 10.6f, colorInt, bold = true).apply {
+        return label(context, content, 10.5f, if (selected) p.onAccentInt else colorInt, bold = true).apply {
             gravity = Gravity.CENTER
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(context, 6), dp(context, 10), dp(context, 6), dp(context, 10))
+            setPadding(dp(context, 6), dp(context, 9), dp(context, 6), dp(context, 9))
             background = StateListDrawable().apply {
                 addState(
                     intArrayOf(android.R.attr.state_pressed),
                     GradientDrawable().apply {
                         setColor(p.bgPressedInt)
-                        cornerRadius = dp(context, 10).toFloat()
+                        cornerRadius = dp(context, 2).toFloat()
                     }
                 )
                 addState(
                     intArrayOf(),
                     GradientDrawable().apply {
-                        setColor(p.bgSurfaceInt)
-                        setStroke(dp(context, 1), p.borderInt)
-                        cornerRadius = dp(context, 10).toFloat()
+                        setColor(if (selected) colorInt else p.bgSurfaceInt)
+                        setStroke(dp(context, 1), if (selected) colorInt else p.borderInt)
+                        cornerRadius = dp(context, 2).toFloat()
                     }
                 )
             }
-            layoutParams = LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f
-            ).apply {
-                topMargin = dp(context, 4)
-                bottomMargin = dp(context, 4)
-                marginStart = dp(context, 3)
-                marginEnd = dp(context, 3)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                topMargin = dp(context, 3)
+                bottomMargin = dp(context, 3)
+                marginStart = dp(context, 2)
+                marginEnd = dp(context, 2)
             }
             setOnClickListener { onClick() }
         }
     }
 
-    fun surfaceCard(context: Context, padH: Int = 12, padV: Int = 10): LinearLayout {
+    fun surfaceCard(context: Context, padH: Int = 10, padV: Int = 8): LinearLayout {
         val p = pal(context)
         return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(p.bgSurfaceInt)
-                setStroke(dp(context, 1), p.dividerInt)
-                cornerRadius = dp(context, 12).toFloat()
+                setStroke(dp(context, 1), p.borderInt)
+                cornerRadius = dp(context, 2).toFloat()
             }
             setPadding(dp(context, padH), dp(context, padV), dp(context, padH), dp(context, padV))
+        }
+    }
+
+    fun rowDrawable(context: Context): StateListDrawable {
+        val p = pal(context)
+        return StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(p.bgPressedInt) })
+            addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
         }
     }
 
@@ -138,51 +150,5 @@ object UiKit {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("sel", text))
         Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
-    }
-
-    fun showPlainChoiceDialog(
-        activity: Activity,
-        title: String,
-        items: List<String>,
-        onPick: (Int) -> Unit
-    ) {
-        val p = pal(activity)
-        val dialogRoot = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(p.bgPrimaryInt)
-            setPadding(dp(activity, 16), dp(activity, 16), dp(activity, 16), dp(activity, 16))
-        }
-        dialogRoot.addView(label(activity, title, 12.5f, p.accentPurpleInt, bold = true).apply {
-            setPadding(0, 0, 0, dp(activity, 10))
-        })
-
-        var alert: AlertDialog? = null
-        items.forEachIndexed { idx, item ->
-            val row = label(activity, item, 12f, p.fgPrimaryInt).apply {
-                setPadding(dp(activity, 12), dp(activity, 11), dp(activity, 12), dp(activity, 11))
-                background = GradientDrawable().apply {
-                    setColor(p.bgSurfaceInt)
-                    setStroke(dp(activity, 1), p.dividerInt)
-                    cornerRadius = dp(activity, 10).toFloat()
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dp(activity, 6)
-                }
-                setOnClickListener {
-                    onPick(idx)
-                    alert?.dismiss()
-                }
-            }
-            dialogRoot.addView(row)
-        }
-        dialogRoot.addView(buttonPill(activity, "Cancel", p.fgMutedInt) { alert?.dismiss() })
-
-        alert = AlertDialog.Builder(activity)
-            .setView(dialogRoot)
-            .create()
-        alert.show()
     }
 }

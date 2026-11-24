@@ -9,17 +9,14 @@ import android.view.Gravity
 import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Tab 1 ([HOME]): Smart status/onboarding banner, 1-tap sandbox chips, and Screen Grab + OCR launcher.
+ * Tab 1 ([HOME]): Service status, 1-tap context-aware PopClip sandbox, and Screen Grab trigger.
  */
-class HomeTabController(
-    private val activity: Activity,
-    private val onOpenSettingsTab: () -> Unit
-) {
-    private lateinit var onboardingCard: LinearLayout
+class HomeTabController(private val activity: Activity) {
+
+    private lateinit var statusCard: LinearLayout
     private lateinit var sandboxInput: EditText
 
     fun buildView(): View {
@@ -29,73 +26,48 @@ class HomeTabController(
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
 
-            onboardingCard = LinearLayout(activity).apply {
+            statusCard = LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = dp(10) }
+                ).apply { bottomMargin = dp(8) }
             }
-            addView(onboardingCard)
+            addView(statusCard)
 
-            addView(UiKit.label(activity, "01 // INTERACTIVE TEST SANDBOX", 11.5f, p.fgSecondaryInt, bold = true))
+            // 1. Live Context-Aware Popup Test
+            addView(UiKit.sectionTitle(activity, "TRY CONTEXT POPUP"))
             addView(
                 UiKit.label(
                     activity,
-                    "Tap any sample chip below to spawn the popup in 1 tap, or highlight any word/number in the box:",
-                    10.5f,
+                    "Tap a sample or highlight text below — the bar adapts automatically:",
+                    10.2f,
                     p.fgMutedInt
-                ).apply { setPadding(0, dp(2), 0, dp(6)) }
+                ).apply { setPadding(0, 0, 0, dp(6)) }
             )
 
-            val sandboxText =
-                "Nepal Phone (Call/SMS/WA/W4B): 9841234567  or  +977 9801234567\n" +
-                    "Word (Define [?=]): serendipity\n" +
-                    "Torrent Hash (Magnet [0x]): dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\n" +
-                    "Math / Unit: 145 * 12   or   72 F   or   0xFF\n" +
-                    "Unix Timestamp: 1730000000\n" +
-                    "Base64: aGVsbG8gd29ybGQ=\n" +
-                    "Dirty URL ([?x]): https://example.com/item?utm_source=ads&fbclid=123"
-
-            val sampleChipsRow = LinearLayout(activity).apply {
+            val chipsRow = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, 0, 0, dp(6))
             }
-
             val samples = listOf(
-                "[PHONE]" to "9841234567",
-                "[WORD]" to "serendipity",
-                "[MATH]" to "145 * 12",
-                "[URL]" to "https://example.com/item?utm_source=ads&fbclid=123",
-                "[HASH]" to "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+                "PHONE" to "9841234567",
+                "WORD" to "serendipity",
+                "MATH" to "145 * 12",
+                "URL" to "https://example.com/item?utm_source=ads&fbclid=99",
+                "HASH" to "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
             )
-
-            samples.forEach { (chipTitle, sampleVal) ->
-                val chip = TextView(activity).apply {
-                    text = chipTitle
-                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                    textSize = 10f
-                    setTextColor(p.accentCyanInt)
-                    gravity = Gravity.CENTER
-                    setPadding(dp(4), dp(6), dp(4), dp(6))
-                    background = GradientDrawable().apply {
-                        setColor(p.bgSurfaceInt)
-                        setStroke(dp(1), p.borderInt)
-                        cornerRadius = dp(2).toFloat()
-                    }
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                        marginEnd = dp(3)
-                    }
-                    setOnClickListener { triggerSandboxSample(sampleVal) }
-                }
-                sampleChipsRow.addView(chip)
+            samples.forEach { (title, sampleVal) ->
+                chipsRow.addView(UiKit.equalButtonPill(activity, "[$title]", p.accentCyanInt) {
+                    triggerSample(sampleVal)
+                })
             }
-            addView(sampleChipsRow)
+            addView(chipsRow)
 
             sandboxInput = EditText(activity).apply {
                 typeface = Typeface.MONOSPACE
-                textSize = 11.8f
+                textSize = 11.2f
                 setTextColor(p.fgPrimaryInt)
                 background = GradientDrawable().apply {
                     setColor(p.bgSurfaceInt)
@@ -103,129 +75,65 @@ class HomeTabController(
                     cornerRadius = dp(2).toFloat()
                 }
                 setPadding(dp(10), dp(10), dp(10), dp(10))
-                setText(sandboxText)
+                setText(
+                    "Phone: 9841234567   Word: serendipity\n" +
+                        "Math:  145 * 12     Unit: 72 F\n" +
+                        "URL:   https://example.com/item?utm_source=ads&fbclid=99\n" +
+                        "Hash:  dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+                )
             }
             addView(sandboxInput)
 
-            addView(UiKit.label(activity, "\nLens Screen Text Grab", 13f, p.fgSecondaryInt, bold = true))
+            // 2. Tap-to-Select Screen Grab
+            addView(UiKit.sectionTitle(activity, "SCREEN TEXT GRAB"))
             addView(
                 UiKit.label(
                     activity,
-                    "Works just like Google Lens: freezes your screen, detects every word via on-device OCR, and lets you tap, sweep-select, or drag teardrop handles to copy, search, translate, or listen.",
-                    11f,
+                    "Tap any unselectable text on screen to copy or act on it. Add [sel] Grab to your Quick Settings tile for 1-tap access anywhere.",
+                    10.2f,
                     p.fgMutedInt
-                ).apply { setPadding(0, dp(3), 0, dp(8)) }
+                ).apply { setPadding(0, 0, 0, dp(6)) }
             )
-
-            val automationBox = LinearLayout(activity).apply {
-                orientation = LinearLayout.VERTICAL
-                visibility = View.GONE
-                background = GradientDrawable().apply {
-                    setColor(p.bgSurfaceInt)
-                    setStroke(dp(1), p.dividerInt)
-                    cornerRadius = dp(2).toFloat()
-                }
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = dp(4) }
-
-                addView(
-                    UiKit.label(
-                        activity,
-                        "3RD-PARTY GESTURE / TASKER / MACRODROID TRIGGERS:\n" +
-                            "• Action:    io.github.selclip.ACTION_GRAB_SCREEN\n" +
-                            "• Activity:  io.github.selclip.ScreenGrabTriggerActivity\n" +
-                            "• Deep Link: sel://grab",
-                        10f,
-                        p.fgPrimaryInt
-                    )
-                )
-                addView(
-                    UiKit.buttonPill(activity, "[ [^C] COPY INTENT ACTION ]", p.accentCyanInt) {
-                        UiKit.copyPlain(activity, "io.github.selclip.ACTION_GRAB_SCREEN", "Copied intent action")
-                    }
-                )
-            }
-
-            val rowBtns = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            rowBtns.addView(
-                UiKit.equalButtonPill(activity, "[ [+] LAUNCH LENS GRAB ]", p.accentGreenInt) {
-                    activity.startActivity(Intent(activity, ScreenGrabTriggerActivity::class.java))
-                }
-            )
-            lateinit var toggleAutoBtn: TextView
-            toggleAutoBtn = UiKit.equalButtonPill(activity, "[ ? AUTOMATION ▾ ]", p.fgMutedInt) {
-                val show = automationBox.visibility != View.VISIBLE
-                automationBox.visibility = if (show) View.VISIBLE else View.GONE
-                toggleAutoBtn.text = if (show) "[ ? AUTOMATION ▴ ]" else "[ ? AUTOMATION ▾ ]"
-            }
-            rowBtns.addView(toggleAutoBtn)
-
-            addView(rowBtns)
-            addView(automationBox)
+            addView(UiKit.buttonPill(activity, "[ + GRAB TEXT FROM SCREEN ]", p.accentGreenInt) {
+                activity.startActivity(Intent(activity, ScreenGrabTriggerActivity::class.java))
+            })
         }
     }
 
     fun refresh() {
-        if (!::onboardingCard.isInitialized) return
+        if (!::statusCard.isInitialized) return
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
         val active = SelAccessibilityService.instance != null
-        onboardingCard.removeAllViews()
+        statusCard.removeAllViews()
 
         if (!active) {
-            onboardingCard.background = GradientDrawable().apply {
+            statusCard.background = GradientDrawable().apply {
                 setColor(p.bgSurfaceInt)
                 setStroke(dp(1), p.dangerRedInt)
-                cornerRadius = dp(3).toFloat()
+                cornerRadius = dp(2).toFloat()
             }
-            onboardingCard.setPadding(dp(12), dp(10), dp(12), dp(10))
-            onboardingCard.addView(UiKit.label(activity, "[ ! ] STEP 1: ENABLE ACCESSIBILITY SERVICE", 11.5f, p.dangerRedInt, bold = true))
-            onboardingCard.addView(
-                UiKit.label(
-                    activity,
-                    "Turn on [sel] Plain-Text Palette in Android Accessibility Settings so the popup appears whenever you select text.",
-                    10.2f,
-                    p.fgPrimaryInt
-                ).apply { setPadding(0, dp(3), 0, dp(6)) }
+            statusCard.setPadding(dp(10), dp(10), dp(10), dp(10))
+            statusCard.addView(UiKit.label(activity, "! ACCESSIBILITY SERVICE OFF", 11.2f, p.dangerRedInt, bold = true))
+            statusCard.addView(
+                UiKit.label(activity, "Enable [sel] in Android Accessibility Settings to activate selection popups.", 10.2f, p.fgPrimaryInt)
+                    .apply { setPadding(0, dp(3), 0, dp(6)) }
             )
-            onboardingCard.addView(
-                UiKit.buttonPill(activity, "[ ↗ ENABLE IN ACCESSIBILITY SETTINGS ]", p.accentGreenInt) {
-                    activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }
-            )
+            statusCard.addView(UiKit.buttonPill(activity, "[ OPEN ACCESSIBILITY SETTINGS ↗ ]", p.accentGreenInt) {
+                activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            })
         } else {
-            onboardingCard.background = GradientDrawable().apply {
+            statusCard.background = GradientDrawable().apply {
                 setColor(p.bgSurfaceInt)
                 setStroke(dp(1), p.borderInt)
-                cornerRadius = dp(3).toFloat()
+                cornerRadius = dp(2).toFloat()
             }
-            onboardingCard.setPadding(dp(10), dp(7), dp(10), dp(7))
-            val row = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            row.addView(
-                UiKit.label(activity, "● [sel_] is active. Select text anywhere or tap a chip below:", 10.2f, p.accentGreenInt).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                }
-            )
-            row.addView(
-                UiKit.label(activity, "[SET ↗]", 10f, p.accentPurpleInt, bold = true).apply {
-                    setPadding(dp(6), dp(2), dp(2), dp(2))
-                    setOnClickListener { onOpenSettingsTab() }
-                }
-            )
-            onboardingCard.addView(row)
+            statusCard.setPadding(dp(10), dp(8), dp(10), dp(8))
+            statusCard.addView(UiKit.label(activity, "● ACTIVE · Select text in any app to open [sel]", 10.5f, p.accentGreenInt, bold = true))
         }
     }
 
-    private fun triggerSandboxSample(sample: String) {
+    private fun triggerSample(sample: String) {
         val full = sandboxInput.text?.toString() ?: ""
         val idx = full.indexOf(sample)
         if (idx >= 0) {
@@ -236,11 +144,7 @@ class HomeTabController(
         if (svc != null) {
             svc.showFromExternalText(sample)
         } else {
-            Toast.makeText(
-                activity,
-                "Enable [sel] in Accessibility Settings first (tap [ ○ ENABLE ↗ ] at top right)",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(activity, "Enable [sel] in Accessibility Settings first", Toast.LENGTH_SHORT).show()
         }
     }
 }

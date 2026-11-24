@@ -33,6 +33,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.animation.DecelerateInterpolator
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -59,37 +60,20 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private enum class PopupMode {
-        ACTIONS,
-        COLLAPSED_PILL,
-        WEB_SEARCH_FOLDER,
-        YOUTUBE_FOLDER,
+        BAR,            // Compact macOS PopClip-style horizontal ASCII bar (default!)
+        MORE_TOOLS,     // Clean expanded ASCII drawer when [+] is tapped
+        WEB_SEARCH,
+        YOUTUBE,
         CLIP_HISTORY,
-        MARKDOWN_FOLDER,
+        MARKDOWN,
         REGEX_PIPE,
         CUSTOM_FOLDER,
         QR_CODE,
         MAGNET,
         DEFINE_WORD,
         TRANSLATE,
-        EXTRACT,
-        REORDER
+        EXTRACT
     }
-
-    private data class PopupColors(
-        val cardBg: Int,
-        val headerBg: Int,
-        val chipBg: Int,
-        val pressedBg: Int,
-        val border: Int,
-        val divider: Int,
-        val textPrimary: Int,
-        val textMuted: Int,
-        val accent: Int,
-        val onAccent: Int,
-        val accentSoftBg: Int,
-        val secondaryAccent: Int,
-        val danger: Int
-    )
 
     private lateinit var windowManager: WindowManager
     private lateinit var clipboardManager: ClipboardManager
@@ -103,32 +87,25 @@ class SelAccessibilityService : AccessibilityService() {
     private var ttsReady = false
     private var pendingTtsText: String? = null
 
-    private var popupView: View? = null
+    private var popupView: LinearLayout? = null
     private var popupParams: WindowManager.LayoutParams? = null
-    private var headerBarView: LinearLayout? = null
-    private var headerDividerView: View? = null
-    private var statsLabelView: TextView? = null
-    private var gridToggleBtn: TextView? = null
-    private var collapseBtnView: TextView? = null
-    private var reorderToggleBtn: TextView? = null
-    private var closeBtnView: TextView? = null
-    private var bodyContainer: LinearLayout? = null
+    private var barStripContainer: LinearLayout? = null
+    private var drawerDividerView: View? = null
+    private var drawerScrollView: ScrollView? = null
+    private var drawerContainer: LinearLayout? = null
 
     private var screenGrabOverlayView: View? = null
     private var activeClipboardProbe: View? = null
 
-    private var currentMode: PopupMode = PopupMode.ACTIONS
+    private var currentMode: PopupMode = PopupMode.BAR
     private var activeCustomFolder: String = ""
     private var currentNode: AccessibilityNodeInfo? = null
     private var selectedText: String = ""
     private var lastRawCandidateBounds: Rect = Rect()
     private var lastRawCandidateTime: Long = 0L
     private var currentSafeZone: Rect = Rect()
-    private var currentMaxTotalHeight: Int = 760
-    private var dynamicMaxScrollHeight: Int = 640
-    private var dynamicMaxPopupWidth: Int = 680
-    private var dynamicMinPopupWidth: Int = 480
-    private var anchoredAboveSelection: Boolean = false
+    private var dynamicMaxDrawerHeight: Int = 520
+    private var anchoredAboveSelection: Boolean = true
     private var userManuallyDragged: Boolean = false
 
     private var lastInternalCopyTime = 0L
@@ -171,43 +148,6 @@ class SelAccessibilityService : AccessibilityService() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun dpF(v: Float): Float = v * resources.displayMetrics.density
 
-    private fun resolvePopupColors(): PopupColors {
-        val isDark = ToolPrefs.resolvePalette(this).isDark
-        return if (isDark) {
-            PopupColors(
-                cardBg = Color.parseColor("#1E2028"),
-                headerBg = Color.parseColor("#181A20"),
-                chipBg = Color.parseColor("#2A2D38"),
-                pressedBg = Color.parseColor("#383D4D"),
-                border = Color.parseColor("#383E52"),
-                divider = Color.parseColor("#2E3342"),
-                textPrimary = Color.parseColor("#F1F3F5"),
-                textMuted = Color.parseColor("#9AA0B4"),
-                accent = Color.parseColor("#8AB4F8"),
-                onAccent = Color.parseColor("#14171D"),
-                accentSoftBg = Color.argb(42, 138, 180, 248),
-                secondaryAccent = Color.parseColor("#50FA7B"),
-                danger = Color.parseColor("#FF6B6B")
-            )
-        } else {
-            PopupColors(
-                cardBg = Color.parseColor("#FFFFFF"),
-                headerBg = Color.parseColor("#F7F8FA"),
-                chipBg = Color.parseColor("#EEF1F6"),
-                pressedBg = Color.parseColor("#DFE5EE"),
-                border = Color.parseColor("#DADCE0"),
-                divider = Color.parseColor("#E8EAED"),
-                textPrimary = Color.parseColor("#202124"),
-                textMuted = Color.parseColor("#5F6368"),
-                accent = Color.parseColor("#1A73E8"),
-                onAccent = Color.parseColor("#FFFFFF"),
-                accentSoftBg = Color.argb(28, 26, 115, 232),
-                secondaryAccent = Color.parseColor("#188038"),
-                danger = Color.parseColor("#D93025")
-            )
-        }
-    }
-
     override fun onServiceConnected() {
         instance = this
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -235,9 +175,7 @@ class SelAccessibilityService : AccessibilityService() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (popupView != null) {
-            mainHandler.post { renderPopupBody() }
-        }
+        if (popupView != null) mainHandler.post { renderPopup() }
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -269,17 +207,17 @@ class SelAccessibilityService : AccessibilityService() {
 
     fun refreshOpenPopupTheme() {
         if (popupView != null && popupView?.isAttachedToWindow == true) {
-            mainHandler.post { renderPopupBody() }
+            mainHandler.post { renderPopup() }
         }
     }
 
-    fun showFromExternalText(text: String) {
+    fun showFromExternalText(text: String, openExpanded: Boolean = false) {
         mainHandler.post {
             if (text.isNotBlank()) {
                 ToolPrefs.addClipToHistory(this, text)
                 mainHandler.removeCallbacks(delayedHideRunnable)
                 selectedText = text
-                currentMode = PopupMode.ACTIONS
+                currentMode = if (openExpanded) PopupMode.MORE_TOOLS else PopupMode.BAR
                 currentNode = selectionDetector.findFocusedEditableOrSelectableNode()
                 lastShownTime = System.currentTimeMillis()
                 val now = lastShownTime
@@ -296,83 +234,76 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Exact Google Lens trigger flow:
-     * - On Android 11+ (API 30+): Instantly captures a frozen frame via takeScreenshot(),
-     *   shows LensOverlayView immediately with a scan shimmer, and runs on-device ML Kit
-     *   word-level OCR (~200ms). Falls back seamlessly to Accessibility word harvesting if
-     *   FLAG_SECURE blocks screenshots or OCR detects 0 words.
-     * - On Android 8–10: Immediately harvests word-level Accessibility text into LensOverlayView.
+     * Instant zero-lag Tap-to-Select Screen Grab:
+     * 1) Harvests visible Accessibility words immediately (<15ms) so you can tap text right away.
+     * 2) Automatically runs on-device ML Kit OCR if 0 accessibility words exist (images/videos/canvas)
+     *    OR whenever the user taps [OCR] in the minimal top bar.
      */
     fun triggerScreenGrab(delayMs: Long = 120L) {
         hidePalette()
         hideScreenGrabOverlay()
-
         mainHandler.postDelayed({
-            if (Build.VERSION.SDK_INT >= 30) {
-                runCatching {
-                    takeScreenshot(
-                        Display.DEFAULT_DISPLAY,
-                        mainExecutor,
-                        object : TakeScreenshotCallback {
-                            override fun onSuccess(screenshotResult: ScreenshotResult) {
-                                val hwBuffer = screenshotResult.hardwareBuffer
-                                val colorSpace = screenshotResult.colorSpace
-                                val hwBmp = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
-                                hwBuffer.close()
-                                val softBmp = hwBmp?.copy(Bitmap.Config.ARGB_8888, false)
-                                hwBmp?.recycle()
-
-                                if (softBmp == null) {
-                                    launchAccessibilityLensFallback()
-                                    return
-                                }
-
-                                // Show frozen frame + scan shimmer IMMEDIATELY (just like Google Lens!)
-                                val lensView = showLensOverlay(backgroundBitmap = softBmp, initialSnapshot = null)
-                                    ?: return
-
-                                screenOcrEngine.recognizeBitmap(
-                                    bitmap = softBmp,
-                                    density = resources.displayMetrics.density,
-                                    onSuccess = { ocrSnap ->
-                                        if (screenGrabOverlayView !== lensView) return@recognizeBitmap
-                                        if (ocrSnap.words.isNotEmpty()) {
-                                            lensView.setSnapshot(ocrSnap)
-                                        } else {
-                                            val fallback = screenHarvester.harvestAsLensSnapshot()
-                                            lensView.setSnapshot(fallback)
-                                        }
-                                    },
-                                    onFailure = {
-                                        if (screenGrabOverlayView !== lensView) return@recognizeBitmap
-                                        val fallback = screenHarvester.harvestAsLensSnapshot()
-                                        lensView.setSnapshot(fallback)
-                                    }
-                                )
-                            }
-
-                            override fun onFailure(errorCode: Int) {
-                                // e.g., FLAG_SECURE app -> seamlessly fall back to Accessibility Lens
-                                launchAccessibilityLensFallback()
-                            }
-                        }
-                    )
-                }.onFailure {
-                    launchAccessibilityLensFallback()
-                }
+            val a11ySnap = screenHarvester.harvestAsLensSnapshot()
+            if (a11ySnap.words.isNotEmpty()) {
+                showLensOverlay(backgroundBitmap = null, initialSnapshot = a11ySnap)
             } else {
-                launchAccessibilityLensFallback()
+                runScreenOcrCapture(delayMs = 0L)
             }
         }, delayMs)
     }
 
-    private fun launchAccessibilityLensFallback() {
-        val snap = screenHarvester.harvestAsLensSnapshot()
-        if (snap.words.isEmpty()) {
-            Toast.makeText(this, "No text found on screen", Toast.LENGTH_SHORT).show()
+    private fun runScreenOcrCapture(delayMs: Long = 120L) {
+        hidePalette()
+        hideScreenGrabOverlay()
+        if (Build.VERSION.SDK_INT < 30) {
+            Toast.makeText(this, "Pixel OCR requires Android 11+", Toast.LENGTH_SHORT).show()
             return
         }
-        showLensOverlay(backgroundBitmap = null, initialSnapshot = snap)
+        mainHandler.postDelayed({
+            runCatching {
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshotResult: ScreenshotResult) {
+                            val hwBuffer = screenshotResult.hardwareBuffer
+                            val colorSpace = screenshotResult.colorSpace
+                            val hwBmp = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+                            hwBuffer.close()
+                            val softBmp = hwBmp?.copy(Bitmap.Config.ARGB_8888, false)
+                            hwBmp?.recycle()
+
+                            if (softBmp == null) {
+                                Toast.makeText(this@SelAccessibilityService, "Could not capture screen", Toast.LENGTH_SHORT).show()
+                                return
+                            }
+
+                            val lensView = showLensOverlay(backgroundBitmap = softBmp, initialSnapshot = null) ?: return
+                            screenOcrEngine.recognizeBitmap(
+                                bitmap = softBmp,
+                                density = resources.displayMetrics.density,
+                                onSuccess = { ocrSnap ->
+                                    if (screenGrabOverlayView !== lensView) return@recognizeBitmap
+                                    lensView.setSnapshot(ocrSnap)
+                                    if (ocrSnap.words.isEmpty()) {
+                                        Toast.makeText(this@SelAccessibilityService, "No text detected in image", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onFailure = {
+                                    if (screenGrabOverlayView !== lensView) return@recognizeBitmap
+                                    val fallback = screenHarvester.harvestAsLensSnapshot()
+                                    lensView.setSnapshot(fallback)
+                                }
+                            )
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Toast.makeText(this@SelAccessibilityService, "Screen capture blocked on this app", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
+        }, delayMs)
     }
 
     private fun showLensOverlay(backgroundBitmap: Bitmap?, initialSnapshot: LensSnapshot?): LensOverlayView? {
@@ -397,54 +328,21 @@ class SelAccessibilityService : AccessibilityService() {
             context = this,
             backgroundBitmap = backgroundBitmap,
             initialSnapshot = initialSnapshot,
-            networkTools = networkTools,
-            onCopyText = { chosen ->
-                smoothCopyText(chosen)
+            onRunAction = { popAction, chosenText ->
                 hideScreenGrabOverlay()
-            },
-            onSmartAction = { actionId, chosen ->
-                hideScreenGrabOverlay()
-                selectedText = chosen
-                ToolPrefs.addClipToHistory(this, chosen)
+                selectedText = chosenText
+                currentNode = null
+                ToolPrefs.addClipToHistory(this, chosenText)
                 val dm = resources.displayMetrics
-                val centerZone = Rect(0, dm.heightPixels / 3, dm.widthPixels, dm.heightPixels / 2)
-                when (actionId) {
-                    "magnet" -> {
-                        currentMode = PopupMode.MAGNET
-                        currentSafeZone = Rect(centerZone)
-                        showOrUpdatePalette(centerZone)
-                    }
-                    "clean_url" -> smoothCopyText(TextTransforms.cleanUrl(chosen), "Cleaned URL copied")
-                    "open_url" -> openUrl(chosen)
-                    "dial" -> {
-                        val dialNum = TextTransforms.extractNepalPhone(chosen)?.dialNumber ?: chosen
-                        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(dialNum)}")).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        runCatching { startActivity(dialIntent) }
-                    }
-                    "math" -> {
-                        val ans = TextTransforms.evalSimpleMath(chosen)
-                        if (ans != null) smoothCopyText(ans, "Copied result: $ans")
-                    }
-                    "define" -> {
-                        currentMode = PopupMode.DEFINE_WORD
-                        currentSafeZone = Rect(centerZone)
-                        showOrUpdatePalette(centerZone)
-                    }
-                    else -> showFromExternalText(chosen)
-                }
+                currentSafeZone = Rect(0, dm.heightPixels / 3, dm.widthPixels, dm.heightPixels / 2)
+                executePopAction(popAction)
             },
-            onOpenInTools = { chosen ->
+            onOpenFullPalette = { chosenText ->
                 hideScreenGrabOverlay()
-                showFromExternalText(chosen)
+                showFromExternalText(chosenText, openExpanded = true)
             },
-            onSearchText = { chosen ->
-                hideScreenGrabOverlay()
-                openUrl("https://www.google.com/search?q=${Uri.encode(chosen)}")
-            },
-            onListenText = { chosen ->
-                speakTextLazy(chosen)
+            onRequestOcr = {
+                runScreenOcrCapture(delayMs = 120L)
             },
             onDismiss = {
                 hideScreenGrabOverlay()
@@ -464,9 +362,7 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private fun hideScreenGrabOverlay() {
-        screenGrabOverlayView?.let { v ->
-            runCatching { windowManager.removeView(v) }
-        }
+        screenGrabOverlayView?.let { v -> runCatching { windowManager.removeView(v) } }
         screenGrabOverlayView = null
     }
 
@@ -475,23 +371,20 @@ class SelAccessibilityService : AccessibilityService() {
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", text))
         ToolPrefs.addClipToHistory(this, text)
         popupView?.let { runCatching { it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) } }
-        val preview = text.replace("\n", " ").let { if (it.length > 28) it.take(27) + "…" else it }
-        Toast.makeText(this, toastLabel ?: "Copied: \"$preview\"", Toast.LENGTH_SHORT).show()
+        val preview = text.replace("\n", " ").let { if (it.length > 26) it.take(25) + "…" else it }
+        Toast.makeText(this, toastLabel ?: "[^C] \"$preview\"", Toast.LENGTH_SHORT).show()
     }
 
     private fun isPrimaryClipSensitive(): Boolean {
         if (Build.VERSION.SDK_INT >= 33) {
             val desc = runCatching { clipboardManager.primaryClipDescription }.getOrNull()
-            val isSens = desc?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false) ?: false
-            if (isSens) return true
+            if (desc?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE, false) == true) return true
         }
         return false
     }
 
     private fun removeClipboardProbe() {
-        activeClipboardProbe?.let { p ->
-            runCatching { windowManager.removeView(p) }
-        }
+        activeClipboardProbe?.let { p -> runCatching { windowManager.removeView(p) } }
         activeClipboardProbe = null
     }
 
@@ -510,8 +403,7 @@ class SelAccessibilityService : AccessibilityService() {
         removeClipboardProbe()
         val probe = View(this)
         val probeParams = WindowManager.LayoutParams(
-            1,
-            1,
+            1, 1,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -527,19 +419,15 @@ class SelAccessibilityService : AccessibilityService() {
         val cleanup = {
             if (!done) {
                 done = true
-                if (activeClipboardProbe === probe) {
-                    removeClipboardProbe()
-                } else {
-                    runCatching { windowManager.removeView(probe) }
-                }
+                if (activeClipboardProbe === probe) removeClipboardProbe()
+                else runCatching { windowManager.removeView(probe) }
             }
         }
 
         val tryRead = {
             if (!done) {
-                if (isPrimaryClipSensitive()) {
-                    cleanup()
-                } else {
+                if (isPrimaryClipSensitive()) cleanup()
+                else {
                     val clip = runCatching {
                         clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
                     }.getOrNull()
@@ -589,9 +477,7 @@ class SelAccessibilityService : AccessibilityService() {
                 val prevPkg = activePackage
                 activePackage = pkg
                 if (popupView != null && prevPkg.isNotEmpty() && prevPkg != pkg) {
-                    if (System.currentTimeMillis() - lastShownTime > 500L) {
-                        hidePalette()
-                    }
+                    if (System.currentTimeMillis() - lastShownTime > 500L) hidePalette()
                 }
             }
         }
@@ -605,9 +491,7 @@ class SelAccessibilityService : AccessibilityService() {
                     val clickedLabel = (event.text.firstOrNull()?.toString()
                         ?: event.contentDescription?.toString() ?: "").lowercase()
                     val isSelectionToolbarTap = clickedLabel in setOf("copy", "cut", "select all", "share")
-                    if (elapsed > 260L && !isSelectionToolbarTap) {
-                        hidePalette()
-                    }
+                    if (elapsed > 260L && !isSelectionToolbarTap) hidePalette()
                 }
             }
 
@@ -623,9 +507,7 @@ class SelAccessibilityService : AccessibilityService() {
                     lastShownTime = System.currentTimeMillis()
                     lastRawCandidateBounds = Rect(result.bounds)
                     lastRawCandidateTime = lastShownTime
-                    if (changedText && currentMode != PopupMode.ACTIONS && currentMode != PopupMode.REORDER) {
-                        currentMode = PopupMode.ACTIONS
-                    }
+                    if (changedText) currentMode = PopupMode.BAR
                     val safeZone = selectionDetector.resolveBestSafeZone(result.bounds, forceRefresh = true)
                     currentSafeZone = Rect(safeZone)
                     showOrUpdatePalette(currentSafeZone)
@@ -643,7 +525,7 @@ class SelAccessibilityService : AccessibilityService() {
                 } else {
                     val src = event.source
                     val elapsed = System.currentTimeMillis() - lastShownTime
-                    if (popupView != null && currentMode == PopupMode.ACTIONS && elapsed > 600L &&
+                    if (popupView != null && currentMode == PopupMode.BAR && elapsed > 600L &&
                         src != null && src == currentNode
                     ) {
                         val s = src.textSelectionStart
@@ -707,6 +589,7 @@ class SelAccessibilityService : AccessibilityService() {
             if (treeResult != null) {
                 selectedText = treeResult.text
                 currentNode = treeResult.node
+                currentMode = PopupMode.BAR
                 lastShownTime = System.currentTimeMillis()
                 lastRawCandidateBounds = Rect(treeResult.bounds)
                 lastRawCandidateTime = lastShownTime
@@ -743,100 +626,58 @@ class SelAccessibilityService : AccessibilityService() {
         mainHandler.postDelayed(runnable, 110L)
     }
 
-    private fun applyStrictPlacementAndDynamicSize(safeZone: Rect, params: WindowManager.LayoutParams) {
+    private fun positionPopClipBar(safeZone: Rect, params: WindowManager.LayoutParams, actualW: Int = 0, actualH: Int = 0) {
         val metrics = selectionDetector.getScreenMetrics(force = false)
         val realW = metrics.screenWidth
-        val realH = metrics.screenHeight
         val topSafe = metrics.topSafeInset
         val visibleBottom = metrics.visibleBottom
-
         currentSafeZone = Rect(safeZone)
-        val gap = dp(12)
+
+        val gap = dp(10)
+        val estH = actualH.takeIf { it > dp(24) } ?: if (currentMode == PopupMode.BAR) dp(42) else dp(240)
+        val estW = actualW.takeIf { it > dp(80) } ?: (realW - dp(24)).coerceAtMost(dp(330))
 
         val spaceAbove = (safeZone.top - gap) - topSafe
         val spaceBelow = visibleBottom - (safeZone.bottom + gap)
 
+        // PopClip prefers sitting neatly ABOVE selection when there's room, otherwise BELOW
         val placeAbove = when {
-            spaceBelow >= dp(240) && (spaceBelow >= spaceAbove || spaceBelow >= dp(300)) -> false
-            spaceAbove >= dp(150) && spaceAbove > spaceBelow -> true
-            spaceBelow >= dp(160) -> false
+            currentMode == PopupMode.BAR && spaceAbove >= estH -> true
+            spaceBelow >= estH -> false
+            spaceAbove >= estH -> true
             else -> spaceAbove > spaceBelow
         }
         anchoredAboveSelection = placeAbove
 
         val chosenSpace = if (placeAbove) spaceAbove else spaceBelow
-        currentMaxTotalHeight = chosenSpace.safeCoerceIn(dp(120), (realH * 0.46f).toInt())
-        val headerHeightEst = dp(40)
-        dynamicMaxScrollHeight = (currentMaxTotalHeight - headerHeightEst).safeCoerceIn(dp(72), dp(340))
-
-        val twoColGrid = ToolPrefs.isTwoColumnGrid(this) && currentMode == PopupMode.ACTIONS
-        dynamicMinPopupWidth = when {
-            currentMode != PopupMode.ACTIONS -> dp(244)
-            twoColGrid -> dp(256)
-            else -> dp(236)
-        }
-        dynamicMaxPopupWidth = when {
-            currentMode != PopupMode.ACTIONS -> dp(288)
-            twoColGrid -> dp(284)
-            else -> dp(264)
-        }.coerceAtMost(realW - dp(20))
+        dynamicMaxDrawerHeight = (chosenSpace - dp(44)).safeCoerceIn(dp(100), dp(290))
 
         if (!userManuallyDragged) {
-            val snapLeft = ToolPrefs.isSnapLeftEdge(this)
             params.gravity = Gravity.TOP or Gravity.START
-            params.x = if (snapLeft) {
-                dp(10)
+            val desiredX = (safeZone.centerX() - estW / 2)
+                .safeCoerceIn(dp(8), (realW - estW - dp(8)).coerceAtLeast(dp(8)))
+            params.x = desiredX
+            params.y = if (placeAbove) {
+                (safeZone.top - gap - estH).coerceAtLeast(topSafe)
             } else {
-                (realW - dynamicMaxPopupWidth - dp(10)).coerceAtLeast(dp(10))
-            }
-
-            val estH = popupView?.height?.takeIf { it > dp(60) }?.coerceAtMost(currentMaxTotalHeight)
-                ?: currentMaxTotalHeight
-
-            if (placeAbove) {
-                params.y = (safeZone.top - gap - estH).coerceAtLeast(topSafe)
-            } else {
-                val maxTopY = (visibleBottom - estH).coerceAtLeast(topSafe)
-                params.y = (safeZone.bottom + gap).safeCoerceIn(topSafe, maxTopY)
+                val maxTop = (visibleBottom - estH).coerceAtLeast(topSafe)
+                (safeZone.bottom + gap).safeCoerceIn(topSafe, maxTop)
             }
         }
-    }
-
-    private fun applyPaletteToPopupChrome(c: PopupColors) {
-        popupView?.background = GradientDrawable().apply {
-            setColor(c.cardBg)
-            setStroke(dp(1), c.border)
-            cornerRadius = if (currentMode == PopupMode.COLLAPSED_PILL) dpF(22f) else dpF(16f)
-        }
-        headerBarView?.background = GradientDrawable().apply {
-            setColor(c.headerBg)
-            cornerRadii = floatArrayOf(dpF(16f), dpF(16f), dpF(16f), dpF(16f), 0f, 0f, 0f, 0f)
-        }
-        headerDividerView?.setBackgroundColor(c.divider)
-        statsLabelView?.setTextColor(c.textMuted)
-
-        val twoCol = ToolPrefs.isTwoColumnGrid(this)
-        gridToggleBtn?.text = if (twoCol) "☰" else "▦"
-        gridToggleBtn?.setTextColor(if (twoCol) c.accent else c.textMuted)
-
-        collapseBtnView?.setTextColor(c.textMuted)
-        reorderToggleBtn?.setTextColor(if (currentMode == PopupMode.REORDER) c.accent else c.textMuted)
-        closeBtnView?.setTextColor(c.danger)
     }
 
     private fun showOrUpdatePalette(safeZone: Rect) {
-        val c = resolvePopupColors()
-
         if (popupView != null && popupView?.isAttachedToWindow != true) {
             hidePalette()
         }
 
-        if (popupView != null && statsLabelView != null && bodyContainer != null && popupParams != null) {
-            applyStrictPlacementAndDynamicSize(safeZone, popupParams!!)
-            renderPopupBody()
+        if (popupView != null && popupParams != null && barStripContainer != null) {
+            positionPopClipBar(safeZone, popupParams!!, popupView?.width ?: 0, popupView?.height ?: 0)
+            renderPopup()
             return
         }
 
+        val pal = ToolPrefs.resolvePalette(this)
         userManuallyDragged = false
         val windowParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -847,53 +688,35 @@ class SelAccessibilityService : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
-        applyStrictPlacementAndDynamicSize(safeZone, windowParams)
+        positionPopClipBar(safeZone, windowParams)
+
+        val maxBarW = (selectionDetector.getRealScreenBounds().width() - dp(16)).coerceAtLeast(dp(240))
 
         val rootCard = object : LinearLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                if (currentMode == PopupMode.COLLAPSED_PILL) {
-                    super.onMeasure(widthMeasureSpec, heightMeasureSpec)
-                    return
-                }
-                val cappedWidthSpec = MeasureSpec.makeMeasureSpec(dynamicMaxPopupWidth, MeasureSpec.AT_MOST)
-                val cappedHeightSpec = MeasureSpec.makeMeasureSpec(currentMaxTotalHeight, MeasureSpec.AT_MOST)
-                super.onMeasure(cappedWidthSpec, cappedHeightSpec)
-                if (measuredWidth < dynamicMinPopupWidth) {
-                    super.onMeasure(
-                        MeasureSpec.makeMeasureSpec(dynamicMinPopupWidth, MeasureSpec.EXACTLY),
-                        cappedHeightSpec
-                    )
-                }
+                val cappedW = MeasureSpec.makeMeasureSpec(maxBarW, MeasureSpec.AT_MOST)
+                super.onMeasure(cappedW, heightMeasureSpec)
             }
         }.apply {
             orientation = LinearLayout.VERTICAL
-            elevation = dpF(10f)
-            clipToOutline = true
+            elevation = dpF(8f)
             background = GradientDrawable().apply {
-                setColor(c.cardBg)
-                setStroke(dp(1), c.border)
-                cornerRadius = dpF(16f)
+                setColor(pal.bgPrimaryInt)
+                setStroke(dp(1), pal.borderInt)
+                cornerRadius = dpF(3f)
             }
-            addOnLayoutChangeListener { v, _, top, _, bottom, _, _, _, _ ->
+            addOnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
+                val actualW = right - left
                 val actualH = bottom - top
                 val p = popupParams
-                if (actualH > 0 && p != null && !userManuallyDragged && !currentSafeZone.isEmpty) {
-                    val m = selectionDetector.getScreenMetrics(force = false)
-                    val topSafe = m.topSafeInset
-                    val gap = dp(12)
-                    val desiredY = if (anchoredAboveSelection) {
-                        (currentSafeZone.top - gap - actualH).coerceAtLeast(topSafe)
-                    } else {
-                        val maxTop = (m.visibleBottom - actualH).coerceAtLeast(topSafe)
-                        (currentSafeZone.bottom + gap).safeCoerceIn(topSafe, maxTop)
-                    }
-                    if (abs(p.y - desiredY) > dp(3)) {
-                        p.y = desiredY
+                if (actualH > 0 && actualW > 0 && p != null && !userManuallyDragged && !currentSafeZone.isEmpty) {
+                    val prevX = p.x
+                    val prevY = p.y
+                    positionPopClipBar(currentSafeZone, p, actualW, actualH)
+                    if (abs(p.x - prevX) > dp(3) || abs(p.y - prevY) > dp(3)) {
                         if (v.isAttachedToWindow) {
                             mainHandler.post {
-                                if (v.isAttachedToWindow) {
-                                    runCatching { windowManager.updateViewLayout(v, p) }
-                                }
+                                if (v.isAttachedToWindow) runCatching { windowManager.updateViewLayout(v, p) }
                             }
                         }
                     }
@@ -901,9 +724,7 @@ class SelAccessibilityService : AccessibilityService() {
             }
             setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_OUTSIDE || event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
-                    if (System.currentTimeMillis() - lastShownTime > 220L) {
-                        hidePalette()
-                    }
+                    if (System.currentTimeMillis() - lastShownTime > 220L) hidePalette()
                     true
                 } else {
                     false
@@ -911,108 +732,56 @@ class SelAccessibilityService : AccessibilityService() {
             }
         }
 
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(7), dp(8), dp(7))
-        }
-
-        val statsLabel = TextView(this).apply {
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(c.textMuted)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, 0, dp(4), 0)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        fun makeHeaderIconBtn(icon: String, fgColor: Int, onClick: () -> Unit): TextView {
-            return TextView(this).apply {
-                text = icon
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                setTextColor(fgColor)
-                gravity = Gravity.CENTER
-                minWidth = dp(28)
-                minHeight = dp(26)
-                setPadding(dp(4), dp(2), dp(4), dp(2))
-                background = makePressedDrawable(c.pressedBg, dpF(8f))
-                setOnClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                    onClick()
-                }
-            }
-        }
-
-        val twoColInitial = ToolPrefs.isTwoColumnGrid(this)
-        val gridBtn = makeHeaderIconBtn(if (twoColInitial) "☰" else "▦", if (twoColInitial) c.accent else c.textMuted) {
-            lastShownTime = System.currentTimeMillis()
-            ToolPrefs.setTwoColumnGrid(this@SelAccessibilityService, !ToolPrefs.isTwoColumnGrid(this@SelAccessibilityService))
-            renderPopupBody()
-        }
-
-        val collapseBtn = makeHeaderIconBtn("—", c.textMuted) {
-            lastShownTime = System.currentTimeMillis()
-            currentMode = PopupMode.COLLAPSED_PILL
-            renderPopupBody()
-        }
-
-        val reorderBtn = makeHeaderIconBtn("⚙", c.textMuted) {
-            lastShownTime = System.currentTimeMillis()
-            currentMode = if (currentMode == PopupMode.REORDER) PopupMode.ACTIONS else PopupMode.REORDER
-            renderPopupBody()
-        }
-
-        val closeBtn = makeHeaderIconBtn("✕", c.danger) { hidePalette() }
-
-        header.addView(statsLabel)
-        header.addView(gridBtn)
-        header.addView(collapseBtn)
-        header.addView(reorderBtn)
-        header.addView(closeBtn)
-        enableDragAndEdgeSnapOnHeader(header, rootCard, windowParams)
-        rootCard.addView(header)
-
-        val hDiv = makeHorizontalRule(thick = true)
-        rootCard.addView(hDiv)
-
-        val scrollView = object : ScrollView(this) {
-            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val maxHeightSpec = MeasureSpec.makeMeasureSpec(dynamicMaxScrollHeight, MeasureSpec.AT_MOST)
-                super.onMeasure(widthMeasureSpec, maxHeightSpec)
-            }
-        }.apply {
-            isVerticalScrollBarEnabled = false
+        // 1. Primary PopClip Horizontal ASCII Bar (scrollable horizontally only if needed on tiny screens)
+        val barScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
         }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(6), dp(8), dp(8))
+        val barRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(pal.bgHeaderInt)
         }
+        barScroll.addView(barRow)
+        rootCard.addView(barScroll)
 
-        scrollView.addView(container)
-        rootCard.addView(scrollView)
+        // 2. Hairline divider + Expandable Drawer (hidden in BAR mode!)
+        val div = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+            setBackgroundColor(pal.borderInt)
+            visibility = View.GONE
+        }
+        rootCard.addView(div)
+
+        val scroll = object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val maxH = MeasureSpec.makeMeasureSpec(dynamicMaxDrawerHeight, MeasureSpec.AT_MOST)
+                super.onMeasure(widthMeasureSpec, maxH)
+            }
+        }.apply {
+            isVerticalScrollBarEnabled = true
+            visibility = View.GONE
+        }
+        val drawer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(4), dp(6), dp(6))
+        }
+        scroll.addView(drawer)
+        rootCard.addView(scroll)
 
         popupView = rootCard
         popupParams = windowParams
-        headerBarView = header
-        headerDividerView = hDiv
-        statsLabelView = statsLabel
-        gridToggleBtn = gridBtn
-        collapseBtnView = collapseBtn
-        reorderToggleBtn = reorderBtn
-        closeBtnView = closeBtn
-        bodyContainer = container
+        barStripContainer = barRow
+        drawerDividerView = div
+        drawerScrollView = scroll
+        drawerContainer = drawer
 
-        renderPopupBody()
+        renderPopup()
 
-        // Smooth pop-in entrance animation
         rootCard.alpha = 0f
-        rootCard.scaleX = 0.94f
-        rootCard.scaleY = 0.94f
-        val added = runCatching { windowManager.addView(popupView, windowParams) }.isSuccess
+        rootCard.scaleX = 0.96f
+        rootCard.scaleY = 0.96f
+        val added = runCatching { windowManager.addView(rootCard, windowParams) }.isSuccess
         if (!added) {
             hidePalette()
         } else {
@@ -1020,807 +789,453 @@ class SelAccessibilityService : AccessibilityService() {
                 .alpha(1f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setDuration(110L)
+                .setDuration(90L)
                 .setInterpolator(DecelerateInterpolator())
                 .start()
         }
     }
 
-    private fun renderPopupBody() {
-        val container = bodyContainer ?: return
-        val c = resolvePopupColors()
+    private fun renderPopup() {
+        val root = popupView ?: return
+        val barRow = barStripContainer ?: return
+        val div = drawerDividerView ?: return
+        val scroll = drawerScrollView ?: return
+        val drawer = drawerContainer ?: return
+        val pal = ToolPrefs.resolvePalette(this)
+
         networkTools.cancelPending()
-        applyPaletteToPopupChrome(c)
-        container.removeAllViews()
 
-        val isPill = currentMode == PopupMode.COLLAPSED_PILL
-        headerBarView?.visibility = if (isPill) View.GONE else View.VISIBLE
-        headerDividerView?.visibility = if (isPill) View.GONE else View.VISIBLE
+        root.background = GradientDrawable().apply {
+            setColor(pal.bgPrimaryInt)
+            setStroke(dp(1), pal.borderInt)
+            cornerRadius = dpF(3f)
+        }
+        barRow.setBackgroundColor(pal.bgHeaderInt)
+        div.setBackgroundColor(pal.borderInt)
 
-        when (currentMode) {
-            PopupMode.ACTIONS -> populateActionRows(container)
-            PopupMode.COLLAPSED_PILL -> populateCollapsedPill(container)
-            PopupMode.WEB_SEARCH_FOLDER -> populateWebSearchSubmenu(container)
-            PopupMode.YOUTUBE_FOLDER -> populateYoutubeSubmenu(container)
-            PopupMode.CLIP_HISTORY -> populateClipHistorySubmenu(container)
-            PopupMode.MARKDOWN_FOLDER -> populateMarkdownSubmenu(container)
-            PopupMode.REGEX_PIPE -> populateRegexPipeSubmenu(container)
-            PopupMode.CUSTOM_FOLDER -> populateCustomFolderSubmenu(container, activeCustomFolder)
-            PopupMode.QR_CODE -> populateQrView(container)
-            PopupMode.MAGNET -> populateMagnetView(container)
-            PopupMode.DEFINE_WORD -> populateDefineView(container)
-            PopupMode.TRANSLATE -> populateTranslateView(container)
-            PopupMode.EXTRACT -> populateExtractView(container)
-            PopupMode.REORDER -> populateReorderView(container)
+        // Rebuild PopClip Horizontal ASCII Bar
+        barRow.removeAllViews()
+
+        // Tiny drag grip `::` at left edge so user can freely drag the bar anywhere
+        val dragGrip = TextView(this).apply {
+            text = "::"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(pal.fgMutedInt)
+            setPadding(dp(7), dp(9), dp(5), dp(9))
+        }
+        enableDragOnView(dragGrip, root)
+        barRow.addView(dragGrip)
+        barRow.addView(makeVertDivider(pal))
+
+        val isEditable = currentNode?.isEditable == true
+        val hasUndo = undoOriginalFullText != null && undoNode != null &&
+            (System.currentTimeMillis() - undoTimestamp < 45000L)
+        val hiddenIds = ToolPrefs.builtInTools.map { it.id }.filter { ToolPrefs.isToolHidden(this, it) }.toSet()
+        val ctx = PopupContextEngine.analyze(selectedText, isEditable = isEditable, hasUndo = hasUndo)
+        val primaryActions = PopupContextEngine.resolveBarActions(ctx, hiddenToolIds = hiddenIds, maxItems = 5)
+
+        primaryActions.forEach { act ->
+            barRow.addView(makePopCell(act.label, if (act.accent) pal.accentGreenInt else pal.fgPrimaryInt, pal, onLongClick = {
+                executePopActionLongPress(act)
+            }) {
+                executePopAction(act)
+            })
+            barRow.addView(makeVertDivider(pal))
         }
 
-        val params = popupParams
-        if (params != null && !currentSafeZone.isEmpty) {
-            applyStrictPlacementAndDynamicSize(currentSafeZone, params)
-            val snippet = selectedText.trim().replace("\n", " ").let {
-                if (it.length > 16) it.take(15) + "…" else it
-            }
-            val words = TextTransforms.countWords(selectedText)
-            val headerTxt = when (currentMode) {
-                PopupMode.ACTIONS, PopupMode.COLLAPSED_PILL -> if (words <= 2 && snippet.isNotEmpty()) "\"$snippet\"" else "$words words"
-                PopupMode.WEB_SEARCH_FOLDER -> "‹ Web Search"
-                PopupMode.YOUTUBE_FOLDER -> "‹ YouTube"
-                PopupMode.CLIP_HISTORY -> "‹ Clipboard"
-                PopupMode.MARKDOWN_FOLDER -> "‹ Markdown"
-                PopupMode.REGEX_PIPE -> "‹ Text Pipe"
-                PopupMode.CUSTOM_FOLDER -> "‹ ${toTitleCase(activeCustomFolder)}"
-                PopupMode.QR_CODE -> "‹ QR Code"
-                PopupMode.MAGNET -> "‹ Magnet Link"
-                PopupMode.DEFINE_WORD -> "‹ Definition"
-                PopupMode.TRANSLATE -> "‹ Translate"
-                PopupMode.EXTRACT -> "‹ Extracted Links"
-                PopupMode.REORDER -> "‹ Done Editing"
-            }
-            statsLabelView?.text = headerTxt
-            statsLabelView?.setTextColor(if (currentMode == PopupMode.ACTIONS) c.textMuted else c.accent)
-        }
-
-        relayoutPopupWindow()
-    }
-
-    private fun populateCollapsedPill(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val pill = TextView(this).apply {
-            text = "sel ›"
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-            setTextColor(c.accent)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        // [+] More Tools toggle
+        val moreOpen = currentMode != PopupMode.BAR
+        barRow.addView(
+            makePopCell(if (moreOpen) "-" else "+", if (moreOpen) pal.accentPurpleInt else pal.accentCyanInt, pal) {
                 lastShownTime = System.currentTimeMillis()
-                currentMode = PopupMode.ACTIONS
-                renderPopupBody()
+                currentMode = if (currentMode == PopupMode.BAR) PopupMode.MORE_TOOLS else PopupMode.BAR
+                renderPopup()
             }
-        }
-        container.addView(pill)
-    }
+        )
+        barRow.addView(makeVertDivider(pal))
 
-    private fun isToolRelevantForSelection(toolId: String, rawText: String): Boolean {
-        val trimmed = rawText.trim()
-        if (trimmed.isEmpty()) return false
+        // [x] Close
+        barRow.addView(makePopCell("x", pal.dangerRedInt, pal) { hidePalette() })
 
-        val isHash = TextTransforms.extractTorrentHash(trimmed) != null || trimmed.startsWith("magnet:?", ignoreCase = true)
-        val isSingleTokenUrl = !trimmed.contains(' ') && !trimmed.contains('\n') &&
-            (trimmed.startsWith("http://", ignoreCase = true) ||
-                trimmed.startsWith("https://", ignoreCase = true) ||
-                TextTransforms.urlPattern.matches(trimmed))
-        val hasAnyUrl = trimmed.contains("http://", ignoreCase = true) ||
-            trimmed.contains("https://", ignoreCase = true) ||
-            isSingleTokenUrl
-        val wordCount = TextTransforms.countWords(trimmed)
-
-        return when (toolId) {
-            "magnet" -> isHash
-            "clean_url" -> hasAnyUrl && (trimmed.contains('?') || trimmed.contains('&') || TextTransforms.trackingRegex.containsMatchIn(trimmed))
-            "define" -> wordCount in 1..4 && !hasAnyUrl && !isHash && trimmed.any { it.isLetter() } && trimmed.length <= 48
-            "sort" -> trimmed.contains('\n') && trimmed.lines().count { it.isNotBlank() } >= 2
-            "clean_text" -> rawText.contains('\n') || rawText.contains("  ") || rawText.contains('\t') ||
-                TextTransforms.invisibleCharsRegex.containsMatchIn(rawText)
-            "extract" -> TextTransforms.hasExtractableEntities(trimmed) && !isSingleTokenUrl
-            "case" -> trimmed.any { it.isLetter() } && !isSingleTokenUrl && !isHash
-            "clip_history" -> ToolPrefs.getClipHistory(this).isNotEmpty()
-            else -> true
-        }
-    }
-
-    private fun friendlyToolLabel(tool: ToolSpec): String {
-        return when (tool.id) {
-            "copy" -> "Copy"
-            "screen_grab" -> "✨ Lens Grab"
-            "web_search_folder" -> "🔍 Web Search ›"
-            "youtube_folder" -> "▶ YouTube ›"
-            "clip_history" -> "📋 Clip History ›"
-            "markdown_folder" -> "📝 Markdown ›"
-            "regex_pipe" -> "⚡ Text Pipe ›"
-            "define" -> "📖 Define Word"
-            "translate" -> "🌐 Translate"
-            "qr" -> "◼ QR Code"
-            "magnet" -> "🧲 Magnet Link"
-            "clean_url" -> "✨ Clean URL"
-            "extract" -> "🔗 Extract Links"
-            "clean_text" -> "🧹 Clean Text"
-            "sort" -> "↕ Sort Lines"
-            "case" -> "Aa Cycle Case"
-            "speak" -> "🔊 Speak Aloud"
-            "log" -> "📌 Save to Notes"
-            else -> toTitleCase(tool.label.replace(">", "›"))
-        }
-    }
-
-    private fun friendlyShortChip(tool: ToolSpec): String {
-        return when (tool.id) {
-            "screen_grab" -> "Lens"
-            "web_search_folder" -> "Web"
-            "youtube_folder" -> "YT"
-            "clip_history" -> "Clips"
-            "markdown_folder" -> "MD"
-            "regex_pipe" -> "Pipe"
-            "define" -> "Define"
-            "translate" -> "Trans"
-            "qr" -> "QR"
-            "magnet" -> "Magnet"
-            "clean_url" -> "Clean"
-            "extract" -> "Links"
-            "clean_text" -> "Tidy"
-            "sort" -> "Sort"
-            "case" -> "Case"
-            "speak" -> "Speak"
-            "log" -> "Note"
-            else -> toTitleCase(tool.label.replace(">", "").trim()).take(7)
-        }
-    }
-
-    private fun toTitleCase(input: String): String {
-        return input.lowercase().split(' ').joinToString(" ") { w ->
-            w.replaceFirstChar { it.uppercase() }
-        }
-    }
-
-    private fun populateActionRows(list: LinearLayout) {
-        val c = resolvePopupColors()
-        val pinnedIds = HashSet<String>()
-
-        // 0. 1-Tap Undo banner
-        val prevText = undoOriginalFullText
-        val uNode = undoNode
-        if (prevText != null && uNode != null && System.currentTimeMillis() - undoTimestamp < 45000L) {
-            list.addView(makeHighlightBanner("↩ Undo last edit", c.accent) {
-                runCatching { uNode.refresh() }
-                val args = Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, prevText)
-                }
-                val ok = runCatching { uNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
-                undoOriginalFullText = null
-                undoNode = null
-                Toast.makeText(this, if (ok) "Restored original text" else "Copied original text", Toast.LENGTH_SHORT).show()
-                if (!ok) smoothCopyText(prevText)
-                hidePalette()
-            })
-        }
-
-        // 0b. Context-Aware Phone Quick Strip
-        TextTransforms.extractNepalPhone(selectedText)?.let { phone ->
-            list.addView(makeNepalPhoneActionRow(phone))
-        }
-
-        // 0c. Primary Quick Action Bar: Copy · Paste · Cut · All
-        if (!ToolPrefs.isToolHidden(this, "copy")) {
-            pinnedIds.add("copy")
-            list.addView(makeQuickEditStrip())
-        }
-
-        // 0d. User-Pinned Favorite Chip Rows (Row 1 & Row 2, up to 4 readable pills each)
-        for (rowNum in 1..2) {
-            val rowTools = ToolPrefs.getIconRowTools(this, rowNum).take(ToolPrefs.MAX_TOOLS_PER_ICON_ROW)
-            if (rowTools.isNotEmpty()) {
-                rowTools.forEach { pinnedIds.add(it.id) }
-                list.addView(makePinnedChipsRow(rowTools))
-            }
-        }
-
-        // 1. Instant Smart Evaluators (Math, Unit, Timestamp, Base64)
-        TextTransforms.evalSimpleMath(selectedText)?.let { ans ->
-            list.addView(makeHighlightBanner("= $ans  ·  Tap to apply", c.secondaryAccent) {
-                ToolPrefs.recordUse(this, "math")
-                applyResult(ans)
-            })
-        }
-        TextTransforms.evalUnitConversion(selectedText)?.let { conv ->
-            list.addView(makeHighlightBanner("$conv  ·  Tap to apply", c.secondaryAccent) {
-                ToolPrefs.recordUse(this, "unit_conv")
-                applyResult(conv.removePrefix("= ").trim())
-            })
-        }
-        TextTransforms.evalTimestamp(selectedText)?.let { formattedDate ->
-            list.addView(makeHighlightBanner("🕒 $formattedDate", c.secondaryAccent) {
-                ToolPrefs.recordUse(this, "epoch_conv")
-                applyResult(formattedDate)
-            })
-        }
-        TextTransforms.evalBase64Decode(selectedText)?.let { decoded ->
-            val preview = decoded.replace("\n", " ").let { if (it.length > 22) it.take(21) + "…" else it }
-            list.addView(makeHighlightBanner("Base64 → $preview", c.secondaryAccent) {
-                ToolPrefs.recordUse(this, "b64_decode")
-                applyResult(decoded)
-            })
-        }
-
-        // Context-pinned Magnet or Clean URL
-        if (isToolRelevantForSelection("magnet", selectedText) && !ToolPrefs.isToolHidden(this, "magnet")) {
-            pinnedIds.add("magnet")
-            list.addView(makeHighlightBanner("🧲 Open Magnet Link ›", c.accent) {
-                ToolPrefs.recordUse(this, "magnet")
-                switchPopupMode(PopupMode.MAGNET)
-            })
-        }
-        if (isToolRelevantForSelection("clean_url", selectedText) && !ToolPrefs.isToolHidden(this, "clean_url")) {
-            pinnedIds.add("clean_url")
-            list.addView(makeHighlightBanner("✨ Clean Tracking URL", c.accent) {
-                ToolPrefs.recordUse(this, "clean_url")
-                applyResult(TextTransforms.cleanUrl(selectedText))
-            })
-        }
-
-        list.addView(makeHorizontalRule())
-
-        // 2. Context-Filtered Tools List (1-Col or 2-Col clean rounded pills)
-        val orderedTools = ToolPrefs.getSortedToolsForPopup(this).filter {
-            it.id !in pinnedIds && isToolRelevantForSelection(it.id, selectedText)
-        }
-        val showCounts = ToolPrefs.isSortMostUsed(this)
-        val useTwoCol = ToolPrefs.isTwoColumnGrid(this)
-
-        if (useTwoCol) {
-            var i = 0
-            while (i < orderedTools.size) {
-                val t1 = orderedTools[i]
-                val t2 = orderedTools.getOrNull(i + 1)
-                if (t2 != null) {
-                    list.addView(makeTwoColumnPairRow(t1, t2))
-                    i += 2
-                } else {
-                    val c1 = ToolPrefs.getUseCount(this, t1.id)
-                    val b1 = if (showCounts && c1 > 0) "$c1" else null
-                    list.addView(makeRow(friendlyToolLabel(t1), b1, onLongClick = { executeToolLongPress(t1) }) {
-                        ToolPrefs.recordUse(this, t1.id)
-                        executeTool(t1)
-                    })
-                    i += 1
-                }
-            }
+        // Rebuild Drawer (ONLY visible when expanded via [+] or inline submenu!)
+        drawer.removeAllViews()
+        if (currentMode == PopupMode.BAR) {
+            div.visibility = View.GONE
+            scroll.visibility = View.GONE
         } else {
-            for (tool in orderedTools) {
-                val count = ToolPrefs.getUseCount(this, tool.id)
-                val badge = if (showCounts && count > 0) "$count" else null
-                list.addView(makeRow(friendlyToolLabel(tool), badge, onLongClick = { executeToolLongPress(tool) }) {
-                    ToolPrefs.recordUse(this, tool.id)
-                    executeTool(tool)
-                })
+            div.visibility = View.VISIBLE
+            scroll.visibility = View.VISIBLE
+            when (currentMode) {
+                PopupMode.MORE_TOOLS -> populateMoreDrawer(drawer, pal)
+                PopupMode.WEB_SEARCH -> populateWebSearchDrawer(drawer)
+                PopupMode.YOUTUBE -> populateYoutubeDrawer(drawer)
+                PopupMode.CLIP_HISTORY -> populateClipHistoryDrawer(drawer, pal)
+                PopupMode.MARKDOWN -> populateMarkdownDrawer(drawer)
+                PopupMode.REGEX_PIPE -> populateRegexPipeDrawer(drawer)
+                PopupMode.CUSTOM_FOLDER -> populateCustomFolderDrawer(drawer, activeCustomFolder, pal)
+                PopupMode.QR_CODE -> populateQrDrawer(drawer, pal)
+                PopupMode.MAGNET -> populateMagnetDrawer(drawer, pal)
+                PopupMode.DEFINE_WORD -> populateDefineDrawer(drawer, pal)
+                PopupMode.TRANSLATE -> populateTranslateDrawer(drawer, pal)
+                PopupMode.EXTRACT -> populateExtractDrawer(drawer, pal)
+                PopupMode.BAR -> {}
             }
+        }
+
+        val p = popupParams
+        if (p != null && root.isAttachedToWindow) {
+            root.requestLayout()
+            runCatching { windowManager.updateViewLayout(root, p) }
         }
     }
 
-    private fun makeHighlightBanner(textStr: String, accentColor: Int, onClick: () -> Unit): View {
-        val c = resolvePopupColors()
+    private fun makeVertDivider(pal: ThemePalette): View {
+        return View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(1), dp(18))
+            setBackgroundColor(pal.dividerInt)
+        }
+    }
+
+    private fun makePopCell(
+        label: String,
+        fgColor: Int,
+        pal: ThemePalette,
+        onLongClick: (() -> Unit)? = null,
+        onClick: () -> Unit
+    ): TextView {
         return TextView(this).apply {
-            text = textStr
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f)
-            setTextColor(accentColor)
+            text = label
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            setTextColor(fgColor)
+            gravity = Gravity.CENTER
             isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             background = StateListDrawable().apply {
-                addState(
-                    intArrayOf(android.R.attr.state_pressed),
-                    GradientDrawable().apply {
-                        setColor(c.pressedBg)
-                        cornerRadius = dpF(10f)
-                    }
-                )
-                addState(
-                    intArrayOf(),
-                    GradientDrawable().apply {
-                        setColor(c.accentSoftBg)
-                        cornerRadius = dpF(10f)
-                    }
-                )
+                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
+                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
             }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(6) }
             setOnClickListener {
                 runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
                 onClick()
             }
-        }
-    }
-
-    private fun makePressedDrawable(pressedColor: Int, radiusPx: Float = dpF(10f)): StateListDrawable {
-        return StateListDrawable().apply {
-            addState(
-                intArrayOf(android.R.attr.state_pressed),
-                GradientDrawable().apply {
-                    setColor(pressedColor)
-                    cornerRadius = radiusPx
-                }
-            )
-            addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
-        }
-    }
-
-    private fun makeChipDrawable(normalColor: Int, pressedColor: Int, radiusPx: Float = dpF(10f)): StateListDrawable {
-        return StateListDrawable().apply {
-            addState(
-                intArrayOf(android.R.attr.state_pressed),
-                GradientDrawable().apply {
-                    setColor(pressedColor)
-                    cornerRadius = radiusPx
-                }
-            )
-            addState(
-                intArrayOf(),
-                GradientDrawable().apply {
-                    setColor(normalColor)
-                    cornerRadius = radiusPx
-                }
-            )
-        }
-    }
-
-    private fun makeQuickEditStrip(): View {
-        val c = resolvePopupColors()
-        val strip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(6) }
-        }
-
-        fun makeQuickCell(
-            label: String,
-            primary: Boolean,
-            marginEndDp: Int,
-            onLongPress: () -> Unit,
-            onTap: () -> Unit
-        ): TextView {
-            return TextView(this).apply {
-                text = label
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f)
-                setTextColor(if (primary) c.onAccent else c.textPrimary)
-                gravity = Gravity.CENTER
-                isSingleLine = true
-                setPadding(dp(4), dp(8), dp(4), dp(8))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, if (primary) 1.15f else 1f).apply {
-                    marginEnd = dp(marginEndDp)
-                }
-                background = makeChipDrawable(
-                    normalColor = if (primary) c.accent else c.chipBg,
-                    pressedColor = if (primary) c.accent else c.pressedBg,
-                    radiusPx = dpF(10f)
-                )
-                setOnClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                    onTap()
-                }
+            if (onLongClick != null) {
                 setOnLongClickListener {
                     runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-                    onLongPress()
+                    onLongClick()
                     true
                 }
             }
         }
-
-        strip.addView(makeQuickCell("Copy", primary = true, marginEndDp = 5, onLongPress = {
-            val existing = runCatching {
-                clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
-            }.getOrNull().orEmpty()
-            val combined = if (existing.isNotBlank()) "$existing\n$selectedText" else selectedText
-            smoothCopyText(combined, "Appended to clipboard")
-            hidePalette()
-        }) {
-            ToolPrefs.recordUse(this, "copy")
-            smoothCopyText(selectedText)
-            hidePalette()
-        })
-
-        strip.addView(makeQuickCell("Paste", primary = false, marginEndDp = 5, onLongPress = {
-            switchPopupMode(PopupMode.CLIP_HISTORY)
-        }) { performPasteAction() })
-
-        strip.addView(makeQuickCell("Cut", primary = false, marginEndDp = 5, onLongPress = {
-            Toast.makeText(this, "Cut selection", Toast.LENGTH_SHORT).show()
-        }) { performCutAction() })
-
-        strip.addView(makeQuickCell("All", primary = false, marginEndDp = 0, onLongPress = {
-            Toast.makeText(this, "Select all text", Toast.LENGTH_SHORT).show()
-        }) { performSelectAllAction() })
-
-        return strip
     }
 
-    private fun makePinnedChipsRow(rowTools: List<ToolSpec>): View {
-        val c = resolvePopupColors()
-        val strip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(5) }
-        }
-
-        val items = rowTools.take(ToolPrefs.MAX_TOOLS_PER_ICON_ROW)
-        items.forEachIndexed { idx, tool ->
-            val label = friendlyShortChip(tool)
-            val cell = TextView(this).apply {
-                text = label
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-                setTextColor(c.accent)
-                gravity = Gravity.CENTER
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                setPadding(dp(4), dp(7), dp(4), dp(7))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    if (idx < items.lastIndex) marginEnd = dp(5)
-                }
-                background = makeChipDrawable(c.chipBg, c.pressedBg, dpF(10f))
-                setOnClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                    ToolPrefs.recordUse(this@SelAccessibilityService, tool.id)
-                    executeTool(tool)
-                }
-                setOnLongClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-                    executeToolLongPress(tool)
-                    true
-                }
+    private fun executePopActionLongPress(act: PopAction) {
+        val encoded = Uri.encode(selectedText.trim())
+        when (act.id) {
+            "copy" -> {
+                val existing = runCatching {
+                    clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+                }.getOrNull().orEmpty()
+                val combined = if (existing.isNotBlank()) "$existing\n$selectedText" else selectedText
+                smoothCopyText(combined, "[+^C] Appended")
+                hidePalette()
             }
-            strip.addView(cell)
+            "paste" -> switchMode(PopupMode.CLIP_HISTORY)
+            "web_search_folder" -> openUrl("https://www.google.com/search?q=$encoded")
+            "youtube_folder" -> openUrl("https://www.youtube.com/results?search_query=$encoded")
+            else -> executePopAction(act)
         }
-        return strip
     }
 
-    private fun performPasteAction() {
-        val clipText = runCatching {
-            clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
-        }.getOrNull().orEmpty()
-
-        val targetNode = currentNode?.takeIf { it.isEditable } ?: selectionDetector.findFocusedEditableNode()
-        if (targetNode != null) {
-            runCatching { targetNode.refresh() }
-            val full = targetNode.text?.toString() ?: ""
-            undoOriginalFullText = full
-            undoNode = targetNode
-            undoTimestamp = System.currentTimeMillis()
-
-            var ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE) }.getOrDefault(false)
-            if (!ok && clipText.isNotEmpty()) {
-                val s = targetNode.textSelectionStart
-                val e = targetNode.textSelectionEnd
-                val start = minOf(s, e).coerceAtLeast(0)
-                val end = maxOf(s, e).coerceAtMost(full.length)
-                val updated = if (end >= start && start <= full.length) full.replaceRange(start, end, clipText) else full + clipText
-                val args = Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
-                }
-                ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+    private fun executePopAction(act: PopAction) {
+        when (act.id) {
+            "undo" -> performUndoAction()
+            "copy" -> {
+                ToolPrefs.recordUse(this, "copy")
+                smoothCopyText(selectedText)
+                hidePalette()
             }
-            Toast.makeText(this, if (ok) "Pasted" else "Clipboard ready to paste", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, "Focus a text field to paste", Toast.LENGTH_SHORT).show()
-        }
-        hidePalette()
-    }
-
-    private fun performCutAction() {
-        lastInternalCopyTime = System.currentTimeMillis()
-        clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", selectedText))
-        ToolPrefs.addClipToHistory(this, selectedText)
-
-        val targetNode = currentNode?.takeIf { it.isEditable } ?: selectionDetector.findFocusedEditableNode()
-        var cutOk = false
-        if (targetNode != null) {
-            runCatching { targetNode.refresh() }
-            val full = targetNode.text?.toString() ?: ""
-            val s = targetNode.textSelectionStart
-            val e = targetNode.textSelectionEnd
-            val start = minOf(s, e)
-            val end = maxOf(s, e)
-            undoOriginalFullText = full
-            undoNode = targetNode
-            undoTimestamp = System.currentTimeMillis()
-
-            cutOk = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_CUT) }.getOrDefault(false)
-            if (!cutOk && start >= 0 && end > start && end <= full.length) {
-                val updated = full.removeRange(start, end)
-                val args = Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
-                }
-                cutOk = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
-            }
-        }
-        Toast.makeText(this, if (cutOk) "Cut to clipboard" else "Copied (read-only text)", Toast.LENGTH_SHORT).show()
-        hidePalette()
-    }
-
-    private fun performSelectAllAction() {
-        val targetNode = currentNode ?: selectionDetector.findFocusedEditableOrSelectableNode()
-        if (targetNode != null) {
-            runCatching { targetNode.refresh() }
-            val full = targetNode.text?.toString() ?: ""
-            var ok = false
-            if (full.isNotEmpty()) {
-                val args = Bundle().apply {
-                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
-                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, full.length)
-                }
-                ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args) }.getOrDefault(false)
-            }
-            if (!ok) runCatching { targetNode.performAction(android.R.id.selectAll) }
-            if (full.isNotEmpty()) {
-                selectedText = full
-                lastShownTime = System.currentTimeMillis()
-                Toast.makeText(this, "Selected all (${full.length} chars)", Toast.LENGTH_SHORT).show()
-                renderPopupBody()
-                return
-            }
-        }
-        Toast.makeText(this, "Select All requested", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun makeNepalPhoneActionRow(phone: NepalPhone): View {
-        val c = resolvePopupColors()
-        val strip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(6) }
-        }
-
-        fun makePhonePill(labelStr: String, fgColor: Int, marginEndDp: Int, onClick: () -> Unit): TextView {
-            return TextView(this).apply {
-                text = labelStr
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-                setTextColor(fgColor)
-                gravity = Gravity.CENTER
-                isSingleLine = true
-                setPadding(dp(4), dp(7), dp(4), dp(7))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(marginEndDp)
-                }
-                background = makeChipDrawable(c.accentSoftBg, c.pressedBg, dpF(10f))
-                setOnClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                    onClick()
-                }
-            }
-        }
-
-        strip.addView(makePhonePill("📞 Call", c.secondaryAccent, 4) {
-            val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(phone.dialNumber)}")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching { startActivity(dialIntent) }
-            hidePalette()
-        })
-        strip.addView(makePhonePill("SMS", c.textPrimary, 4) {
-            val smsIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(phone.dialNumber)}")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            if (runCatching { startActivity(smsIntent) }.isFailure) {
+            "cut" -> performCutAction()
+            "paste" -> performPasteAction()
+            "phone_call" -> {
+                val num = act.payload ?: selectedText.trim()
                 runCatching {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("sms:${Uri.encode(phone.dialNumber)}")).apply {
+                    startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(num)}")).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     })
                 }
+                hidePalette()
             }
-            hidePalette()
-        })
-        strip.addView(makePhonePill("WA", c.secondaryAccent, 4) {
-            openWhatsAppNumber(phone.waDigits, isBusiness = false)
-        })
-        strip.addView(makePhonePill("W4B", c.accent, 0) {
-            openWhatsAppNumber(phone.waDigits, isBusiness = true)
-        })
-        return strip
-    }
-
-    private fun openWhatsAppNumber(waDigits: String, isBusiness: Boolean) {
-        val targetPkg = if (isBusiness) "com.whatsapp.w4b" else "com.whatsapp"
-        val appLabel = if (isBusiness) "WhatsApp Business" else "WhatsApp"
-
-        val nativeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("whatsapp://send?phone=$waDigits")).apply {
-            setPackage(targetPkg)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        if (runCatching { startActivity(nativeIntent) }.isSuccess) {
-            hidePalette()
-            return
-        }
-
-        val webPkgIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$waDigits")).apply {
-            setPackage(targetPkg)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        if (runCatching { startActivity(webPkgIntent) }.isSuccess) {
-            hidePalette()
-            return
-        }
-
-        Toast.makeText(this, "$appLabel not found — opening wa.me", Toast.LENGTH_SHORT).show()
-        openUrl("https://wa.me/$waDigits")
-    }
-
-    private fun executeToolLongPress(tool: ToolSpec) {
-        val trimmed = selectedText.trim()
-        val encoded = Uri.encode(trimmed)
-        when (tool.id) {
+            "phone_sms" -> {
+                val num = act.payload ?: selectedText.trim()
+                val sms = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(num)}")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                if (runCatching { startActivity(sms) }.isFailure) {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("sms:${Uri.encode(num)}")).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                    }
+                }
+                hidePalette()
+            }
+            "phone_wa" -> openWhatsAppNumber(act.payload ?: "", isBusiness = false)
+            "phone_w4b" -> openWhatsAppNumber(act.payload ?: "", isBusiness = true)
+            "open_url" -> {
+                val raw = act.payload ?: selectedText.trim()
+                val url = if (raw.startsWith("http://", true) || raw.startsWith("https://", true)) raw else "https://$raw"
+                openUrl(url)
+            }
+            "email_send" -> {
+                val mail = act.payload ?: selectedText.trim()
+                runCatching {
+                    startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${Uri.encode(mail)}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                }
+                hidePalette()
+            }
+            "open_magnet" -> {
+                val mag = act.payload ?: selectedText.trim()
+                smoothCopyText(mag, "[0x] Opening magnet…")
+                openUrl(mag)
+            }
+            "apply_computed" -> {
+                val res = act.payload ?: return
+                applyResult(res)
+            }
+            "pipe_json_pretty" -> applyResult(TextTransforms.applyPipeTool("pipe_json_pretty", selectedText))
+            "pipe_strip_html" -> applyResult(TextTransforms.applyPipeTool("pipe_strip_html", selectedText))
+            "clean_url" -> {
+                ToolPrefs.recordUse(this, "clean_url")
+                applyResult(TextTransforms.cleanUrl(selectedText))
+            }
+            "clean_text" -> {
+                ToolPrefs.recordUse(this, "clean_text")
+                applyResult(TextTransforms.cleanText(selectedText))
+            }
+            "sort" -> {
+                ToolPrefs.recordUse(this, "sort")
+                applyResult(selectedText.lines().filter { it.isNotBlank() }.distinct().sorted().joinToString("\n"))
+            }
+            "case" -> {
+                ToolPrefs.recordUse(this, "case")
+                applyResult(TextTransforms.cycleCase(selectedText))
+            }
+            "speak" -> {
+                ToolPrefs.recordUse(this, "speak")
+                speakTextLazy(selectedText.trim())
+            }
+            "log" -> {
+                ToolPrefs.recordUse(this, "log")
+                appendToScratchpad(selectedText)
+                Toast.makeText(this, "[>>] Saved to notes", Toast.LENGTH_SHORT).show()
+                hidePalette()
+            }
+            "define" -> {
+                ToolPrefs.recordUse(this, "define")
+                switchMode(PopupMode.DEFINE_WORD)
+            }
+            "translate" -> {
+                ToolPrefs.recordUse(this, "translate")
+                switchMode(PopupMode.TRANSLATE)
+            }
             "web_search_folder" -> {
                 ToolPrefs.recordUse(this, "web_search_folder")
-                openUrl("https://www.google.com/search?q=$encoded")
+                switchMode(PopupMode.WEB_SEARCH)
             }
             "youtube_folder" -> {
                 ToolPrefs.recordUse(this, "youtube_folder")
-                openUrl("https://www.youtube.com/results?search_query=$encoded")
+                switchMode(PopupMode.YOUTUBE)
             }
-            "markdown_folder" -> {
-                ToolPrefs.recordUse(this, "markdown_folder")
-                applyResult("**$trimmed**")
+            "qr" -> {
+                ToolPrefs.recordUse(this, "qr")
+                switchMode(PopupMode.QR_CODE)
             }
-            else -> executeTool(tool)
+            "magnet" -> {
+                ToolPrefs.recordUse(this, "magnet")
+                switchMode(PopupMode.MAGNET)
+            }
+            "extract" -> {
+                ToolPrefs.recordUse(this, "extract")
+                switchMode(PopupMode.EXTRACT)
+            }
+            "regex_pipe" -> {
+                ToolPrefs.recordUse(this, "regex_pipe")
+                switchMode(PopupMode.REGEX_PIPE)
+            }
+            else -> showFromExternalText(selectedText, openExpanded = true)
         }
     }
 
-    private fun makeTwoColumnPairRow(t1: ToolSpec, t2: ToolSpec): View {
-        val c = resolvePopupColors()
-        val pairRow = LinearLayout(this).apply {
+    private fun switchMode(mode: PopupMode) {
+        lastShownTime = System.currentTimeMillis()
+        currentMode = mode
+        if (popupView == null) {
+            showOrUpdatePalette(currentSafeZone)
+        } else {
+            renderPopup()
+        }
+    }
+
+    private fun populateMoreDrawer(container: LinearLayout, pal: ThemePalette) {
+        // Show clean, deduplicated list of enabled tools + custom rules + Grab Screen + Mute App
+        val tools = ToolPrefs.getSortedToolsForPopup(this).filter { it.id != "copy" }
+        var i = 0
+        while (i < tools.size) {
+            val t1 = tools[i]
+            val t2 = tools.getOrNull(i + 1)
+            if (t2 != null) {
+                container.addView(makeTwoColDrawerRow(t1, t2, pal))
+                i += 2
+            } else {
+                container.addView(makeDrawerRow("[${t1.glyph}] ${t1.label}", pal) {
+                    ToolPrefs.recordUse(this, t1.id)
+                    executeToolSpec(t1)
+                })
+                i += 1
+            }
+        }
+
+        if (activePackage.isNotBlank() && activePackage != packageName) {
+            container.addView(makeHorizontalRule(pal))
+            val shortPkg = activePackage.substringAfterLast('.').uppercase()
+            container.addView(makeDrawerRow("[-] MUTE POPUP IN $shortPkg", pal, pal.fgMutedInt) {
+                ToolPrefs.setAppBlacklisted(this, activePackage, true)
+                Toast.makeText(this, "Muted in $activePackage", Toast.LENGTH_SHORT).show()
+                hidePalette()
+            })
+        }
+    }
+
+    private fun makeTwoColDrawerRow(t1: ToolSpec, t2: ToolSpec, pal: ThemePalette): View {
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(4) }
+            )
         }
-
-        fun makeCell(tool: ToolSpec, marginEndDp: Int): View {
-            return TextView(this).apply {
-                text = friendlyToolLabel(tool)
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setTextColor(c.textPrimary)
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(marginEndDp)
-                }
-                background = makeChipDrawable(c.chipBg, c.pressedBg, dpF(10f))
-                setOnClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                    ToolPrefs.recordUse(this@SelAccessibilityService, tool.id)
-                    executeTool(tool)
-                }
-                setOnLongClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-                    executeToolLongPress(tool)
-                    true
-                }
+        fun cell(t: ToolSpec): TextView = TextView(this).apply {
+            text = t.label.replace(" ▸", " >")
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setTextColor(pal.fgPrimaryInt)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
+                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+            }
+            setOnClickListener {
+                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                ToolPrefs.recordUse(this@SelAccessibilityService, t.id)
+                executeToolSpec(t)
             }
         }
-
-        pairRow.addView(makeCell(t1, 4))
-        pairRow.addView(makeCell(t2, 0))
-        return pairRow
+        val sep = TextView(this).apply {
+            text = "|"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setTextColor(pal.dividerInt)
+        }
+        row.addView(cell(t1))
+        row.addView(sep)
+        row.addView(cell(t2))
+        return row
     }
 
-    private fun populateClipHistorySubmenu(container: LinearLayout) {
-        val c = resolvePopupColors()
-        container.addView(makeRow("Clear unpinned clips", null) {
-            ToolPrefs.clearUnpinnedClips(this)
-            renderPopupBody()
-        })
-        container.addView(makeHorizontalRule())
+    private fun executeToolSpec(tool: ToolSpec) {
+        val trimmed = selectedText.trim()
+        val encoded = Uri.encode(trimmed)
 
-        val clips = ToolPrefs.getClipHistory(this)
-        if (clips.isEmpty()) {
-            container.addView(TextView(this).apply {
-                text = "Clipboard history is empty."
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                setTextColor(c.textMuted)
-                setPadding(dp(10), dp(12), dp(10), dp(12))
-            })
+        if (tool.folderName != null && tool.customTarget == null) {
+            activeCustomFolder = tool.folderName
+            switchMode(PopupMode.CUSTOM_FOLDER)
+            return
+        }
+        if (tool.customTarget != null) {
+            val target = tool.customTarget.trim()
+            if (target.startsWith("http://", true) || target.startsWith("https://", true)) {
+                openUrl(target.replace("{text}", encoded))
+            } else {
+                applyResult(TextTransforms.executeCustomTargetTransform(target, selectedText))
+            }
             return
         }
 
-        for (entry in clips) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                background = makeChipDrawable(c.chipBg, c.pressedBg, dpF(10f))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = dp(4) }
+        when (tool.id) {
+            "screen_grab" -> triggerScreenGrab(delayMs = 110L)
+            "web_search_folder" -> switchMode(PopupMode.WEB_SEARCH)
+            "youtube_folder" -> switchMode(PopupMode.YOUTUBE)
+            "clip_history" -> switchMode(PopupMode.CLIP_HISTORY)
+            "markdown_folder" -> switchMode(PopupMode.MARKDOWN)
+            "regex_pipe" -> switchMode(PopupMode.REGEX_PIPE)
+            "define" -> switchMode(PopupMode.DEFINE_WORD)
+            "translate" -> switchMode(PopupMode.TRANSLATE)
+            "qr" -> switchMode(PopupMode.QR_CODE)
+            "magnet" -> switchMode(PopupMode.MAGNET)
+            "extract" -> switchMode(PopupMode.EXTRACT)
+            "clean_url" -> applyResult(TextTransforms.cleanUrl(selectedText))
+            "clean_text" -> applyResult(TextTransforms.cleanText(selectedText))
+            "case" -> applyResult(TextTransforms.cycleCase(selectedText))
+            "sort" -> applyResult(selectedText.lines().filter { it.isNotBlank() }.distinct().sorted().joinToString("\n"))
+            "speak" -> speakTextLazy(trimmed)
+            "log" -> {
+                appendToScratchpad(selectedText)
+                Toast.makeText(this, "[>>] Saved to notes", Toast.LENGTH_SHORT).show()
+                hidePalette()
             }
-
-            val pinBtn = TextView(this).apply {
-                text = if (entry.pinned) "★" else "☆"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                setTextColor(if (entry.pinned) c.secondaryAccent else c.textMuted)
-                setPadding(dp(4), dp(2), dp(8), dp(2))
-                setOnClickListener {
-                    ToolPrefs.togglePinClip(this@SelAccessibilityService, entry.text)
-                    renderPopupBody()
-                }
-            }
-
-            val textBtn = TextView(this).apply {
-                text = entry.text.replace("\n", " ↵ ")
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                setTextColor(c.textPrimary)
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { applyResult(entry.text) }
-            }
-
-            val delBtn = TextView(this).apply {
-                text = "✕"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                setTextColor(c.danger)
-                setPadding(dp(8), dp(2), dp(2), dp(2))
-                setOnClickListener {
-                    ToolPrefs.deleteClip(this@SelAccessibilityService, entry.text)
-                    renderPopupBody()
-                }
-            }
-
-            row.addView(pinBtn)
-            row.addView(textBtn)
-            row.addView(delBtn)
-            container.addView(row)
         }
     }
 
-    private fun populateMarkdownSubmenu(container: LinearLayout) {
-        for (mdTool in ToolPrefs.loadMarkdownTools(this)) {
-            container.addView(makeRow(toTitleCase(mdTool.label), null) {
-                ToolPrefs.recordUse(this, "markdown_folder")
-                ToolPrefs.recordUse(this, mdTool.id)
-                val out = if (mdTool.customTarget != null) {
-                    TextTransforms.executeCustomTargetTransform(mdTool.customTarget, selectedText)
+    private fun populateWebSearchDrawer(container: LinearLayout) {
+        val pal = ToolPrefs.resolvePalette(this)
+        container.addView(makeBackRow("WEB SEARCH", pal))
+        for (engine in ToolPrefs.loadWebSearchTools(this)) {
+            container.addView(makeDrawerRow("[${engine.glyph}] ${engine.label}", pal) {
+                ToolPrefs.recordUse(this, "web_search_folder")
+                executeToolSpec(engine)
+            })
+        }
+    }
+
+    private fun populateYoutubeDrawer(container: LinearLayout) {
+        val pal = ToolPrefs.resolvePalette(this)
+        container.addView(makeBackRow("YOUTUBE", pal))
+        for (yt in ToolPrefs.loadYoutubeTools(this)) {
+            container.addView(makeDrawerRow("[${yt.glyph}] ${yt.label}", pal) {
+                ToolPrefs.recordUse(this, "youtube_folder")
+                executeToolSpec(yt)
+            })
+        }
+    }
+
+    private fun populateMarkdownDrawer(container: LinearLayout) {
+        val pal = ToolPrefs.resolvePalette(this)
+        container.addView(makeBackRow("MARKDOWN", pal))
+        for (md in ToolPrefs.loadMarkdownTools(this)) {
+            container.addView(makeDrawerRow(md.label, pal) {
+                val out = if (md.customTarget != null) {
+                    TextTransforms.executeCustomTargetTransform(md.customTarget, selectedText)
                 } else {
-                    TextTransforms.applyMarkdownTool(mdTool.id, selectedText)
+                    TextTransforms.applyMarkdownTool(md.id, selectedText)
                 }
                 applyResult(out)
             })
         }
     }
 
-    private fun populateRegexPipeSubmenu(container: LinearLayout) {
+    private fun populateRegexPipeDrawer(container: LinearLayout) {
+        val pal = ToolPrefs.resolvePalette(this)
+        container.addView(makeBackRow("REGEX / PIPE", pal))
         for (pTool in ToolPrefs.loadRegexPipeTools(this)) {
-            container.addView(makeRow(toTitleCase(pTool.label), null) {
-                ToolPrefs.recordUse(this, "regex_pipe")
-                ToolPrefs.recordUse(this, pTool.id)
+            container.addView(makeDrawerRow(pTool.label, pal) {
                 val out = if (pTool.customTarget != null) {
                     TextTransforms.executeCustomTargetTransform(pTool.customTarget, selectedText)
                 } else {
@@ -1831,146 +1246,213 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun populateWebSearchSubmenu(container: LinearLayout) {
-        for (engine in ToolPrefs.loadWebSearchTools(this)) {
-            container.addView(makeRow(toTitleCase(engine.label), null) {
-                ToolPrefs.recordUse(this, "web_search_folder")
-                ToolPrefs.recordUse(this, engine.id)
-                executeTool(engine)
-            })
-        }
-    }
-
-    private fun populateYoutubeSubmenu(container: LinearLayout) {
-        for (ytTool in ToolPrefs.loadYoutubeTools(this)) {
-            container.addView(makeRow(toTitleCase(ytTool.label), null) {
-                ToolPrefs.recordUse(this, "youtube_folder")
-                ToolPrefs.recordUse(this, ytTool.id)
-                executeTool(ytTool)
-            })
-        }
-    }
-
-    private fun populateCustomFolderSubmenu(container: LinearLayout, folderName: String) {
-        val c = resolvePopupColors()
+    private fun populateCustomFolderDrawer(container: LinearLayout, folderName: String, pal: ThemePalette) {
+        container.addView(makeBackRow(folderName, pal))
         val items = ToolPrefs.loadCustomFolderTools(this, folderName)
         if (items.isEmpty()) {
-            container.addView(TextView(this).apply {
-                text = "Folder is empty. Assign tools in Settings → Tools."
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setTextColor(c.textMuted)
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-            })
+            container.addView(makeMutedNote("Folder is empty.", pal))
             return
         }
         for (item in items) {
-            container.addView(makeRow(friendlyToolLabel(item), null) {
-                ToolPrefs.recordUse(this, "folder_custom_$folderName")
-                ToolPrefs.recordUse(this, item.id)
-                executeTool(item)
+            container.addView(makeDrawerRow(item.label, pal) { executeToolSpec(item) })
+        }
+    }
+
+    private fun populateClipHistoryDrawer(container: LinearLayout, pal: ThemePalette) {
+        container.addView(makeBackRow("CLIPS", pal))
+        val clips = ToolPrefs.getClipHistory(this)
+        if (clips.isEmpty()) {
+            container.addView(makeMutedNote("No saved clips yet.", pal))
+            return
+        }
+        for (entry in clips) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(5), dp(4), dp(5))
+            }
+            row.addView(TextView(this).apply {
+                text = if (entry.pinned) "[*]" else "[.]"
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextColor(if (entry.pinned) pal.accentGreenInt else pal.fgMutedInt)
+                setPadding(dp(2), dp(2), dp(6), dp(2))
+                setOnClickListener {
+                    ToolPrefs.togglePinClip(this@SelAccessibilityService, entry.text)
+                    renderPopup()
+                }
+            })
+            row.addView(TextView(this).apply {
+                text = entry.text.replace("\n", " ↵ ")
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextColor(pal.fgPrimaryInt)
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { applyResult(entry.text) }
+            })
+            row.addView(TextView(this).apply {
+                text = "[x]"
+                typeface = Typeface.MONOSPACE
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                setTextColor(pal.dangerRedInt)
+                setPadding(dp(6), dp(2), dp(2), dp(2))
+                setOnClickListener {
+                    ToolPrefs.deleteClip(this@SelAccessibilityService, entry.text)
+                    renderPopup()
+                }
+            })
+            container.addView(row)
+        }
+    }
+
+    private fun populateDefineDrawer(container: LinearLayout, pal: ThemePalette) {
+        container.addView(makeBackRow("DEFINE", pal))
+        val rawTerm = selectedText.trim()
+        val firstWord = rawTerm.split(TextTransforms.whitespaceRegex).firstOrNull()
+            ?.trim { !it.isLetterOrDigit() && it != '-' }
+            ?.ifBlank { rawTerm.take(32) } ?: rawTerm.take(32)
+
+        val defView = TextView(this).apply {
+            text = "Looking up \"$firstWord\"…"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
+            setTextColor(pal.fgPrimaryInt)
+            setPadding(dp(6), dp(4), dp(6), dp(6))
+            setLineSpacing(0f, 1.18f)
+        }
+        val copyBtn = makeDrawerRow("[ ^C COPY DEFINITION ]", pal, pal.accentGreenInt) {
+            smoothCopyText(defView.text.toString(), "[^C] Definition copied")
+        }.apply { visibility = View.GONE }
+
+        container.addView(defView)
+        container.addView(copyBtn)
+
+        networkTools.lookupDefinition(firstWord, rawTerm) { res ->
+            if (currentMode == PopupMode.DEFINE_WORD && popupView?.isAttachedToWindow == true) {
+                defView.text = res
+                copyBtn.visibility = View.VISIBLE
+                relayoutPopupWindow()
+            }
+        }
+    }
+
+    private fun populateTranslateDrawer(container: LinearLayout, pal: ThemePalette) {
+        container.addView(makeBackRow("TRANSLATE -> EN", pal))
+        val trView = TextView(this).apply {
+            text = "Translating…"
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
+            setTextColor(pal.fgPrimaryInt)
+            setPadding(dp(6), dp(4), dp(6), dp(6))
+            setLineSpacing(0f, 1.18f)
+        }
+        val applyBtn = makeDrawerRow("[ ^C COPY / APPLY ]", pal, pal.accentGreenInt) {
+            applyResult(trView.text.toString())
+        }.apply { visibility = View.GONE }
+
+        container.addView(trView)
+        container.addView(applyBtn)
+
+        networkTools.lookupTranslation(selectedText.trim().take(400)) { res ->
+            if (currentMode == PopupMode.TRANSLATE && popupView?.isAttachedToWindow == true) {
+                trView.text = res
+                applyBtn.visibility = View.VISIBLE
+                relayoutPopupWindow()
+            }
+        }
+    }
+
+    private fun populateQrDrawer(container: LinearLayout, pal: ThemePalette) {
+        container.addView(makeBackRow("QR CODE", pal))
+        val content = selectedText.trim().take(1200)
+        val bmp = generateQrBitmap(content, dp(164))
+        if (bmp != null) {
+            container.addView(ImageView(this).apply {
+                setImageBitmap(bmp)
+                layoutParams = LinearLayout.LayoutParams(dp(164), dp(164)).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    topMargin = dp(6)
+                    bottomMargin = dp(6)
+                }
+            })
+        } else {
+            container.addView(makeMutedNote("Could not encode QR.", pal))
+        }
+    }
+
+    private fun populateMagnetDrawer(container: LinearLayout, pal: ThemePalette) {
+        container.addView(makeBackRow("MAGNET", pal))
+        val hash = TextTransforms.extractTorrentHash(selectedText)
+        val magnetUri = when {
+            hash != null -> TextTransforms.buildMagnetUri(hash)
+            selectedText.trim().startsWith("magnet:?", true) -> selectedText.trim()
+            else -> "magnet:?xt=urn:btih:${selectedText.trim().replace(TextTransforms.whitespaceRegex, "")}"
+        }
+        container.addView(TextView(this).apply {
+            text = magnetUri
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setTextColor(pal.fgPrimaryInt)
+            setBackgroundColor(pal.bgSurfaceInt)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            maxLines = 4
+        })
+        container.addView(makeDrawerRow("[ ^C COPY MAGNET ]", pal, pal.accentGreenInt) {
+            smoothCopyText(magnetUri, "[^C] Magnet copied")
+            hidePalette()
+        })
+        container.addView(makeDrawerRow("[ -> OPEN TORRENT APP ]", pal, pal.accentPurpleInt) {
+            smoothCopyText(magnetUri, "[0x] Opening magnet…")
+            openUrl(magnetUri)
+        })
+    }
+
+    private fun populateExtractDrawer(container: LinearLayout, pal: ThemePalette) {
+        container.addView(makeBackRow("EXTRACTED LINKS", pal))
+        val items = TextTransforms.extractEntities(selectedText, limit = 12)
+        if (items.isEmpty()) {
+            container.addView(makeMutedNote("No URLs, emails, phones, or tags found.", pal))
+            return
+        }
+        items.forEach { entity ->
+            container.addView(makeDrawerRow("[${entity.type}] ${entity.value.take(28)}", pal) {
+                applyResult(entity.value)
             })
         }
     }
 
-    private fun speakTextLazy(text: String) {
-        val snippet = text.take(500)
-        if (ttsReady && tts != null) {
-            tts?.speak(snippet, TextToSpeech.QUEUE_FLUSH, null, "sel_tts")
-            Toast.makeText(this, "Speaking…", Toast.LENGTH_SHORT).show()
-            return
-        }
-        pendingTtsText = snippet
-        Toast.makeText(this, "Starting speech…", Toast.LENGTH_SHORT).show()
-        if (tts == null) {
-            tts = TextToSpeech(this) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    tts?.language = Locale.US
-                    ttsReady = true
-                    val queued = pendingTtsText
-                    pendingTtsText = null
-                    if (!queued.isNullOrBlank()) {
-                        tts?.speak(queued, TextToSpeech.QUEUE_FLUSH, null, "sel_tts")
-                    }
-                }
-            }
+    private fun makeBackRow(title: String, pal: ThemePalette): View {
+        return makeDrawerRow("< BACK · $title", pal, pal.accentPurpleInt) {
+            currentMode = PopupMode.MORE_TOOLS
+            renderPopup()
         }
     }
 
-    private fun executeTool(tool: ToolSpec) {
-        val trimmed = selectedText.trim()
-        val encoded = Uri.encode(trimmed)
-
-        if (tool.folderName != null && tool.customTarget == null) {
-            lastShownTime = System.currentTimeMillis()
-            activeCustomFolder = tool.folderName
-            currentMode = PopupMode.CUSTOM_FOLDER
-            renderPopupBody()
-            return
-        }
-
-        if (tool.customTarget != null) {
-            val target = tool.customTarget.trim()
-            if (target.startsWith("http://", ignoreCase = true) || target.startsWith("https://", ignoreCase = true)) {
-                openUrl(target.replace("{text}", encoded))
-            } else {
-                applyResult(TextTransforms.executeCustomTargetTransform(target, selectedText))
-            }
-            return
-        }
-
-        when (tool.id) {
-            "copy" -> {
-                smoothCopyText(selectedText)
-                hidePalette()
-            }
-            "screen_grab" -> triggerScreenGrab(delayMs = 110L)
-            "clip_history" -> switchPopupMode(PopupMode.CLIP_HISTORY)
-            "markdown_folder" -> switchPopupMode(PopupMode.MARKDOWN_FOLDER)
-            "regex_pipe" -> switchPopupMode(PopupMode.REGEX_PIPE)
-            "define" -> switchPopupMode(PopupMode.DEFINE_WORD)
-            "translate" -> switchPopupMode(PopupMode.TRANSLATE)
-            "qr" -> switchPopupMode(PopupMode.QR_CODE)
-            "magnet" -> switchPopupMode(PopupMode.MAGNET)
-            "clean_url" -> applyResult(TextTransforms.cleanUrl(selectedText))
-            "extract" -> switchPopupMode(PopupMode.EXTRACT)
-            "speak" -> speakTextLazy(trimmed)
-            "clean_text" -> applyResult(TextTransforms.cleanText(selectedText))
-            "web_search_folder" -> switchPopupMode(PopupMode.WEB_SEARCH_FOLDER)
-            "youtube_folder" -> switchPopupMode(PopupMode.YOUTUBE_FOLDER)
-            "case" -> applyResult(TextTransforms.cycleCase(selectedText))
-            "sort" -> {
-                val sorted = selectedText.lines().filter { it.isNotBlank() }.distinct().sorted().joinToString("\n")
-                applyResult(sorted)
-            }
-            "log" -> {
-                appendToScratchpad(selectedText)
-                Toast.makeText(this, "Saved to Notes", Toast.LENGTH_SHORT).show()
-                hidePalette()
-            }
+    private fun makeMutedNote(msg: String, pal: ThemePalette): TextView {
+        return TextView(this).apply {
+            text = msg
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            setTextColor(pal.fgMutedInt)
+            setPadding(dp(6), dp(8), dp(6), dp(8))
         }
     }
 
-    private fun switchPopupMode(mode: PopupMode) {
-        lastShownTime = System.currentTimeMillis()
-        currentMode = mode
-        renderPopupBody()
-    }
-
-    private fun makeActionPill(label: String, primary: Boolean, onClick: () -> Unit): TextView {
-        val c = resolvePopupColors()
+    private fun makeDrawerRow(label: String, pal: ThemePalette, colorInt: Int = pal.fgPrimaryInt, onClick: () -> Unit): TextView {
         return TextView(this).apply {
             text = label
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-            setTextColor(if (primary) c.onAccent else c.textPrimary)
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(9), dp(12), dp(9))
-            background = makeChipDrawable(if (primary) c.accent else c.chipBg, c.pressedBg, dpF(10f))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(6) }
+            typeface = Typeface.MONOSPACE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
+            setTextColor(colorInt)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply { setColor(pal.bgPressedInt) })
+                addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+            }
             setOnClickListener {
                 runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
                 onClick()
@@ -1978,81 +1460,124 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun populateMagnetView(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-        }
-
-        val hash = TextTransforms.extractTorrentHash(selectedText)
-        val magnetUri = when {
-            hash != null -> TextTransforms.buildMagnetUri(hash)
-            selectedText.trim().startsWith("magnet:?", ignoreCase = true) -> selectedText.trim()
-            else -> "magnet:?xt=urn:btih:${selectedText.trim().replace(TextTransforms.whitespaceRegex, "")}"
-        }
-
-        box.addView(TextView(this).apply {
-            text = magnetUri
-            typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(c.textPrimary)
-            background = GradientDrawable().apply {
-                setColor(c.chipBg)
-                cornerRadius = dpF(10f)
+    private fun makeHorizontalRule(pal: ThemePalette): View {
+        return View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                topMargin = dp(3)
+                bottomMargin = dp(3)
             }
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            maxLines = 4
-            ellipsize = TextUtils.TruncateAt.END
-        })
-        box.addView(makeActionPill("Copy Magnet Link", primary = true) {
-            smoothCopyText(magnetUri, "Magnet link copied")
-            hidePalette()
-        })
-        box.addView(makeActionPill("Open in Torrent App", primary = false) {
-            smoothCopyText(magnetUri, "Opening magnet…")
-            openUrl(magnetUri)
-        })
-        box.addView(makeActionPill("Replace Selection", primary = false) { applyResult(magnetUri) })
-        container.addView(box)
+            setBackgroundColor(pal.dividerInt)
+        }
     }
 
-    private fun populateQrView(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+    private fun performUndoAction() {
+        val prevText = undoOriginalFullText
+        val uNode = undoNode
+        if (prevText != null && uNode != null) {
+            runCatching { uNode.refresh() }
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, prevText)
+            }
+            val ok = runCatching { uNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+            undoOriginalFullText = null
+            undoNode = null
+            Toast.makeText(this, if (ok) "<- Restored" else "[^C] Copied original", Toast.LENGTH_SHORT).show()
+            if (!ok) smoothCopyText(prevText)
         }
+        hidePalette()
+    }
 
-        val content = selectedText.trim().take(1200)
-        val bmp = generateQrBitmap(content, dp(180))
-        if (bmp != null) {
-            box.addView(ImageView(this).apply {
-                setImageBitmap(bmp)
-                background = GradientDrawable().apply {
-                    setColor(Color.WHITE)
-                    cornerRadius = dpF(12f)
+    private fun performPasteAction() {
+        val clipText = runCatching {
+            clipboardManager.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()
+        }.getOrNull().orEmpty()
+        val targetNode = currentNode?.takeIf { it.isEditable } ?: selectionDetector.findFocusedEditableNode()
+        if (targetNode != null) {
+            runCatching { targetNode.refresh() }
+            val full = targetNode.text?.toString() ?: ""
+            undoOriginalFullText = full
+            undoNode = targetNode
+            undoTimestamp = System.currentTimeMillis()
+            var ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE) }.getOrDefault(false)
+            if (!ok && clipText.isNotEmpty()) {
+                val start = minOf(targetNode.textSelectionStart, targetNode.textSelectionEnd).coerceAtLeast(0)
+                val end = maxOf(targetNode.textSelectionStart, targetNode.textSelectionEnd).coerceAtMost(full.length)
+                val updated = if (end >= start && start <= full.length) full.replaceRange(start, end, clipText) else full + clipText
+                val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated) }
+                ok = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+            }
+            Toast.makeText(this, if (ok) "[^V] Pasted" else "[^V] Ready to paste", Toast.LENGTH_SHORT).show()
+        }
+        hidePalette()
+    }
+
+    private fun performCutAction() {
+        lastInternalCopyTime = System.currentTimeMillis()
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", selectedText))
+        ToolPrefs.addClipToHistory(this, selectedText)
+        val targetNode = currentNode?.takeIf { it.isEditable } ?: selectionDetector.findFocusedEditableNode()
+        var cutOk = false
+        if (targetNode != null) {
+            runCatching { targetNode.refresh() }
+            val full = targetNode.text?.toString() ?: ""
+            val start = minOf(targetNode.textSelectionStart, targetNode.textSelectionEnd)
+            val end = maxOf(targetNode.textSelectionStart, targetNode.textSelectionEnd)
+            undoOriginalFullText = full
+            undoNode = targetNode
+            undoTimestamp = System.currentTimeMillis()
+            cutOk = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_CUT) }.getOrDefault(false)
+            if (!cutOk && start >= 0 && end > start && end <= full.length) {
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, full.removeRange(start, end))
                 }
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                layoutParams = LinearLayout.LayoutParams(dp(196), dp(196))
-            })
-        } else {
-            box.addView(TextView(this).apply {
-                text = "Could not encode QR"
-                setTextColor(c.danger)
-            })
+                cutOk = runCatching { targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
+            }
         }
+        Toast.makeText(this, if (cutOk) "[^X] Cut" else "[^C] Copied", Toast.LENGTH_SHORT).show()
+        hidePalette()
+    }
 
-        box.addView(TextView(this).apply {
-            text = content.take(64) + if (content.length > 64) "…" else ""
-            typeface = Typeface.SANS_SERIF
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setTextColor(c.textMuted)
-            gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, 0)
-        })
-        container.addView(box)
+    private fun openWhatsAppNumber(waDigits: String, isBusiness: Boolean) {
+        val targetPkg = if (isBusiness) "com.whatsapp.w4b" else "com.whatsapp"
+        val nativeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("whatsapp://send?phone=$waDigits")).apply {
+            setPackage(targetPkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (runCatching { startActivity(nativeIntent) }.isSuccess) {
+            hidePalette()
+            return
+        }
+        val webPkgIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://api.whatsapp.com/send?phone=$waDigits")).apply {
+            setPackage(targetPkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (runCatching { startActivity(webPkgIntent) }.isSuccess) {
+            hidePalette()
+            return
+        }
+        openUrl("https://wa.me/$waDigits")
+    }
+
+    private fun speakTextLazy(text: String) {
+        val snippet = text.take(500)
+        if (ttsReady && tts != null) {
+            tts?.speak(snippet, TextToSpeech.QUEUE_FLUSH, null, "sel_tts")
+            Toast.makeText(this, "[~)] Speaking…", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingTtsText = snippet
+        if (tts == null) {
+            tts = TextToSpeech(this) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale.US
+                    ttsReady = true
+                    pendingTtsText?.takeIf { it.isNotBlank() }?.let {
+                        tts?.speak(it, TextToSpeech.QUEUE_FLUSH, null, "sel_tts")
+                    }
+                    pendingTtsText = null
+                }
+            }
+        }
     }
 
     private fun generateQrBitmap(text: String, sizePx: Int): Bitmap? {
@@ -2071,363 +1596,58 @@ class SelAccessibilityService : AccessibilityService() {
                     pixels[offset + x] = if (matrix.get(x, y)) Color.BLACK else Color.WHITE
                 }
             }
-            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply {
-                setPixels(pixels, 0, w, 0, 0, w, h)
-            }
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { setPixels(pixels, 0, w, 0, 0, w, h) }
         }.getOrNull()
     }
 
-    private fun populateDefineView(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val rawTerm = selectedText.trim()
-        val firstWord = rawTerm.split(TextTransforms.whitespaceRegex).firstOrNull()
-            ?.trim { !it.isLetterOrDigit() && it != '-' }
-            ?.ifBlank { rawTerm.take(32) }
-            ?: rawTerm.take(32)
-
-        val bodyBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-        }
-
-        bodyBox.addView(TextView(this).apply {
-            text = firstWord
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            setTextColor(c.accent)
-            setPadding(0, 0, 0, dp(6))
-        })
-
-        val defTextView = TextView(this).apply {
-            text = "Looking up \"$firstWord\"…"
-            typeface = Typeface.SANS_SERIF
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.8f)
-            setTextColor(c.textPrimary)
-            setLineSpacing(0f, 1.22f)
-        }
-
-        val copyDefBtn = makeActionPill("Copy Definition", primary = true) {
-            smoothCopyText(defTextView.text.toString(), "Definition copied")
-        }.apply { visibility = View.GONE }
-
-        bodyBox.addView(defTextView)
-        bodyBox.addView(copyDefBtn)
-        container.addView(bodyBox)
-
-        networkTools.lookupDefinition(firstWord, rawTerm) { resultText ->
-            if (currentMode == PopupMode.DEFINE_WORD && popupView?.isAttachedToWindow == true) {
-                defTextView.text = resultText
-                copyDefBtn.visibility = View.VISIBLE
-                relayoutPopupWindow()
-            }
-        }
-    }
-
-    private fun populateTranslateView(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val raw = selectedText.trim().take(400)
-
-        val bodyBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-        }
-
-        val transTextView = TextView(this).apply {
-            text = "Translating to English…"
-            typeface = Typeface.SANS_SERIF
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
-            setTextColor(c.textPrimary)
-            setLineSpacing(0f, 1.22f)
-        }
-
-        val useBtn = makeActionPill("Copy / Apply Translation", primary = true) {
-            applyResult(transTextView.text.toString())
-        }.apply { visibility = View.GONE }
-
-        bodyBox.addView(transTextView)
-        bodyBox.addView(useBtn)
-        container.addView(bodyBox)
-
-        networkTools.lookupTranslation(raw) { translated ->
-            if (currentMode == PopupMode.TRANSLATE && popupView?.isAttachedToWindow == true) {
-                transTextView.text = translated
-                useBtn.visibility = View.VISIBLE
-                relayoutPopupWindow()
-            }
-        }
-    }
-
     private fun relayoutPopupWindow() {
-        popupView?.requestLayout()
         val v = popupView
         val p = popupParams
         if (v != null && p != null && v.isAttachedToWindow) {
+            v.requestLayout()
             runCatching { windowManager.updateViewLayout(v, p) }
         }
     }
 
-    private fun populateExtractView(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val matches = TextTransforms.extractEntities(selectedText, limit = 12)
-        if (matches.isEmpty()) {
-            container.addView(TextView(this).apply {
-                text = "No URLs, emails, phones, or tags found."
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
-                setTextColor(c.textMuted)
-                setPadding(dp(10), dp(12), dp(10), dp(12))
-            })
-            return
-        }
-        matches.forEach { entity ->
-            container.addView(makeRow("${entity.type}: ${entity.value.take(26)}", null) {
-                applyResult(entity.value)
-            })
-        }
-    }
-
-    private fun populateReorderView(container: LinearLayout) {
-        val c = resolvePopupColors()
-        val mostUsedOn = ToolPrefs.isSortMostUsed(this)
-        container.addView(makeRow(if (mostUsedOn) "Sort: Most Used First" else "Sort: Manual Order", null) {
-            ToolPrefs.setSortMostUsed(this, !mostUsedOn)
-            renderPopupBody()
-        })
-
-        if (activePackage.isNotBlank() && activePackage != packageName) {
-            val isMuted = ToolPrefs.isAppBlacklisted(this, activePackage)
-            val shortPkg = activePackage.substringAfterLast('.')
-            container.addView(makeRow(if (isMuted) "Unmute in $shortPkg" else "Mute popup in $shortPkg", null) {
-                ToolPrefs.setAppBlacklisted(this, activePackage, !isMuted)
-                Toast.makeText(
-                    this,
-                    if (!isMuted) "Muted auto-popup in $activePackage" else "Unmuted $activePackage",
-                    Toast.LENGTH_SHORT
-                ).show()
-                if (!isMuted) hidePalette() else renderPopupBody()
-            })
-        }
-
-        container.addView(makeHorizontalRule())
-
-        val dragList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val customFolders = ToolPrefs.getCustomFolders(this)
-        ToolPrefs.getAllSortedTools(this).forEach { tool ->
-            val hidden = ToolPrefs.isToolHidden(this, tool.id)
-            val assignedRow = ToolPrefs.getToolIconRow(this, tool.id)
-            val assignedFolder = ToolPrefs.getToolFolderAssignment(this, tool.id)
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(6), dp(6), dp(6))
-                tag = tool.id
-            }
-
-            val dragHandle = TextView(this).apply {
-                text = "≡"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                setTextColor(c.accent)
-                setPadding(dp(4), dp(2), dp(8), dp(2))
-            }
-
-            val label = TextView(this).apply {
-                text = friendlyToolLabel(tool)
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setTextColor(if (hidden) c.textMuted else c.textPrimary)
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-
-            row.addView(dragHandle)
-            row.addView(label)
-
-            if (customFolders.isNotEmpty() && tool.id != "copy" && !tool.id.startsWith("folder_custom_")) {
-                row.addView(TextView(this).apply {
-                    text = assignedFolder ?: "Root"
-                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-                    setTextColor(if (assignedFolder != null) c.accent else c.textMuted)
-                    setPadding(dp(6), dp(3), dp(6), dp(3))
-                    setOnClickListener {
-                        ToolPrefs.cycleToolFolderAssignment(this@SelAccessibilityService, tool.id)
-                        renderPopupBody()
-                    }
-                })
-            }
-
-            if (tool.id != "copy") {
-                row.addView(TextView(this).apply {
-                    text = when (assignedRow) {
-                        1 -> "Row1"
-                        2 -> "Row2"
-                        else -> "List"
-                    }
-                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
-                    setTextColor(if (assignedRow > 0) c.accent else c.textMuted)
-                    setPadding(dp(6), dp(3), dp(6), dp(3))
-                    setOnClickListener {
-                        ToolPrefs.cycleToolIconRow(this@SelAccessibilityService, tool.id)
-                        renderPopupBody()
-                    }
-                })
-            }
-
-            row.addView(TextView(this).apply {
-                text = if (hidden) "Off" else "On"
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                setTextColor(if (hidden) c.textMuted else c.secondaryAccent)
-                setPadding(dp(6), dp(2), dp(2), dp(2))
-                setOnClickListener {
-                    ToolPrefs.setToolHidden(this@SelAccessibilityService, tool.id, !hidden)
-                    renderPopupBody()
-                }
-            })
-
-            ToolPrefs.attachDragHandle(dragHandle, row, dragList) { renderPopupBody() }
-            dragList.addView(row)
-        }
-        container.addView(dragList)
-    }
-
-    private fun openUrl(url: String) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching { startActivity(intent) }
-        hidePalette()
-    }
-
-    private fun makeRow(
-        label: String,
-        countBadge: String?,
-        onLongClick: (() -> Unit)? = null,
-        onClick: () -> Unit
-    ): View {
-        val c = resolvePopupColors()
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(9), dp(10), dp(9))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(2) }
-            background = makePressedDrawable(c.pressedBg, dpF(10f))
-            setOnClickListener {
-                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                onClick()
-            }
-            if (onLongClick != null) {
-                setOnLongClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-                    onLongClick()
-                    true
-                }
-            }
-        }
-
-        row.addView(TextView(this).apply {
-            text = label
-            typeface = Typeface.SANS_SERIF
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(c.textPrimary)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        })
-
-        if (!countBadge.isNullOrBlank()) {
-            row.addView(TextView(this).apply {
-                text = countBadge
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                setTextColor(c.textMuted)
-                setPadding(dp(6), 0, 0, 0)
-            })
-        }
-
-        return row
-    }
-
-    private fun makeHorizontalRule(thick: Boolean = false): View {
-        val c = resolvePopupColors()
-        return View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(1)
-            ).apply {
-                if (!thick) {
-                    topMargin = dp(4)
-                    bottomMargin = dp(4)
-                }
-            }
-            setBackgroundColor(c.divider)
-        }
-    }
-
-    private fun enableDragAndEdgeSnapOnHeader(
-        header: View,
-        rootView: View,
-        params: WindowManager.LayoutParams
-    ) {
+    private fun enableDragOnView(handle: View, rootView: View) {
         var initialX = 0
         var initialY = 0
         var touchX = 0f
         var touchY = 0f
 
-        header.setOnTouchListener { v, event ->
-            runCatching {
-                val screen = selectionDetector.getRealScreenBounds()
-                val isBottomGrav = (params.gravity and Gravity.VERTICAL_GRAVITY_MASK) == Gravity.BOTTOM
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        mainHandler.removeCallbacks(delayedHideRunnable)
-                        initialX = params.x
-                        initialY = params.y
-                        touchX = event.rawX
-                        touchY = event.rawY
-                        true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = (event.rawX - touchX).toInt()
-                        val dy = if (isBottomGrav) (touchY - event.rawY).toInt() else (event.rawY - touchY).toInt()
-                        if (abs(dx) > dp(6) || abs(dy) > dp(6)) userManuallyDragged = true
-                        params.x = (initialX + dx).safeCoerceIn(dp(6), (screen.width() - rootView.width - dp(6)).coerceAtLeast(dp(6)))
-                        params.y = (initialY + dy).safeCoerceIn(dp(40), (screen.height() - dp(84)).coerceAtLeast(dp(48)))
-                        if (rootView.isAttachedToWindow) windowManager.updateViewLayout(rootView, params)
-                        true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val movedX = abs(event.rawX - touchX)
-                        val movedY = abs(event.rawY - touchY)
-                        if (movedX <= dp(6) && movedY <= dp(6) &&
-                            currentMode != PopupMode.ACTIONS &&
-                            currentMode != PopupMode.COLLAPSED_PILL
-                        ) {
-                            lastShownTime = System.currentTimeMillis()
-                            currentMode = PopupMode.ACTIONS
-                            runCatching { v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                            renderPopupBody()
-                            return@runCatching true
-                        }
-                        if (movedX > dp(8)) {
-                            val centerX = params.x + rootView.width / 2
-                            val snapLeft = centerX < screen.width() / 2
-                            ToolPrefs.setSnapLeftEdge(this@SelAccessibilityService, snapLeft)
-                            params.x = if (snapLeft) dp(10) else (screen.width() - rootView.width - dp(10)).coerceAtLeast(dp(10))
-                            if (rootView.isAttachedToWindow) windowManager.updateViewLayout(rootView, params)
-                            runCatching { v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
-                        }
-                        true
-                    }
-                    else -> false
+        handle.setOnTouchListener { _, event ->
+            val p = popupParams ?: return@setOnTouchListener false
+            val screen = selectionDetector.getRealScreenBounds()
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    mainHandler.removeCallbacks(delayedHideRunnable)
+                    initialX = p.x
+                    initialY = p.y
+                    touchX = event.rawX
+                    touchY = event.rawY
+                    true
                 }
-            }.getOrDefault(false)
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - touchX).toInt()
+                    val dy = (event.rawY - touchY).toInt()
+                    if (abs(dx) > dp(4) || abs(dy) > dp(4)) userManuallyDragged = true
+                    p.x = (initialX + dx).safeCoerceIn(dp(6), (screen.width() - rootView.width - dp(6)).coerceAtLeast(dp(6)))
+                    p.y = (initialY + dy).safeCoerceIn(dp(36), (screen.height() - dp(72)).coerceAtLeast(dp(40)))
+                    if (rootView.isAttachedToWindow) runCatching { windowManager.updateViewLayout(rootView, p) }
+                    true
+                }
+                else -> false
+            }
         }
+    }
+
+    private fun openUrl(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        }
+        hidePalette()
     }
 
     private fun applyResult(newText: String) {
@@ -2440,27 +1660,21 @@ class SelAccessibilityService : AccessibilityService() {
         if (node != null && node.isEditable) {
             runCatching { node.refresh() }
             val full = node.text?.toString() ?: ""
-            val s = node.textSelectionStart
-            val e = node.textSelectionEnd
-            val start = minOf(s, e)
-            val end = maxOf(s, e)
+            val start = minOf(node.textSelectionStart, node.textSelectionEnd)
+            val end = maxOf(node.textSelectionStart, node.textSelectionEnd)
             if (start >= 0 && end > start && end <= full.length) {
                 undoOriginalFullText = full
                 undoNode = node
                 undoTimestamp = System.currentTimeMillis()
-
-                val updated = full.replaceRange(start, end, newText)
                 val args = Bundle().apply {
-                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, full.replaceRange(start, end, newText))
                 }
                 replaced = runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args) }.getOrDefault(false)
             } else {
                 replaced = runCatching { node.performAction(AccessibilityNodeInfo.ACTION_PASTE) }.getOrDefault(false)
             }
         }
-        if (!replaced) {
-            Toast.makeText(this, "Copied: ${newText.take(28)}", Toast.LENGTH_SHORT).show()
-        }
+        if (!replaced) Toast.makeText(this, "[^C] ${newText.take(28)}", Toast.LENGTH_SHORT).show()
         hidePalette()
     }
 
@@ -2476,15 +1690,11 @@ class SelAccessibilityService : AccessibilityService() {
         popupView?.let { runCatching { windowManager.removeView(it) } }
         popupView = null
         popupParams = null
-        headerBarView = null
-        headerDividerView = null
-        statsLabelView = null
-        gridToggleBtn = null
-        collapseBtnView = null
-        reorderToggleBtn = null
-        closeBtnView = null
-        bodyContainer = null
-        currentMode = PopupMode.ACTIONS
+        barStripContainer = null
+        drawerDividerView = null
+        drawerScrollView = null
+        drawerContainer = null
+        currentMode = PopupMode.BAR
     }
 
     override fun onInterrupt() {

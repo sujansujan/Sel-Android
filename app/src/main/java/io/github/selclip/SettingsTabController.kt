@@ -2,8 +2,6 @@ package io.github.selclip
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -17,9 +15,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 
 /**
- * Tab 2 ([SET]): Theme & popup behavior controls, 1-tap installed app blacklist picker, and JSON backup/restore.
+ * Tab 3 ([SETTINGS]): Clean, zero-duplication Preferences, Muted Apps, Clips & Notes, and JSON Backup.
  */
 class SettingsTabController(
     private val activity: Activity,
@@ -27,330 +26,212 @@ class SettingsTabController(
     private val onExportJsonFile: () -> Unit,
     private val onImportJsonFile: () -> Unit
 ) {
-    private lateinit var blacklistInput: EditText
     private lateinit var blacklistContainer: LinearLayout
-    private lateinit var backupPreviewBox: EditText
+    private lateinit var clipsToggleLabel: TextView
+    private lateinit var clipsBodyContainer: LinearLayout
+    private lateinit var notesEditText: EditText
 
     fun buildView(): View {
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
-
-        return LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-
-            addView(UiKit.label(activity, "01 // THEME & POPUP BEHAVIOR", 11.5f, p.fgSecondaryInt, bold = true))
-            addView(
-                UiKit.label(
-                    activity,
-                    "Customize theme palette, 1-column vs 2-column popup layout, screen edge side, and tool sorting:",
-                    10.5f,
-                    p.fgMutedInt
-                ).apply { setPadding(0, dp(2), 0, dp(6)) }
-            )
-            addView(buildThemeAndBehaviorCard())
-
-            addView(UiKit.label(activity, "\n02 // PER-APP BLACKLIST (⊘ MUTED APPS)", 11.5f, p.fgSecondaryInt, bold = true))
-            addView(
-                UiKit.label(
-                    activity,
-                    "Muted apps will not trigger automatic selection popups. Pick from installed apps or enter a package name:",
-                    10.5f,
-                    p.fgMutedInt
-                ).apply { setPadding(0, dp(2), 0, dp(6)) }
-            )
-
-            val manualPkgRow = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                visibility = View.GONE
-                setPadding(0, dp(4), 0, dp(6))
-            }
-
-            blacklistInput = EditText(activity).apply {
-                typeface = Typeface.MONOSPACE
-                textSize = 11.5f
-                setTextColor(p.fgPrimaryInt)
-                setBackgroundColor(p.bgSurfaceInt)
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                hint = "com.example.app"
-                setHintTextColor(p.fgMutedInt)
-                isSingleLine = true
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-
-            val addBlkBtn = UiKit.buttonPill(activity, " [ + MUTE ]", p.accentGreenInt) {
-                val pkg = blacklistInput.text.toString().trim()
-                if (pkg.isNotEmpty()) {
-                    ToolPrefs.setAppBlacklisted(activity, pkg, true)
-                    blacklistInput.setText("")
-                    refreshBlacklistView()
-                }
-            }
-            manualPkgRow.addView(blacklistInput)
-            manualPkgRow.addView(addBlkBtn)
-
-            val pickerActionRow = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, dp(6))
-            }
-            pickerActionRow.addView(
-                UiKit.equalButtonPill(activity, "[ + PICK INSTALLED APP ]", p.accentGreenInt) {
-                    showInstalledAppsBlacklistDialog()
-                }
-            )
-
-            lateinit var manualPkgToggle: TextView
-            manualPkgToggle = UiKit.equalButtonPill(activity, "[ + BY PACKAGE ID ▾ ]", p.fgMutedInt) {
-                val show = manualPkgRow.visibility != View.VISIBLE
-                manualPkgRow.visibility = if (show) View.VISIBLE else View.GONE
-                manualPkgToggle.text = if (show) "[ + BY PACKAGE ID ▴ ]" else "[ + BY PACKAGE ID ▾ ]"
-            }
-            pickerActionRow.addView(manualPkgToggle)
-
-            addView(pickerActionRow)
-            addView(manualPkgRow)
-
-            blacklistContainer = UiKit.surfaceCard(activity)
-            addView(blacklistContainer)
-
-            addView(UiKit.label(activity, "\n03 // BACKUP & RESTORE CONFIG (.JSON)", 11.5f, p.fgSecondaryInt, bold = true))
-            addView(
-                UiKit.label(
-                    activity,
-                    "Export or restore all settings, custom folders, top icon rows, tool order, muted apps, and rules:",
-                    10.5f,
-                    p.fgMutedInt
-                ).apply { setPadding(0, dp(2), 0, dp(6)) }
-            )
-
-            val fileBtnRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-            fileBtnRow.addView(UiKit.equalButtonPill(activity, "[ ⇩ EXPORT .JSON ]", p.accentGreenInt) { onExportJsonFile() })
-            fileBtnRow.addView(UiKit.equalButtonPill(activity, "[ ⇧ IMPORT .JSON ]", p.fgPrimaryInt) { onImportJsonFile() })
-            addView(fileBtnRow)
-
-            val clipBtnRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-            clipBtnRow.addView(UiKit.equalButtonPill(activity, "[ [^C] COPY JSON ]", p.accentCyanInt) {
-                val json = ToolPrefs.exportBackupJson(activity)
-                backupPreviewBox.setText(json)
-                UiKit.copyPlain(activity, json, "Copied config JSON to clipboard")
-            })
-            clipBtnRow.addView(UiKit.equalButtonPill(activity, "[ [^V] RESTORE CLIP ]", p.fgPrimaryInt) {
-                val candidate = backupPreviewBox.text.toString().takeIf { it.isNotBlank() } ?: run {
-                    val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.primaryClip?.getItemAt(0)?.coerceToText(activity)?.toString() ?: ""
-                }
-                if (ToolPrefs.importBackupJson(activity, candidate)) {
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
-                    onRebuildUi()
-                    Toast.makeText(activity, "✓ Settings & custom folders restored!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(activity, "Copy a valid backup JSON first", Toast.LENGTH_SHORT).show()
-                }
-            })
-            addView(clipBtnRow)
-
-            val shareAndRawRow = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(6))
-            }
-            shareAndRawRow.addView(UiKit.equalButtonPill(activity, "[ ↗ SHARE BUNDLE ]", p.accentPurpleInt) {
-                val json = ToolPrefs.exportBackupJson(activity)
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/json"
-                    putExtra(Intent.EXTRA_TEXT, json)
-                    putExtra(Intent.EXTRA_SUBJECT, "sel-android-backup.json")
-                }
-                activity.startActivity(Intent.createChooser(share, "Export [sel] Config"))
-            })
-
-            backupPreviewBox = EditText(activity).apply {
-                typeface = Typeface.MONOSPACE
-                textSize = 10f
-                setTextColor(p.fgPrimaryInt)
-                setBackgroundColor(p.bgSurfaceInt)
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                minLines = 5
-                maxLines = 8
-                visibility = View.GONE
-                hint = "Paste backup JSON here…"
-                setHintTextColor(p.fgMutedInt)
-            }
-
-            lateinit var rawJsonToggle: TextView
-            rawJsonToggle = UiKit.equalButtonPill(activity, "[ RAW JSON ▾ ]", p.fgMutedInt) {
-                val show = backupPreviewBox.visibility != View.VISIBLE
-                if (show) backupPreviewBox.setText(ToolPrefs.exportBackupJson(activity))
-                backupPreviewBox.visibility = if (show) View.VISIBLE else View.GONE
-                rawJsonToggle.text = if (show) "[ RAW JSON ▴ ]" else "[ RAW JSON ▾ ]"
-            }
-            shareAndRawRow.addView(rawJsonToggle)
-
-            addView(shareAndRawRow)
-            addView(backupPreviewBox)
-        }
-    }
-
-    private fun buildThemeAndBehaviorCard(): View {
-        val p = UiKit.pal(activity)
-        val dp = { v: Int -> UiKit.dp(activity, v) }
         val followSys = ToolPrefs.isFollowSystemTheme(activity)
-        val sysDark = ToolPrefs.isSystemInDarkMode(activity)
-        val twoCol = ToolPrefs.isTwoColumnGrid(activity)
-        val snapLeft = ToolPrefs.isSnapLeftEdge(activity)
-        val sortMostUsed = ToolPrefs.isSortMostUsed(activity)
+        val manualDark = ToolPrefs.isDarkThemeManual(activity)
 
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(p.bgSurfaceInt)
-                setStroke(dp(1), p.borderInt)
-                cornerRadius = dp(3).toFloat()
-            }
-            setPadding(dp(10), dp(10), dp(10), dp(10))
 
-            addView(
-                UiKit.label(
-                    activity,
-                    "THEME PALETTE: ${p.name} (${if (p.isDark) "DARK" else "LIGHT"})" +
-                        if (followSys) " · AUTO (${if (sysDark) "DARK" else "LIGHT"})" else " · LOCKED",
-                    10.5f,
-                    p.accentGreenInt,
-                    bold = true
-                ).apply { setPadding(0, 0, 0, dp(4)) }
-            )
-
+            // 1. Theme (3-way clean toggle: AUTO | DRACULA | ALUCARD)
+            addView(UiKit.sectionTitle(activity, "THEME"))
             val themeRow = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            themeRow.addView(
-                UiKit.equalButtonPill(
-                    activity,
-                    if (followSys) "[ AUTO: ON ]" else "[ AUTO: OFF ]",
-                    if (followSys) p.accentGreenInt else p.fgMutedInt
-                ) {
-                    ToolPrefs.setFollowSystemTheme(activity, !followSys)
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
-                    onRebuildUi()
-                }
-            )
-            themeRow.addView(
-                UiKit.equalButtonPill(
-                    activity,
-                    if (p.isDark) "[ ALUCARD LIGHT ]" else "[ DRACULA DARK ]",
-                    p.accentPurpleInt
-                ) {
-                    ToolPrefs.setFollowSystemTheme(activity, false)
-                    ToolPrefs.setDarkThemeManual(activity, !p.isDark)
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
-                    onRebuildUi()
-                }
-            )
+            themeRow.addView(UiKit.equalButtonPill(activity, "AUTO", p.accentGreenInt, selected = followSys) {
+                ToolPrefs.setFollowSystemTheme(activity, true)
+                SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                onRebuildUi()
+            })
+            themeRow.addView(UiKit.equalButtonPill(activity, "DRACULA", p.accentPurpleInt, selected = !followSys && manualDark) {
+                ToolPrefs.setFollowSystemTheme(activity, false)
+                ToolPrefs.setDarkThemeManual(activity, true)
+                SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                onRebuildUi()
+            })
+            themeRow.addView(UiKit.equalButtonPill(activity, "ALUCARD", p.accentCyanInt, selected = !followSys && !manualDark) {
+                ToolPrefs.setFollowSystemTheme(activity, false)
+                ToolPrefs.setDarkThemeManual(activity, false)
+                SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                onRebuildUi()
+            })
             addView(themeRow)
 
-            addView(
-                UiKit.label(activity, "POPUP LAYOUT & SCREEN EDGE:", 10.5f, p.fgSecondaryInt, bold = true)
-                    .apply { setPadding(0, dp(8), 0, dp(4)) }
-            )
-
-            val behaviorRow = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+            // 2. Muted Apps
+            addView(UiKit.sectionTitle(activity, "MUTED APPS"))
+            addView(UiKit.buttonPill(activity, "[ + PICK APP TO MUTE ]", p.accentGreenInt) {
+                showInstalledAppsBlacklistDialog()
+            })
+            blacklistContainer = UiKit.surfaceCard(activity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(4) }
             }
-            behaviorRow.addView(
-                UiKit.equalButtonPill(
-                    activity,
-                    if (twoCol) "[ GRID: 2-COL ]" else "[ LIST: 1-COL ]",
-                    if (twoCol) p.accentCyanInt else p.fgPrimaryInt
-                ) {
-                    ToolPrefs.setTwoColumnGrid(activity, !twoCol)
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
-                    onRebuildUi()
-                }
-            )
-            behaviorRow.addView(
-                UiKit.equalButtonPill(
-                    activity,
-                    if (snapLeft) "[ EDGE: LEFT ]" else "[ EDGE: RIGHT ]",
-                    p.fgPrimaryInt
-                ) {
-                    ToolPrefs.setSnapLeftEdge(activity, !snapLeft)
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
-                    onRebuildUi()
-                }
-            )
-            addView(behaviorRow)
+            addView(blacklistContainer)
 
-            val sortRow = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(4), 0, 0)
+            // 3. Clipboard History & Notes (Cleanly tucked into collapsible sections)
+            addView(UiKit.sectionTitle(activity, "CLIPS & NOTES"))
+
+            clipsBodyContainer = UiKit.surfaceCard(activity).apply { visibility = View.GONE }
+            clipsToggleLabel = UiKit.buttonPill(activity, "[ CLIPS (0) ▾ ]", p.fgPrimaryInt) {
+                val show = clipsBodyContainer.visibility != View.VISIBLE
+                clipsBodyContainer.visibility = if (show) View.VISIBLE else View.GONE
+                refreshClips()
             }
-            sortRow.addView(
-                UiKit.equalButtonPill(
-                    activity,
-                    if (sortMostUsed) "[ SORT: MOST USED FIRST ]" else "[ SORT: MANUAL ORDER ]",
-                    if (sortMostUsed) p.accentGreenInt else p.fgMutedInt
-                ) {
-                    ToolPrefs.setSortMostUsed(activity, !sortMostUsed)
-                    onRebuildUi()
-                }
-            )
-            addView(sortRow)
+            addView(clipsToggleLabel)
+            addView(clipsBodyContainer)
+
+            val notesBox = UiKit.surfaceCard(activity).apply {
+                visibility = View.GONE
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(4) }
+            }
+            notesEditText = EditText(activity).apply {
+                typeface = Typeface.MONOSPACE
+                textSize = 11f
+                setTextColor(p.fgPrimaryInt)
+                setBackgroundColor(p.bgInputInt)
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                minLines = 5
+                gravity = Gravity.TOP or Gravity.START
+                hint = "Saved notes appear here…"
+                setHintTextColor(p.fgMutedInt)
+            }
+            val notesBtns = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(6), 0, 0)
+            }
+            notesBtns.addView(UiKit.equalButtonPill(activity, "SAVE", p.accentGreenInt) {
+                File(activity.filesDir, "scratchpad.txt").writeText(notesEditText.text.toString())
+                Toast.makeText(activity, "Saved notes", Toast.LENGTH_SHORT).show()
+            })
+            notesBtns.addView(UiKit.equalButtonPill(activity, "COPY", p.accentCyanInt) {
+                UiKit.copyPlain(activity, notesEditText.text.toString(), "Copied notes")
+            })
+            notesBtns.addView(UiKit.equalButtonPill(activity, "CLEAR", p.dangerRedInt) {
+                File(activity.filesDir, "scratchpad.txt").writeText("")
+                notesEditText.setText("")
+            })
+            notesBox.addView(notesEditText)
+            notesBox.addView(notesBtns)
+
+            lateinit var notesToggle: TextView
+            notesToggle = UiKit.buttonPill(activity, "[ SCRATCHPAD NOTES ▾ ]", p.fgPrimaryInt) {
+                val show = notesBox.visibility != View.VISIBLE
+                notesBox.visibility = if (show) View.VISIBLE else View.GONE
+                notesToggle.text = if (show) "[ SCRATCHPAD NOTES ▴ ]" else "[ SCRATCHPAD NOTES ▾ ]"
+            }
+            addView(notesToggle)
+            addView(notesBox)
+
+            // 4. Backup (Just 2 clean buttons!)
+            addView(UiKit.sectionTitle(activity, "BACKUP"))
+            val backupRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            backupRow.addView(UiKit.equalButtonPill(activity, "[ EXPORT .JSON ]", p.accentGreenInt) { onExportJsonFile() })
+            backupRow.addView(UiKit.equalButtonPill(activity, "[ IMPORT .JSON ]", p.fgPrimaryInt) { onImportJsonFile() })
+            addView(backupRow)
         }
     }
 
-    fun refresh(isActiveTab: Boolean) {
-        if (::blacklistContainer.isInitialized) refreshBlacklistView()
-        if (::backupPreviewBox.isInitialized && isActiveTab && backupPreviewBox.visibility == View.VISIBLE) {
-            backupPreviewBox.setText(ToolPrefs.exportBackupJson(activity))
+    fun refresh() {
+        if (::blacklistContainer.isInitialized) refreshBlacklist()
+        if (::clipsBodyContainer.isInitialized) refreshClips()
+        if (::notesEditText.isInitialized) {
+            val f = File(activity.filesDir, "scratchpad.txt")
+            val txt = if (f.exists()) f.readText() else ""
+            notesEditText.setText(if (txt == "(Empty)") "" else txt)
         }
     }
 
-    private fun refreshBlacklistView() {
+    private fun refreshBlacklist() {
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
         blacklistContainer.removeAllViews()
         val apps = ToolPrefs.getBlacklistedApps(activity)
         if (apps.isEmpty()) {
-            blacklistContainer.addView(
-                UiKit.label(activity, "(No muted apps — tap [ + PICK INSTALLED APP ] above to mute any app)", 10.5f, p.fgMutedInt)
-            )
+            blacklistContainer.addView(UiKit.label(activity, "(No muted apps)", 10.2f, p.fgMutedInt))
             return
         }
         apps.forEach { pkg ->
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(9), dp(10), dp(9))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    topMargin = dp(2)
-                    bottomMargin = dp(2)
-                }
-                background = GradientDrawable().apply {
-                    setColor(p.bgPrimaryInt)
-                    setStroke(dp(1), p.dividerInt)
-                    cornerRadius = dp(2).toFloat()
-                }
+                setPadding(dp(4), dp(5), dp(4), dp(5))
             }
-            row.addView(UiKit.label(activity, "⊘ $pkg", 11.2f, p.fgPrimaryInt).apply {
+            row.addView(UiKit.label(activity, pkg, 10.6f, p.fgPrimaryInt).apply {
                 isSingleLine = true
                 ellipsize = TextUtils.TruncateAt.END
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
-            row.addView(UiKit.label(activity, "[ UNMUTE ]", 10.5f, p.accentGreenInt, bold = true).apply {
-                setPadding(dp(10), dp(4), dp(4), dp(4))
+            row.addView(UiKit.label(activity, "[x]", 11f, p.dangerRedInt, bold = true).apply {
+                setPadding(dp(8), dp(2), dp(2), dp(2))
                 setOnClickListener {
                     ToolPrefs.setAppBlacklisted(activity, pkg, false)
-                    refreshBlacklistView()
+                    refreshBlacklist()
                 }
             })
             blacklistContainer.addView(row)
         }
+    }
+
+    private fun refreshClips() {
+        val p = UiKit.pal(activity)
+        val dp = { v: Int -> UiKit.dp(activity, v) }
+        val clips = ToolPrefs.getClipHistory(activity)
+        val open = clipsBodyContainer.visibility == View.VISIBLE
+        clipsToggleLabel.text = "[ CLIPS (${clips.size}) ${if (open) "▴" else "▾"} ]"
+        if (!open) return
+
+        clipsBodyContainer.removeAllViews()
+        if (clips.isEmpty()) {
+            clipsBodyContainer.addView(UiKit.label(activity, "(No saved clips yet)", 10.2f, p.fgMutedInt))
+            return
+        }
+
+        clips.forEach { entry ->
+            val row = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(2), dp(6), dp(2), dp(6))
+            }
+            row.addView(UiKit.label(activity, if (entry.pinned) "[*]" else "[.]", 10.8f, if (entry.pinned) p.accentGreenInt else p.fgMutedInt, bold = true).apply {
+                setPadding(dp(2), dp(2), dp(8), dp(2))
+                setOnClickListener {
+                    ToolPrefs.togglePinClip(activity, entry.text)
+                    refreshClips()
+                }
+            })
+            row.addView(UiKit.label(activity, entry.text.replace("\n", " ↵ "), 10.8f, p.fgPrimaryInt).apply {
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { UiKit.copyPlain(activity, entry.text, "[^C] Copied") }
+            })
+            row.addView(UiKit.label(activity, "[x]", 11f, p.dangerRedInt, bold = true).apply {
+                setPadding(dp(8), dp(2), dp(2), dp(2))
+                setOnClickListener {
+                    ToolPrefs.deleteClip(activity, entry.text)
+                    refreshClips()
+                }
+            })
+            clipsBodyContainer.addView(row)
+        }
+
+        clipsBodyContainer.addView(UiKit.buttonPill(activity, "[ CLEAR UNPINNED ]", p.dangerRedInt) {
+            ToolPrefs.clearUnpinnedClips(activity)
+            refreshClips()
+        })
     }
 
     private fun showInstalledAppsBlacklistDialog() {
@@ -358,13 +239,11 @@ class SettingsTabController(
         val dp = { v: Int -> UiKit.dp(activity, v) }
         val pm = activity.packageManager
         val mainIntent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
-        val resolved = runCatching { pm.queryIntentActivities(mainIntent, 0) }.getOrNull().orEmpty()
-        val appEntries = resolved
+        val appEntries = runCatching { pm.queryIntentActivities(mainIntent, 0) }.getOrNull().orEmpty()
             .mapNotNull { info ->
                 val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
                 if (pkg == activity.packageName) return@mapNotNull null
-                val appLabel = runCatching { info.loadLabel(pm).toString().trim() }.getOrDefault(pkg)
-                appLabel to pkg
+                runCatching { info.loadLabel(pm).toString().trim() }.getOrDefault(pkg) to pkg
             }
             .distinctBy { it.second }
             .sortedBy { it.first.lowercase() }
@@ -372,20 +251,18 @@ class SettingsTabController(
         val dialogRoot = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(p.bgPrimaryInt)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        dialogRoot.addView(
-            UiKit.label(activity, "MUTE APPS // TAP TO TOGGLE [⊘]", 11.5f, p.accentGreenInt, bold = true)
-                .apply { setPadding(0, 0, 0, dp(6)) }
-        )
+        dialogRoot.addView(UiKit.label(activity, "MUTE APPS // TAP TO TOGGLE", 11.2f, p.accentGreenInt, bold = true)
+            .apply { setPadding(0, 0, 0, dp(6)) })
 
         val searchBox = EditText(activity).apply {
             typeface = Typeface.MONOSPACE
-            textSize = 11.5f
+            textSize = 11.2f
             setTextColor(p.fgPrimaryInt)
             setBackgroundColor(p.bgSurfaceInt)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            hint = "Filter apps by name or package…"
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            hint = "Filter apps…"
             setHintTextColor(p.fgMutedInt)
             isSingleLine = true
         }
@@ -399,28 +276,21 @@ class SettingsTabController(
         }
         val list = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
 
-        fun renderApps(filterQuery: String) {
+        fun renderApps(q: String) {
             list.removeAllViews()
-            val q = filterQuery.trim().lowercase()
-            val filtered = if (q.isEmpty()) appEntries else appEntries.filter {
-                it.first.lowercase().contains(q) || it.second.lowercase().contains(q)
-            }
-            if (filtered.isEmpty()) {
-                list.addView(UiKit.label(activity, "No matching apps found.", 10.5f, p.fgMutedInt).apply {
-                    setPadding(dp(8), dp(10), dp(8), dp(10))
-                })
-                return
+            val query = q.trim().lowercase()
+            val filtered = if (query.isEmpty()) appEntries else appEntries.filter {
+                it.first.lowercase().contains(query) || it.second.lowercase().contains(query)
             }
             filtered.forEach { (appName, pkg) ->
                 val muted = ToolPrefs.isAppBlacklisted(activity, pkg)
-                val mark = if (muted) "[⊘ MUTED]" else "[  ALLOW]"
                 val row = UiKit.label(
                     activity,
-                    "$mark  $appName\n           $pkg",
-                    10.5f,
+                    "${if (muted) "[MUTE]" else "[ ON ]"}  $appName",
+                    10.8f,
                     if (muted) p.dangerRedInt else p.fgPrimaryInt
                 ).apply {
-                    setPadding(dp(10), dp(8), dp(10), dp(8))
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
                     background = GradientDrawable().apply {
                         setColor(p.bgSurfaceInt)
                         setStroke(dp(1), p.dividerInt)
@@ -432,7 +302,7 @@ class SettingsTabController(
                     setOnClickListener {
                         ToolPrefs.setAppBlacklisted(activity, pkg, !muted)
                         renderApps(searchBox.text.toString())
-                        refreshBlacklistView()
+                        refreshBlacklist()
                     }
                 }
                 list.addView(row)
@@ -441,9 +311,7 @@ class SettingsTabController(
 
         searchBox.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                renderApps(s?.toString().orEmpty())
-            }
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderApps(s?.toString().orEmpty())
             override fun afterTextChanged(s: Editable?) {}
         })
 
@@ -452,8 +320,8 @@ class SettingsTabController(
         dialogRoot.addView(scroll)
 
         var alert: AlertDialog? = null
-        dialogRoot.addView(UiKit.buttonPill(activity, "[ ✓ DONE ]", p.accentGreenInt) {
-            refreshBlacklistView()
+        dialogRoot.addView(UiKit.buttonPill(activity, "[ DONE ]", p.accentGreenInt) {
+            refreshBlacklist()
             alert?.dismiss()
         })
 

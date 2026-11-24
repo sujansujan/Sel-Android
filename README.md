@@ -1,13 +1,20 @@
-# `[sel]` — Smart Text Selection Palette & Google Lens-Style Grab for Android
+# `[sel_]` — PopClip-Inspired ASCII Selection Bar for Android
 
-A fast, lightweight PopClip + Google Lens text utility for Android built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and on-device Google Play Services ML Kit OCR.
+A minimal, context-aware PopClip alternative for Android styled with crisp ASCII / Dracula & Alucard aesthetics, built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and optional on-device Google Play Services ML Kit OCR.
 
-## v2.8.0 Highlights
-- **Exact Google Lens-Style Screen Text Grab (`ScreenOcrEngine`, `LensOverlayView`):**
-  - Freezes your screen instantly with a smooth scan shimmer while on-device ML Kit OCR detects every individual word (`TextBlock → Line → Element`), falling back cleanly to Accessibility word harvesting on Android 8–10 or `FLAG_SECURE` screens.
-  - Soft frosted line pills keep the screen crystal clear; tap any word to select, double-tap to select a paragraph, drag across words to sweep-select, or drag left/right **teardrop handles** with a live floating loupe preview above your thumb.
-  - Modern rounded Google Lens bottom sheet with **Copy text**, contextual smart pills (**Call**, **Open link**, **Clean URL**, **Magnet**, **Define**), **Search**, inline **Translate**, **Listen**, **More tools**, and inline **Edit**.
-- **Modern Floating Selection Popup & Clean App UI:**
-  - Elevated `16dp` rounded floating card with smooth pop-in animation, crisp sans-serif typography, comfortable tap targets, clear **Copy / Paste / Cut / All** quick bar, human-readable tool labels, and smart context banners.
-- **Universal Cross-App Popup Reliability & Performance:**
-  - Works reliably across Chrome, Firefox, WebViews, Jetpack Compose, WhatsApp, Telegram, Gmail, React Native, and PDF apps via multi-window toolbar detection, deep BFS, API 26+ exact character bounds, in-memory preference/rule caching, and automated GitHub Actions unit tests.
+## v2.9.0 Highlights
+- **True Context-Aware macOS PopClip Horizontal ASCII Bar (`PopupContextEngine`):**
+  - Shows **only the 3–5 actions relevant to what you selected**—never dumping 20 buttons on every highlight:
+    - Phone → `CALL | SMS | WA | W4B | ^C | +`
+    - Dirty URL → `OPEN | CLEAN | ^C | QR | +`
+    - Email → `MAIL | ^C | WEB | +`
+    - Math / Unit / Timestamp / Base64 → `= <answer> | ^C | +`
+    - Torrent Hash → `MAGNET | OPEN | ^C | +`
+    - 1–3 Words (read-only) → `^C | DEF | TR | WEB | YT | +` (omits useless Cut/Paste!)
+    - Editable text box → automatically includes `^X` (Cut), `^V` (Paste), and `UNDO`
+  - Tap `[+]` on the right of the bar whenever you want the full compact ASCII tools drawer.
+- **Instant, Pixel-Aligned Tap-to-Select Screen Grab (`LensOverlayView`):**
+  - Launches in `<15ms` with crystal-clear screen visibility and `getLocationOnScreen()` offset correction so every tap hits the exact word under your finger on every notch/cutout device.
+  - Tap any word to select it, double-tap for paragraph, drag to sweep-select, or drag `[` / `]` handles—with the context-aware ASCII PopClip bar floating right beside your selection and `[OCR]` 1 tap away for images & videos.
+- **Simplified 3-Tab ASCII App (`[HOME]`, `[ACTIONS]`, `[SETTINGS]`):**
+  - Removed all duplicate toggles, top-row slot clutter, and redundant backup buttons for a clean, effortless experience.

@@ -17,8 +17,7 @@ import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Slim shell Activity hosting the 5 plain-text terminal tabs via dedicated controllers:
- * HomeTabController, SettingsTabController, ToolsTabController, RulesTabController, and ClipsTabController.
+ * Clean 3-tab ASCII shell ([HOME] | [ACTIONS] | [SETTINGS]) — zero clutter, zero duplicates.
  */
 class MainActivity : Activity() {
 
@@ -29,10 +28,8 @@ class MainActivity : Activity() {
 
     private enum class Tab(val title: String) {
         HOME("HOME"),
-        BACKUP("SET"),
-        TOOLS("TOOLS"),
-        RULES("RULES"),
-        CLIPS("CLIPS")
+        ACTIONS("ACTIONS"),
+        SETTINGS("SETTINGS")
     }
 
     private var activeTab: Tab = Tab.HOME
@@ -42,10 +39,8 @@ class MainActivity : Activity() {
 
     private lateinit var serviceStatusBadge: TextView
     private lateinit var homeTab: HomeTabController
+    private lateinit var actionsTab: ActionsTabController
     private lateinit var settingsTab: SettingsTabController
-    private lateinit var toolsTab: ToolsTabController
-    private lateinit var rulesTab: RulesTabController
-    private lateinit var clipsTab: ClipsTabController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,84 +77,62 @@ class MainActivity : Activity() {
         tabButtons.clear()
         tabPanels.clear()
 
-        homeTab = HomeTabController(this) { switchTab(Tab.BACKUP) }
+        homeTab = HomeTabController(this)
+        actionsTab = ActionsTabController(this)
         settingsTab = SettingsTabController(
             activity = this,
             onRebuildUi = { rebuildUi() },
             onExportJsonFile = { launchExportJsonFile() },
             onImportJsonFile = { launchImportJsonFile() }
         )
-        toolsTab = ToolsTabController(this) { rulesTab.refresh() }
-        rulesTab = RulesTabController(this) { toolsTab.refresh() }
-        clipsTab = ClipsTabController(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(p.bgPrimaryInt)
         }
 
-        // 1. Fixed Top Terminal Header with Clickable Status Pill
+        // 1. Minimal ASCII Header
         val topHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(p.bgHeaderInt)
             setPadding(dp(14), dp(12), dp(14), dp(10))
         }
 
-        val titleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val titleLabel = UiKit.label(this, "sel · Smart Text Palette", 16f, p.fgPrimaryInt, bold = true).apply {
+        topHeader.addView(UiKit.label(this, "[sel_]  v2.9", 14.5f, p.fgPrimaryInt, bold = true).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
+        })
 
-        serviceStatusBadge = UiKit.label(this, "● Enable", 11f, p.dangerRedInt, bold = true).apply {
-            setPadding(dp(12), dp(6), dp(12), dp(6))
+        serviceStatusBadge = UiKit.label(this, "[○ OFF ↗]", 10.5f, p.dangerRedInt, bold = true).apply {
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             background = GradientDrawable().apply {
                 setColor(p.bgSurfaceInt)
                 setStroke(dp(1), p.borderInt)
-                cornerRadius = dp(16).toFloat()
+                cornerRadius = dp(2).toFloat()
             }
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
-
-        titleRow.addView(titleLabel)
-        titleRow.addView(serviceStatusBadge)
-        topHeader.addView(titleRow)
-        topHeader.addView(
-            UiKit.label(
-                this,
-                "v2.8.0 · Google Lens text grab + modern floating actions",
-                10.5f,
-                p.fgMutedInt
-            ).apply { setPadding(0, dp(3), 0, 0) }
-        )
+        topHeader.addView(serviceStatusBadge)
         root.addView(topHeader)
 
-        // 2. Full-Width 5-Column Pill Tab Bar (Home | Settings | Tools | Rules | Clips)
+        // 2. Clean 3-Tab ASCII Bar: [HOME] [ACTIONS] [SETTINGS]
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(p.bgHeaderInt)
-            setPadding(dp(10), dp(4), dp(10), dp(8))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
+            setPadding(dp(10), dp(2), dp(10), dp(8))
         }
-
         Tab.values().forEach { tab ->
             val btn = TextView(this).apply {
-                text = tab.title
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
+                text = "[${tab.title}]"
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
                 gravity = Gravity.CENTER
                 isSingleLine = true
-                setPadding(dp(2), dp(8), dp(2), dp(8))
+                setPadding(dp(4), dp(8), dp(4), dp(8))
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = dp(2)
-                    marginEnd = dp(2)
+                    marginStart = dp(3)
+                    marginEnd = dp(3)
                 }
                 setOnClickListener { switchTab(tab) }
             }
@@ -173,22 +146,20 @@ class MainActivity : Activity() {
             setBackgroundColor(p.dividerInt)
         })
 
-        // 3. Scrollable Tab Content Area
+        // 3. Scrollable Tab Content
         val bodyScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
         val bodyHost = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(24))
+            setPadding(dp(14), dp(10), dp(14), dp(24))
         }
 
         tabPanels[Tab.HOME] = homeTab.buildView()
-        tabPanels[Tab.BACKUP] = settingsTab.buildView()
-        tabPanels[Tab.TOOLS] = toolsTab.buildView()
-        tabPanels[Tab.RULES] = rulesTab.buildView()
-        tabPanels[Tab.CLIPS] = clipsTab.buildView()
-
+        tabPanels[Tab.ACTIONS] = actionsTab.buildView()
+        tabPanels[Tab.SETTINGS] = settingsTab.buildView()
         Tab.values().forEach { t -> tabPanels[t]?.let { bodyHost.addView(it) } }
+
         bodyScroll.addView(bodyHost)
         root.addView(bodyScroll)
 
@@ -208,7 +179,7 @@ class MainActivity : Activity() {
                     setTextColor(p.onAccentInt)
                     background = GradientDrawable().apply {
                         setColor(p.accentPurpleInt)
-                        cornerRadius = dp(18).toFloat()
+                        cornerRadius = dp(2).toFloat()
                     }
                 } else {
                     setTextColor(p.fgMutedInt)
@@ -222,14 +193,12 @@ class MainActivity : Activity() {
     private fun refreshAllTabs() {
         val p = UiKit.pal(this)
         val active = SelAccessibilityService.instance != null
-        serviceStatusBadge.text = if (active) "● Active" else "○ Enable"
+        serviceStatusBadge.text = if (active) "[● ON]" else "[○ ENABLE ↗]"
         serviceStatusBadge.setTextColor(if (active) p.accentGreenInt else p.dangerRedInt)
 
         homeTab.refresh()
-        settingsTab.refresh(isActiveTab = activeTab == Tab.BACKUP)
-        toolsTab.refresh()
-        rulesTab.refresh()
-        clipsTab.refresh()
+        actionsTab.refresh()
+        settingsTab.refresh()
     }
 
     private fun launchExportJsonFile() {
@@ -262,16 +231,10 @@ class MainActivity : Activity() {
             REQ_EXPORT_JSON -> {
                 val ok = runCatching {
                     val json = ToolPrefs.exportBackupJson(this)
-                    contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(json.toByteArray(Charsets.UTF_8))
-                    }
+                    contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
                     true
                 }.getOrDefault(false)
-                Toast.makeText(
-                    this,
-                    if (ok) "✓ Exported backup JSON" else "Failed to export file",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(this, if (ok) "Exported backup JSON" else "Export failed", Toast.LENGTH_SHORT).show()
             }
             REQ_IMPORT_JSON -> {
                 val ok = runCatching {
@@ -281,7 +244,7 @@ class MainActivity : Activity() {
                 if (ok) {
                     SelAccessibilityService.instance?.refreshOpenPopupTheme()
                     rebuildUi()
-                    Toast.makeText(this, "✓ Restored settings & custom folders", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Settings restored", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, "Invalid backup file", Toast.LENGTH_SHORT).show()
                 }
