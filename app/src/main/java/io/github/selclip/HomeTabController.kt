@@ -107,14 +107,14 @@ class HomeTabController(
             }
             addView(sandboxInput)
 
-            addView(UiKit.label(activity, "\n02 // [+] LENS SCREEN GRAB + ON-DEVICE OCR", 11.5f, p.fgSecondaryInt, bold = true))
+            addView(UiKit.label(activity, "\nLens Screen Text Grab", 13f, p.fgSecondaryInt, bold = true))
             addView(
                 UiKit.label(
                     activity,
-                    "Grab unselectable text from any app, image, or video: tap text, drag a lasso box, open [LIST]/[EDIT], or tap [OCR] for pixel scanning:",
-                    10.5f,
+                    "Works just like Google Lens: freezes your screen, detects every word via on-device OCR, and lets you tap, sweep-select, or drag teardrop handles to copy, search, translate, or listen.",
+                    11f,
                     p.fgMutedInt
-                ).apply { setPadding(0, dp(2), 0, dp(6)) }
+                ).apply { setPadding(0, dp(3), 0, dp(8)) }
             )
 
             val automationBox = LinearLayout(activity).apply {

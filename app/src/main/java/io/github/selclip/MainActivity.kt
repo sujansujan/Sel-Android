@@ -110,16 +110,16 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val titleLabel = UiKit.label(this, "[sel_] // PLAIN-TEXT PALETTE", 14f, p.fgPrimaryInt, bold = true).apply {
+        val titleLabel = UiKit.label(this, "sel · Smart Text Palette", 16f, p.fgPrimaryInt, bold = true).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        serviceStatusBadge = UiKit.label(this, "[ ○ ENABLE ↗ ]", 10.5f, p.dangerRedInt, bold = true).apply {
-            setPadding(dp(8), dp(4), dp(8), dp(4))
+        serviceStatusBadge = UiKit.label(this, "● Enable", 11f, p.dangerRedInt, bold = true).apply {
+            setPadding(dp(12), dp(6), dp(12), dp(6))
             background = GradientDrawable().apply {
                 setColor(p.bgSurfaceInt)
                 setStroke(dp(1), p.borderInt)
-                cornerRadius = dp(2).toFloat()
+                cornerRadius = dp(16).toFloat()
             }
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
@@ -130,19 +130,19 @@ class MainActivity : Activity() {
         topHeader.addView(
             UiKit.label(
                 this,
-                "+-- v2.7.0 · ${p.name} theme · universal popup · lasso + OCR --+",
-                9.8f,
+                "v2.8.0 · Google Lens text grab + modern floating actions",
+                10.5f,
                 p.fgMutedInt
             ).apply { setPadding(0, dp(3), 0, 0) }
         )
         root.addView(topHeader)
 
-        // 2. Full-Width 5-Column Tab Bar (HOME | SET | TOOLS | RULES | CLIPS)
+        // 2. Full-Width 5-Column Pill Tab Bar (Home | Settings | Tools | Rules | Clips)
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(p.bgSurfaceInt)
-            setPadding(dp(6), dp(5), dp(6), dp(5))
+            setBackgroundColor(p.bgHeaderInt)
+            setPadding(dp(10), dp(4), dp(10), dp(8))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -151,12 +151,11 @@ class MainActivity : Activity() {
 
         Tab.values().forEach { tab ->
             val btn = TextView(this).apply {
-                text = "[${tab.title}]"
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                text = tab.title
+                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.8f)
                 gravity = Gravity.CENTER
                 isSingleLine = true
-                includeFontPadding = false
                 setPadding(dp(2), dp(8), dp(2), dp(8))
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginStart = dp(2)
@@ -209,10 +208,10 @@ class MainActivity : Activity() {
                     setTextColor(p.onAccentInt)
                     background = GradientDrawable().apply {
                         setColor(p.accentPurpleInt)
-                        cornerRadius = dp(3).toFloat()
+                        cornerRadius = dp(18).toFloat()
                     }
                 } else {
-                    setTextColor(p.fgPrimaryInt)
+                    setTextColor(p.fgMutedInt)
                     background = null
                 }
             }
@@ -223,7 +222,7 @@ class MainActivity : Activity() {
     private fun refreshAllTabs() {
         val p = UiKit.pal(this)
         val active = SelAccessibilityService.instance != null
-        serviceStatusBadge.text = if (active) "[ ● ACTIVE ↗ ]" else "[ ○ ENABLE ↗ ]"
+        serviceStatusBadge.text = if (active) "● Active" else "○ Enable"
         serviceStatusBadge.setTextColor(if (active) p.accentGreenInt else p.dangerRedInt)
 
         homeTab.refresh()

@@ -1,15 +1,13 @@
-# `[sel_]` — Plain-Text Vertical Selection Palette for Android
+# `[sel]` — Smart Text Selection Palette & Google Lens-Style Grab for Android
 
-A fast, minimal PopClip + Google Lens plain-text alternative for Android built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and on-device Google Play Services ML Kit OCR, inspired by the clean ASCII scoreboard aesthetic of [PlainTextSports.com](https://plaintextsports.com/) and styled with the official [Dracula & Alucard](https://draculatheme.com/spec) palettes.
+A fast, lightweight PopClip + Google Lens text utility for Android built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and on-device Google Play Services ML Kit OCR.
 
-## v2.7.0 Highlights
-- **Universal Cross-App Popup Reliability (`SelectionDetector`):**
-  - Detects floating ActionMode & selection toolbars across **all** apps (Chrome, Firefox/GeckoView, WebViews, Jetpack Compose `SelectionContainer`, WhatsApp, Telegram, Gmail, React Native, PDF readers) via multi-window scanning, view-ID matching, deep BFS, and class-agnostic `ACTION_COPY`.
-  - Uses API 26+ `EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY` for exact pixel selection bounds and `WindowInsets` / IME awareness so the popup never gets hidden behind notches, nav bars, or keyboards.
-  - Eliminated premature touch-dismissal bugs, stuck-detached overlay states, stale foreground package tracking, and clipboard listener leaks.
-- **Intuitive Dual-Mode Screen Grab + On-Device Pixel OCR (`ScreenTextHarvester`, `ScreenOcrEngine`, `LensOverlayView`):**
-  - Translucent screen visibility keeps the real app crisp underneath—with accurate per-line highlights, natural multi-tap block selection, **live drag-to-lasso box selection**, 1-tap detected entity chips, and a **`[LIST]` Reader + `[EDIT]` Inline Editor** sheet.
-  - Built-in **Google Play Services ML Kit Pixel OCR** (`[OCR]` button & automatic fallback when 0 accessibility nodes exist) freezes video/image frames via API 30+ `takeScreenshot()` and recognizes text right off images, memes, and videos.
-- **Performance, Modularity & Automated CI Tests:**
-  - Cached `rules.txt`, blacklist, and clipboard history in memory (`0` disk reads per popup open), pre-parsed `ThemePalette` colors, pre-compiled regexes (`TextTransforms`), bounded cached `NetworkTools`, lazy `TextToSpeech`, and removed dead background favicon fetching.
-  - Modularized `MainActivity` into dedicated tab controllers (`Home`, `Settings`, `Tools`, `Rules`, `Clips`) with shared `UiKit` helpers, and added JVM JUnit tests executed automatically in GitHub Actions.
+## v2.8.0 Highlights
+- **Exact Google Lens-Style Screen Text Grab (`ScreenOcrEngine`, `LensOverlayView`):**
+  - Freezes your screen instantly with a smooth scan shimmer while on-device ML Kit OCR detects every individual word (`TextBlock → Line → Element`), falling back cleanly to Accessibility word harvesting on Android 8–10 or `FLAG_SECURE` screens.
+  - Soft frosted line pills keep the screen crystal clear; tap any word to select, double-tap to select a paragraph, drag across words to sweep-select, or drag left/right **teardrop handles** with a live floating loupe preview above your thumb.
+  - Modern rounded Google Lens bottom sheet with **Copy text**, contextual smart pills (**Call**, **Open link**, **Clean URL**, **Magnet**, **Define**), **Search**, inline **Translate**, **Listen**, **More tools**, and inline **Edit**.
+- **Modern Floating Selection Popup & Clean App UI:**
+  - Elevated `16dp` rounded floating card with smooth pop-in animation, crisp sans-serif typography, comfortable tap targets, clear **Copy / Paste / Cut / All** quick bar, human-readable tool labels, and smart context banners.
+- **Universal Cross-App Popup Reliability & Performance:**
+  - Works reliably across Chrome, Firefox, WebViews, Jetpack Compose, WhatsApp, Telegram, Gmail, React Native, and PDF apps via multi-window toolbar detection, deep BFS, API 26+ exact character bounds, in-memory preference/rule caching, and automated GitHub Actions unit tests.
