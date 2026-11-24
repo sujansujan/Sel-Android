@@ -569,7 +569,7 @@ class LensOverlayView(
                 quickEntities.forEachIndexed { idx, entity ->
                     if (idx > 0) entitiesRow.addView(makeVertPipe(16))
                     val shortVal = entity.value.replace("\n", " ").let { if (it.length > 18) it.take(17) + "…" else it }
-                    entitiesRow.addView(makeDockChip("[${entity.kind}] $shortVal", pal.accentCyanInt) {
+                    entitiesRow.addView(makeDockChip("[${entity.type}] $shortVal", pal.accentCyanInt) {
                         customEditedText = entity.value
                         refreshBottomDock()
                     })
@@ -847,14 +847,15 @@ class LensOverlayView(
             val offY = locOnScreen[1].toFloat()
 
             // Optional frozen bitmap when in OCR mode
-            if (backgroundBitmap != null && !backgroundBitmap.isRecycled) {
+            val bmp = backgroundBitmap
+            if (bmp != null && !bmp.isRecycled) {
                 dstRect.set(
                     (-offX).toInt(),
                     (-offY).toInt(),
-                    (backgroundBitmap.width - offX).toInt(),
-                    (backgroundBitmap.height - offY).toInt()
+                    (bmp.width - offX).toInt(),
+                    (bmp.height - offY).toInt()
                 )
-                canvas.drawBitmap(backgroundBitmap, null, dstRect, null)
+                canvas.drawBitmap(bmp, null, dstRect, null)
             }
 
             // Subtle dim so the real screen stays crystal clear
