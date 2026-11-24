@@ -787,8 +787,9 @@ class LensOverlayView(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        if (backgroundBitmap != null && !backgroundBitmap.isRecycled) {
-            runCatching { backgroundBitmap.recycle() }
+        val bmp = backgroundBitmap
+        if (bmp != null && !bmp.isRecycled) {
+            runCatching { bmp.recycle() }
         }
     }
 
