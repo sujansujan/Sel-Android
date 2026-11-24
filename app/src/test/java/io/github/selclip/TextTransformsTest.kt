@@ -92,8 +92,8 @@ class TextTransformsTest {
         val prevTz = TimeZone.getDefault()
         try {
             TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
-            assertEquals("2024-10-27 02:13:20", TextTransforms.evalTimestamp("1730000000"))
-            assertEquals("2024-10-27 02:13:20", TextTransforms.evalTimestamp("1730000000000"))
+            assertEquals("2024-10-27 03:33:20", TextTransforms.evalTimestamp("1730000000"))
+            assertEquals("2024-10-27 03:33:20", TextTransforms.evalTimestamp("1730000000000"))
             assertNull(TextTransforms.evalTimestamp("12345"))
         } finally {
             TimeZone.setDefault(prevTz)

@@ -114,7 +114,8 @@ object TextTransforms {
 
             val localDigits = when {
                 rawDigits.startsWith("00977") -> rawDigits.removePrefix("00977")
-                rawDigits.startsWith("977") && rawDigits.length >= 12 -> rawDigits.removePrefix("977")
+                rawDigits.startsWith("977") && ((hasExplicit977 && rawDigits.length >= 10) || rawDigits.length >= 12) ->
+                    rawDigits.removePrefix("977")
                 rawDigits.startsWith("098") && rawDigits.length == 11 -> rawDigits.removePrefix("0")
                 rawDigits.startsWith("097") && rawDigits.length == 11 -> rawDigits.removePrefix("0")
                 else -> rawDigits
