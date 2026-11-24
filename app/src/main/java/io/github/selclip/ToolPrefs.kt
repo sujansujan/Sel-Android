@@ -1,34 +1,16 @@
 package io.github.selclip
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.res.Configuration
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffXfermode
-import android.graphics.Rect
-import android.graphics.RectF
-import android.graphics.Typeface
-import android.net.Uri
-import android.os.Handler
-import android.os.Looper
-import android.util.LruCache
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
-import android.widget.ImageView
 import android.widget.LinearLayout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.Collections
-import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 data class ToolSpec(
@@ -36,8 +18,7 @@ data class ToolSpec(
     val glyph: String,
     val label: String,
     val customTarget: String? = null,
-    val folderName: String? = null,
-    val faviconUrl: String? = null
+    val folderName: String? = null
 )
 
 data class CustomRuleEntry(
@@ -56,6 +37,9 @@ data class ClipEntry(
 /**
  * Official Dracula Classic (Dark) and Alucard Classic (Light) palettes
  * based on https://draculatheme.com/spec
+ *
+ * Pre-parses all hex colors into Ints once at construction so hot paths (popup build,
+ * LensOverlayView.onDraw) never allocate Strings or invoke Color.parseColor().
  */
 data class ThemePalette(
     val name: String,
@@ -78,7 +62,26 @@ data class ThemePalette(
     val accentYellow: String,
     val dangerRed: String,
     val onAccent: String
-)
+) {
+    val bgPrimaryInt: Int = Color.parseColor(bgPrimary)
+    val bgHeaderInt: Int = Color.parseColor(bgHeader)
+    val bgSurfaceInt: Int = Color.parseColor(bgSurface)
+    val bgInputInt: Int = Color.parseColor(bgInput)
+    val bgPressedInt: Int = Color.parseColor(bgPressed)
+    val borderInt: Int = Color.parseColor(border)
+    val dividerInt: Int = Color.parseColor(divider)
+    val fgPrimaryInt: Int = Color.parseColor(fgPrimary)
+    val fgSecondaryInt: Int = Color.parseColor(fgSecondary)
+    val fgMutedInt: Int = Color.parseColor(fgMuted)
+    val accentGreenInt: Int = Color.parseColor(accentGreen)
+    val accentCyanInt: Int = Color.parseColor(accentCyan)
+    val accentPurpleInt: Int = Color.parseColor(accentPurple)
+    val accentPinkInt: Int = Color.parseColor(accentPink)
+    val accentOrangeInt: Int = Color.parseColor(accentOrange)
+    val accentYellowInt: Int = Color.parseColor(accentYellow)
+    val dangerRedInt: Int = Color.parseColor(dangerRed)
+    val onAccentInt: Int = Color.parseColor(onAccent)
+}
 
 object ToolPrefs {
     private const val PREFS_NAME = "sel_tool_prefs"
@@ -100,6 +103,36 @@ object ToolPrefs {
     private const val PREFIX_HIDDEN = "hidden_"
     private const val MAX_CLIPS = 20
     const val MAX_TOOLS_PER_ICON_ROW = 4
+
+    // In-memory caches to keep AccessibilityEvent hot paths & popup rendering disk-free and allocation-free
+    private data class ParsedRulesSnapshot(
+        val lastModified: Long,
+        val fileLength: Long,
+        val entries: List<CustomRuleEntry>,
+        val topLevelCustomTools: List<ToolSpec>,
+        val webSearchCustomTools: List<ToolSpec>,
+        val youtubeCustomTools: List<ToolSpec>,
+        val markdownCustomTools: List<ToolSpec>,
+        val regexPipeCustomTools: List<ToolSpec>,
+        val folderRuleTools: Map<String, List<ToolSpec>>,
+        val ruleFolderNames: Set<String>
+    )
+
+    @Volatile
+    private var cachedRules: ParsedRulesSnapshot? = null
+
+    @Volatile
+    private var cachedBlacklist: Set<String>? = null
+
+    @Volatile
+    private var cachedClipHistory: List<ClipEntry>? = null
+
+    private fun prefs(context: Context): SharedPreferences =
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun invalidateRulesCache() {
+        cachedRules = null
+    }
 
     // Official Dracula Classic (Dark) Specification
     val DRACULA_PALETTE = ThemePalette(
@@ -154,7 +187,7 @@ object ToolPrefs {
         ToolSpec("copy", "^C", "COPY TEXT"),
         ToolSpec("screen_grab", "+", "LENS GRAB"),
         ToolSpec("web_search_folder", "/", "WEB SEARCH >"),
-        ToolSpec("youtube_folder", "|>", "YOUTUBE >", faviconUrl = "https://www.youtube.com"),
+        ToolSpec("youtube_folder", "|>", "YOUTUBE >"),
         ToolSpec("clip_history", "≡", "CLIP HISTORY >"),
         ToolSpec("markdown_folder", "**", "MARKDOWN >"),
         ToolSpec("regex_pipe", "s/", "REGEX / PIPE >"),
@@ -171,25 +204,22 @@ object ToolPrefs {
         ToolSpec("log", ">>", "APPEND LOG")
     )
 
-    // Dedicated Web Search Subgroup with Top 4 Search Engines
     val webSearchSubTools = listOf(
-        ToolSpec("web_google", "GGL", "GOOGLE", customTarget = "https://www.google.com/search?q={text}", faviconUrl = "https://www.google.com"),
-        ToolSpec("web_ddg", "DDG", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}", faviconUrl = "https://duckduckgo.com"),
-        ToolSpec("web_bing", "BNG", "BING", customTarget = "https://www.bing.com/search?q={text}", faviconUrl = "https://www.bing.com"),
-        ToolSpec("web_brave", "BRV", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}", faviconUrl = "https://search.brave.com")
+        ToolSpec("web_google", "GGL", "GOOGLE", customTarget = "https://www.google.com/search?q={text}"),
+        ToolSpec("web_ddg", "DDG", "DUCKDUCKGO", customTarget = "https://duckduckgo.com/?q={text}"),
+        ToolSpec("web_bing", "BNG", "BING", customTarget = "https://www.bing.com/search?q={text}"),
+        ToolSpec("web_brave", "BRV", "BRAVE SEARCH", customTarget = "https://search.brave.com/search?q={text}")
     )
 
-    // Dedicated YouTube Subfolder items
     val youtubeSubTools = listOf(
-        ToolSpec("yt_all", "|>", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_hour", "1H", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_today", "24H", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_week", "7D", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_month", "30D", "YT THIS MONTH", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBA%3D%3D", faviconUrl = "https://www.youtube.com"),
-        ToolSpec("yt_year", "1Y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D", faviconUrl = "https://www.youtube.com")
+        ToolSpec("yt_all", "|>", "YOUTUBE (ALL)", customTarget = "https://www.youtube.com/results?search_query={text}"),
+        ToolSpec("yt_hour", "1H", "YT LAST HOUR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAQ%3D%3D"),
+        ToolSpec("yt_today", "24H", "YT TODAY", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAg%3D%3D"),
+        ToolSpec("yt_week", "7D", "YT THIS WEEK", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIAw%3D%3D"),
+        ToolSpec("yt_month", "30D", "YT THIS MONTH", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBA%3D%3D"),
+        ToolSpec("yt_year", "1Y", "YT THIS YEAR", customTarget = "https://www.youtube.com/results?search_query={text}&sp=EgIIBQ%3D%3D")
     )
 
-    // Dedicated Markdown Folder Submenu items
     val markdownSubTools = listOf(
         ToolSpec("md_bold", "**", "MD BOLD (**)"),
         ToolSpec("md_italic", "*", "MD ITALIC (*)"),
@@ -204,7 +234,6 @@ object ToolPrefs {
         ToolSpec("md_table", "|T|", "MD TABLE (2x2)")
     )
 
-    // Dedicated Regex & Developer Pipe Submenu items
     val regexPipeSubTools = listOf(
         ToolSpec("pipe_json_pretty", "{+}", "JSON PRETTY"),
         ToolSpec("pipe_json_min", "{-}", "JSON MINIFY"),
@@ -217,29 +246,19 @@ object ToolPrefs {
         ToolSpec("pipe_strip_html", "</>", "STRIP HTML TAGS")
     )
 
-    // --- Theme Preferences (Dracula Dark / Alucard Light + Follow System Toggle) ---
-    fun isFollowSystemTheme(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_FOLLOW_SYSTEM_THEME, true)
-    }
+    // --- Theme Preferences ---
+    fun isFollowSystemTheme(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_FOLLOW_SYSTEM_THEME, true)
 
     fun setFollowSystemTheme(context: Context, follow: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_FOLLOW_SYSTEM_THEME, follow)
-            .apply()
+        prefs(context).edit().putBoolean(KEY_FOLLOW_SYSTEM_THEME, follow).apply()
     }
 
-    fun isDarkThemeManual(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_DARK_THEME_MANUAL, true)
-    }
+    fun isDarkThemeManual(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_DARK_THEME_MANUAL, true)
 
     fun setDarkThemeManual(context: Context, dark: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_DARK_THEME_MANUAL, dark)
-            .apply()
+        prefs(context).edit().putBoolean(KEY_DARK_THEME_MANUAL, dark).apply()
     }
 
     fun isSystemInDarkMode(context: Context): Boolean {
@@ -297,12 +316,13 @@ object ToolPrefs {
     """.trimIndent()
 
     fun ensureRulesFile(context: Context): File {
-        val rulesFile = File(context.filesDir, "rules.txt")
+        val rulesFile = File(context.applicationContext.filesDir, "rules.txt")
         if (!rulesFile.exists()) {
             rulesFile.writeText(defaultRulesText())
+            invalidateRulesCache()
         } else {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            if (!prefs.getBoolean(KEY_MIGRATED_V25, false)) {
+            val p = prefs(context)
+            if (!p.getBoolean(KEY_MIGRATED_V25, false)) {
                 val updatedLines = rulesFile.readLines().mapNotNull { line ->
                     val t = line.trim()
                     when {
@@ -314,13 +334,126 @@ object ToolPrefs {
                     }
                 }
                 rulesFile.writeText(updatedLines.joinToString("\n"))
-                prefs.edit().putBoolean(KEY_MIGRATED_V25, true).apply()
+                p.edit().putBoolean(KEY_MIGRATED_V25, true).apply()
+                invalidateRulesCache()
             }
         }
         return rulesFile
     }
 
-    // --- User-Created Custom Folders & Tool Assignment in Settings ---
+    private fun getParsedRules(context: Context): ParsedRulesSnapshot {
+        val rulesFile = ensureRulesFile(context)
+        val mod = rulesFile.lastModified()
+        val len = rulesFile.length()
+        val existing = cachedRules
+        if (existing != null && existing.lastModified == mod && existing.fileLength == len) {
+            return existing
+        }
+
+        val entries = mutableListOf<CustomRuleEntry>()
+        val topLevel = mutableListOf<ToolSpec>()
+        val webSearch = mutableListOf<ToolSpec>()
+        val youtube = mutableListOf<ToolSpec>()
+        val markdown = mutableListOf<ToolSpec>()
+        val regexPipe = mutableListOf<ToolSpec>()
+        val folderTools = LinkedHashMap<String, MutableList<ToolSpec>>()
+        val ruleFolders = LinkedHashSet<String>()
+
+        if (rulesFile.exists()) {
+            rulesFile.readLines().forEachIndexed { idx, line ->
+                val trimmed = line.trim()
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEachIndexed
+                val parts = trimmed.split("|").map { it.trim() }
+                if (parts.size < 3) return@forEachIndexed
+
+                val rawLabel = parts[1].uppercase()
+                val target = parts[2]
+                val glyph = toPlainAsciiCode(parts[0], parts[1], target)
+                entries.add(CustomRuleEntry(idx, glyph, rawLabel, target))
+
+                when {
+                    rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/") -> {
+                        val cleanLabel = rawLabel.removePrefix("SEARCH/").removePrefix("WEB/").trim()
+                        if (cleanLabel.isNotEmpty()) {
+                            webSearch.add(
+                                ToolSpec("custom_search_${idx}_$cleanLabel", glyph, cleanLabel, customTarget = target)
+                            )
+                        }
+                    }
+                    rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/") -> {
+                        val cleanLabel = rawLabel.removePrefix("YOUTUBE/").removePrefix("YT/").trim()
+                        if (cleanLabel.isNotEmpty()) {
+                            youtube.add(
+                                ToolSpec("custom_yt_${idx}_$cleanLabel", glyph, cleanLabel, customTarget = target)
+                            )
+                        }
+                    }
+                    rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/") -> {
+                        val cleanLabel = rawLabel.removePrefix("MARKDOWN/").removePrefix("MD/").trim()
+                        val alreadyBuiltIn = markdownSubTools.any {
+                            it.label.startsWith(cleanLabel) && (target == "**{text}**" || target == "*{text}*")
+                        }
+                        if (!alreadyBuiltIn) {
+                            markdown.add(
+                                ToolSpec("custom_md_${idx}_$cleanLabel", glyph, cleanLabel, customTarget = target)
+                            )
+                        }
+                    }
+                    rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/") -> {
+                        val cleanLabel = rawLabel.removePrefix("PIPE/").removePrefix("REGEX/").trim()
+                        regexPipe.add(
+                            ToolSpec("custom_pipe_${idx}_$cleanLabel", glyph, cleanLabel, customTarget = target)
+                        )
+                    }
+                    rawLabel.contains("/") -> {
+                        val folder = sanitizeFolderName(rawLabel.substringBefore("/"))
+                        val subLabel = rawLabel.substringAfter("/").trim()
+                        if (folder.isNotEmpty() && folder !in reservedFolderPrefixes) {
+                            ruleFolders.add(folder)
+                            if (subLabel.isNotEmpty()) {
+                                folderTools.getOrPut(folder) { mutableListOf() }.add(
+                                    ToolSpec(
+                                        id = "folder_item_${idx}_$subLabel",
+                                        glyph = glyph,
+                                        label = subLabel,
+                                        customTarget = target,
+                                        folderName = folder
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    else -> {
+                        topLevel.add(
+                            ToolSpec(
+                                id = "custom_${idx}_$rawLabel",
+                                glyph = glyph,
+                                label = rawLabel,
+                                customTarget = target
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        val snap = ParsedRulesSnapshot(
+            lastModified = mod,
+            fileLength = len,
+            entries = entries,
+            topLevelCustomTools = topLevel,
+            webSearchCustomTools = webSearch,
+            youtubeCustomTools = youtube,
+            markdownCustomTools = markdown,
+            regexPipeCustomTools = regexPipe,
+            folderRuleTools = folderTools,
+            ruleFolderNames = ruleFolders
+        )
+        cachedRules = snap
+        return snap
+    }
+
+    // --- User-Created Custom Folders & Tool Assignment ---
     private val reservedFolderPrefixes = setOf("SEARCH", "WEB", "YT", "YOUTUBE", "MD", "MARKDOWN", "PIPE", "REGEX")
 
     fun sanitizeFolderName(raw: String): String {
@@ -333,8 +466,7 @@ object ToolPrefs {
     }
 
     fun getCustomFolders(context: Context): List<String> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val saved = prefs.getString(KEY_CUSTOM_FOLDERS, "")
+        val saved = prefs(context).getString(KEY_CUSTOM_FOLDERS, "")
             ?.split(",")
             ?.map { sanitizeFolderName(it) }
             ?.filter { it.isNotEmpty() && it !in reservedFolderPrefixes }
@@ -342,25 +474,7 @@ object ToolPrefs {
 
         val combined = LinkedHashSet<String>()
         combined.addAll(saved)
-
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEach { line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val rawLabel = parts[1].uppercase()
-                        if (rawLabel.contains("/")) {
-                            val folder = sanitizeFolderName(rawLabel.substringBefore("/"))
-                            if (folder.isNotEmpty() && folder !in reservedFolderPrefixes) {
-                                combined.add(folder)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        combined.addAll(getParsedRules(context).ruleFolderNames)
         return combined.toList()
     }
 
@@ -369,33 +483,27 @@ object ToolPrefs {
         if (clean.isEmpty() || clean in reservedFolderPrefixes) return false
         val current = getCustomFolders(context).toMutableSet()
         current.add(clean)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_CUSTOM_FOLDERS, current.joinToString(","))
-            .apply()
+        prefs(context).edit().putString(KEY_CUSTOM_FOLDERS, current.joinToString(",")).apply()
         return true
     }
 
     fun deleteCustomFolder(context: Context, folderName: String) {
         val target = sanitizeFolderName(folderName)
         if (target.isEmpty()) return
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val p = prefs(context)
         val remaining = getCustomFolders(context).filterNot { it == target }
-        val editor = prefs.edit()
+        val editor = p.edit()
         editor.putString(KEY_CUSTOM_FOLDERS, remaining.joinToString(","))
 
-        // Unassign any tools assigned to this folder
-        prefs.all.forEach { (k, v) ->
+        p.all.forEach { (k, v) ->
             if (k.startsWith(PREFIX_TOOL_FOLDER) && (v as? String)?.equals(target, ignoreCase = true) == true) {
                 editor.remove(k)
             }
         }
         editor.apply()
 
-        // Remove folder from icon rows if present
         setToolIconRow(context, "folder_custom_$target", 0)
 
-        // Also unwrap any FOLDER/ITEM rules in rules.txt back to top-level ITEM
         val rulesFile = ensureRulesFile(context)
         if (rulesFile.exists()) {
             val updated = rulesFile.readLines().map { line ->
@@ -413,13 +521,13 @@ object ToolPrefs {
                 }
             }
             rulesFile.writeText(updated.joinToString("\n"))
+            invalidateRulesCache()
         }
     }
 
     fun getToolFolderAssignment(context: Context, toolId: String): String? {
         if (toolId == "copy" || toolId.startsWith("folder_custom_")) return null
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(PREFIX_TOOL_FOLDER + toolId, "")?.trim().orEmpty()
+        val raw = prefs(context).getString(PREFIX_TOOL_FOLDER + toolId, "")?.trim().orEmpty()
         if (raw.isEmpty()) return null
         val validFolders = getCustomFolders(context)
         return raw.takeIf { it in validFolders }
@@ -428,7 +536,7 @@ object ToolPrefs {
     fun setToolFolderAssignment(context: Context, toolId: String, folderName: String?) {
         if (toolId == "copy" || toolId.startsWith("folder_custom_")) return
         val clean = folderName?.let { sanitizeFolderName(it) }.orEmpty()
-        val editor = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+        val editor = prefs(context).edit()
         if (clean.isEmpty()) {
             editor.remove(PREFIX_TOOL_FOLDER + toolId)
         } else {
@@ -453,27 +561,11 @@ object ToolPrefs {
         return next
     }
 
+    fun loadAssignableToolsForFolder(context: Context): List<ToolSpec> =
+        loadBaseToolsWithoutFolderEntries(context).filter { it.id != "copy" }
 
-    fun loadAssignableToolsForFolder(context: Context): List<ToolSpec> {
-        return loadBaseToolsWithoutFolderEntries(context).filter { it.id != "copy" }
-    }
-
-    fun getCustomRuleEntries(context: Context): List<CustomRuleEntry> {
-        val rulesFile = ensureRulesFile(context)
-        if (!rulesFile.exists()) return emptyList()
-        val out = mutableListOf<CustomRuleEntry>()
-        rulesFile.readLines().forEachIndexed { idx, line ->
-            val trimmed = line.trim()
-            if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                val parts = trimmed.split("|").map { it.trim() }
-                if (parts.size >= 3) {
-                    val g = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                    out.add(CustomRuleEntry(idx, g, parts[1].uppercase(), parts[2]))
-                }
-            }
-        }
-        return out
-    }
+    fun getCustomRuleEntries(context: Context): List<CustomRuleEntry> =
+        getParsedRules(context).entries
 
     fun deleteCustomRuleAtLine(context: Context, targetLineIndex: Int) {
         val rulesFile = ensureRulesFile(context)
@@ -482,6 +574,7 @@ object ToolPrefs {
         if (targetLineIndex in lines.indices) {
             lines.removeAt(targetLineIndex)
             rulesFile.writeText(lines.joinToString("\n"))
+            invalidateRulesCache()
         }
     }
 
@@ -502,53 +595,18 @@ object ToolPrefs {
             "$existing\n$newLine"
         }
         rulesFile.writeText(updated)
+        invalidateRulesCache()
         return true
     }
 
     private fun loadBaseToolsWithoutFolderEntries(context: Context): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
-        list.addAll(builtInTools)
-
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEachIndexed { idx, line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                        val rawLabel = parts[1].uppercase()
-                        val target = parts[2]
-                        val isHttp = target.startsWith("http://", true) || target.startsWith("https://", true)
-                        when {
-                            rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/") -> {}
-                            rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/") -> {}
-                            rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/") -> {}
-                            rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/") -> {}
-                            rawLabel.contains("/") -> {}
-                            else -> {
-                                list.add(
-                                    ToolSpec(
-                                        id = "custom_${idx}_$rawLabel",
-                                        glyph = glyph,
-                                        label = rawLabel,
-                                        customTarget = target,
-                                        faviconUrl = if (isHttp) target else null
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return list
+        val snap = getParsedRules(context)
+        return builtInTools + snap.topLevelCustomTools
     }
 
     fun loadAllTools(context: Context): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
+        val list = ArrayList<ToolSpec>(builtInTools.size + 8)
         list.addAll(loadBaseToolsWithoutFolderEntries(context))
-
         getCustomFolders(context).forEach { folder ->
             list.add(
                 ToolSpec(
@@ -562,196 +620,42 @@ object ToolPrefs {
         return list
     }
 
-    fun loadMarkdownTools(context: Context): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
-        list.addAll(markdownSubTools)
+    fun loadMarkdownTools(context: Context): List<ToolSpec> =
+        markdownSubTools + getParsedRules(context).markdownCustomTools
 
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEachIndexed { idx, line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                        val rawLabel = parts[1].uppercase()
-                        val target = parts[2]
-                        if (rawLabel.startsWith("MD ") || rawLabel.startsWith("MARKDOWN/") || rawLabel.startsWith("MD/")) {
-                            val cleanLabel = rawLabel.removePrefix("MARKDOWN/").removePrefix("MD/").trim()
-                            val alreadyBuiltIn = markdownSubTools.any {
-                                it.label.startsWith(cleanLabel) && (target == "**{text}**" || target == "*{text}*")
-                            }
-                            if (!alreadyBuiltIn) {
-                                list.add(
-                                    ToolSpec(
-                                        id = "custom_md_${idx}_$cleanLabel",
-                                        glyph = glyph,
-                                        label = cleanLabel,
-                                        customTarget = target
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return list
-    }
+    fun loadRegexPipeTools(context: Context): List<ToolSpec> =
+        regexPipeSubTools + getParsedRules(context).regexPipeCustomTools
 
-    fun loadRegexPipeTools(context: Context): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
-        list.addAll(regexPipeSubTools)
+    fun loadWebSearchTools(context: Context): List<ToolSpec> =
+        webSearchSubTools + getParsedRules(context).webSearchCustomTools
 
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEachIndexed { idx, line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                        val rawLabel = parts[1].uppercase()
-                        val target = parts[2]
-                        if (rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/")) {
-                            val cleanLabel = rawLabel.removePrefix("PIPE/").removePrefix("REGEX/").trim()
-                            list.add(
-                                ToolSpec(
-                                    id = "custom_pipe_${idx}_$cleanLabel",
-                                    glyph = glyph,
-                                    label = cleanLabel,
-                                    customTarget = target
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        return list
-    }
+    fun loadYoutubeTools(context: Context): List<ToolSpec> =
+        youtubeSubTools + getParsedRules(context).youtubeCustomTools
 
     fun loadCustomFolderTools(context: Context, folderName: String): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
         val targetFolder = sanitizeFolderName(folderName)
-        if (targetFolder.isEmpty()) return list
+        if (targetFolder.isEmpty()) return emptyList()
+        val p = prefs(context)
+        val validFolders = getCustomFolders(context).toHashSet()
+        if (targetFolder !in validFolders) return emptyList()
 
-        // 1. Any built-in or custom top-level tools assigned to this folder via Settings
+        val list = mutableListOf<ToolSpec>()
         loadBaseToolsWithoutFolderEntries(context).forEach { tool ->
-            if (!isToolHidden(context, tool.id) && getToolFolderAssignment(context, tool.id) == targetFolder) {
-                list.add(tool)
-            }
-        }
-
-        // 2. Any rules in rules.txt using FOLDER/SUBLABEL syntax
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEachIndexed { idx, line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                        val rawLabel = parts[1].uppercase()
-                        val target = parts[2]
-                        if (rawLabel.contains("/")) {
-                            val folder = sanitizeFolderName(rawLabel.substringBefore("/"))
-                            val subLabel = rawLabel.substringAfter("/").trim()
-                            if (folder == targetFolder && subLabel.isNotEmpty()) {
-                                val isHttp = target.startsWith("http://", true) || target.startsWith("https://", true)
-                                list.add(
-                                    ToolSpec(
-                                        id = "folder_item_${idx}_$subLabel",
-                                        glyph = glyph,
-                                        label = subLabel,
-                                        customTarget = target,
-                                        folderName = folder,
-                                        faviconUrl = if (isHttp) target else null
-                                    )
-                                )
-                            }
-                        }
-                    }
+            if (!p.getBoolean(PREFIX_HIDDEN + tool.id, false)) {
+                val assigned = p.getString(PREFIX_TOOL_FOLDER + tool.id, "")?.trim()
+                if (assigned == targetFolder) {
+                    list.add(tool)
                 }
             }
         }
+        getParsedRules(context).folderRuleTools[targetFolder]?.let { list.addAll(it) }
         return list
     }
 
-    fun loadWebSearchTools(context: Context): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
-        list.addAll(webSearchSubTools)
-
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEachIndexed { idx, line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                        val rawLabel = parts[1].uppercase()
-                        val target = parts[2]
-                        if (rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/")) {
-                            val cleanLabel = rawLabel.removePrefix("SEARCH/").removePrefix("WEB/").trim()
-                            if (cleanLabel.isNotEmpty()) {
-                                list.add(
-                                    ToolSpec(
-                                        id = "custom_search_${idx}_$cleanLabel",
-                                        glyph = glyph,
-                                        label = cleanLabel,
-                                        customTarget = target,
-                                        faviconUrl = target
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return list
-    }
-
-    fun loadYoutubeTools(context: Context): List<ToolSpec> {
-        val list = mutableListOf<ToolSpec>()
-        list.addAll(youtubeSubTools)
-
-        val rulesFile = ensureRulesFile(context)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEachIndexed { idx, line ->
-                val trimmed = line.trim()
-                if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                    val parts = trimmed.split("|").map { it.trim() }
-                    if (parts.size >= 3) {
-                        val glyph = toPlainAsciiCode(parts[0], parts[1], parts[2])
-                        val rawLabel = parts[1].uppercase()
-                        val target = parts[2]
-                        if (rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/")) {
-                            val cleanLabel = rawLabel.removePrefix("YOUTUBE/").removePrefix("YT/").trim()
-                            if (cleanLabel.isNotEmpty()) {
-                                list.add(
-                                    ToolSpec(
-                                        id = "custom_yt_${idx}_$cleanLabel",
-                                        glyph = glyph,
-                                        label = cleanLabel,
-                                        customTarget = target,
-                                        faviconUrl = target
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return list
-    }
-
-    // --- Ring-Buffer Clipboard History (20 items max, supports pinning) ---
+    // --- Ring-Buffer Clipboard History (20 items max, cached in memory) ---
     fun getClipHistory(context: Context): List<ClipEntry> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_CLIP_HISTORY, "[]") ?: "[]"
+        cachedClipHistory?.let { return it }
+        val raw = prefs(context).getString(KEY_CLIP_HISTORY, "[]") ?: "[]"
         val out = mutableListOf<ClipEntry>()
         runCatching {
             val arr = JSONArray(raw)
@@ -769,13 +673,16 @@ object ToolPrefs {
                 }
             }
         }
-        return out.sortedWith(compareByDescending<ClipEntry> { it.pinned }.thenByDescending { it.timestamp })
+        val sorted = out.sortedWith(compareByDescending<ClipEntry> { it.pinned }.thenByDescending { it.timestamp })
+        cachedClipHistory = sorted
+        return sorted
     }
 
     private fun saveClipHistory(context: Context, entries: List<ClipEntry>) {
         val sorted = entries
             .sortedWith(compareByDescending<ClipEntry> { it.pinned }.thenByDescending { it.timestamp })
             .take(MAX_CLIPS)
+        cachedClipHistory = sorted
         val arr = JSONArray()
         for (e in sorted) {
             arr.put(JSONObject().apply {
@@ -784,10 +691,7 @@ object ToolPrefs {
                 put("ts", e.timestamp)
             })
         }
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_CLIP_HISTORY, arr.toString())
-            .apply()
+        prefs(context).edit().putString(KEY_CLIP_HISTORY, arr.toString()).apply()
     }
 
     fun addClipToHistory(context: Context, text: String) {
@@ -807,6 +711,13 @@ object ToolPrefs {
         saveClipHistory(context, current)
     }
 
+    fun setPinClip(context: Context, text: String, pinned: Boolean) {
+        val current = getClipHistory(context).map {
+            if (it.text == text) it.copy(pinned = pinned) else it
+        }
+        saveClipHistory(context, current)
+    }
+
     fun deleteClip(context: Context, text: String) {
         val current = getClipHistory(context).filterNot { it.text == text }
         saveClipHistory(context, current)
@@ -817,11 +728,13 @@ object ToolPrefs {
         saveClipHistory(context, pinnedOnly)
     }
 
-    // --- Per-App Blacklist ---
+    // --- Per-App Blacklist (O(1) cached lookup for AccessibilityEvent hot path) ---
     fun getBlacklistedApps(context: Context): Set<String> {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_BLACKLIST, "") ?: ""
-        return raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        cachedBlacklist?.let { return it }
+        val raw = prefs(context).getString(KEY_BLACKLIST, "") ?: ""
+        val parsed = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toHashSet()
+        cachedBlacklist = parsed
+        return parsed
     }
 
     fun isAppBlacklisted(context: Context, pkg: String): Boolean {
@@ -834,42 +747,30 @@ object ToolPrefs {
         if (clean.isEmpty()) return
         val current = getBlacklistedApps(context).toMutableSet()
         if (blacklisted) current.add(clean) else current.remove(clean)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_BLACKLIST, current.sorted().joinToString(","))
-            .apply()
+        cachedBlacklist = current.toHashSet()
+        prefs(context).edit().putString(KEY_BLACKLIST, current.sorted().joinToString(",")).apply()
     }
 
-    // --- Edge-Snap Preference ---
-    fun isSnapLeftEdge(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_EDGE_LEFT, false)
-    }
+    // --- Edge-Snap & Layout Preferences ---
+    fun isSnapLeftEdge(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_EDGE_LEFT, false)
 
     fun setSnapLeftEdge(context: Context, leftEdge: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_EDGE_LEFT, leftEdge)
-            .apply()
+        prefs(context).edit().putBoolean(KEY_EDGE_LEFT, leftEdge).apply()
     }
 
-    fun isTwoColumnGrid(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_GRID_COLUMNS, false)
-    }
+    fun isTwoColumnGrid(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_GRID_COLUMNS, false)
 
     fun setTwoColumnGrid(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_GRID_COLUMNS, enabled)
-            .apply()
+        prefs(context).edit().putBoolean(KEY_GRID_COLUMNS, enabled).apply()
     }
 
     // --- Up to 2 Custom Icon-Only Tool Rows (Row 1 & Row 2, max 4 items per row) ---
     private fun ensureDefaultIconRows(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        if (!prefs.getBoolean(KEY_ICON_ROWS_INIT, false)) {
-            prefs.edit()
+        val p = prefs(context)
+        if (!p.getBoolean(KEY_ICON_ROWS_INIT, false)) {
+            p.edit()
                 .putString(KEY_ICON_ROW_1, "web_search_folder,youtube_folder,translate,define")
                 .putString(KEY_ICON_ROW_2, "")
                 .putBoolean(KEY_ICON_ROWS_INIT, true)
@@ -880,7 +781,7 @@ object ToolPrefs {
     fun getIconRowIds(context: Context, rowNumber: Int): List<String> {
         ensureDefaultIconRows(context)
         val key = if (rowNumber == 1) KEY_ICON_ROW_1 else KEY_ICON_ROW_2
-        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(key, "") ?: ""
+        val raw = prefs(context).getString(key, "") ?: ""
         return raw.split(",")
             .map { it.trim() }
             .filter { it.isNotEmpty() && it != "copy" && it != "incognito" }
@@ -895,19 +796,17 @@ object ToolPrefs {
             .distinct()
             .take(MAX_TOOLS_PER_ICON_ROW)
         val key = if (rowNumber == 1) KEY_ICON_ROW_1 else KEY_ICON_ROW_2
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(key, clean.joinToString(","))
-            .apply()
+        prefs(context).edit().putString(key, clean.joinToString(",")).apply()
     }
 
     fun getIconRowTools(context: Context, rowNumber: Int): List<ToolSpec> {
         val ids = getIconRowIds(context, rowNumber)
         if (ids.isEmpty()) return emptyList()
         val allMap = loadAllTools(context).associateBy { it.id }
+        val p = prefs(context)
         return ids.mapNotNull { id ->
             val spec = allMap[id]
-            if (spec != null && !isToolHidden(context, id)) spec else null
+            if (spec != null && !p.getBoolean(PREFIX_HIDDEN + id, false)) spec else null
         }
     }
 
@@ -971,56 +870,48 @@ object ToolPrefs {
         setIconRowIds(context, 2, listOf("clip_history", "qr", "screen_grab", "markdown_folder"))
     }
 
-    fun isSortMostUsed(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_SORT_MOST_USED, true)
-    }
+    fun isSortMostUsed(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SORT_MOST_USED, true)
 
     fun setSortMostUsed(context: Context, enabled: Boolean) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(KEY_SORT_MOST_USED, enabled).apply()
+        prefs(context).edit().putBoolean(KEY_SORT_MOST_USED, enabled).apply()
     }
 
-    fun isToolHidden(context: Context, id: String): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getBoolean(PREFIX_HIDDEN + id, false)
-    }
+    fun isToolHidden(context: Context, id: String): Boolean =
+        prefs(context).getBoolean(PREFIX_HIDDEN + id, false)
 
     fun setToolHidden(context: Context, id: String, hidden: Boolean) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(PREFIX_HIDDEN + id, hidden).apply()
+        prefs(context).edit().putBoolean(PREFIX_HIDDEN + id, hidden).apply()
     }
 
-    fun getUseCount(context: Context, id: String): Int {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getInt(PREFIX_COUNT + id, 0)
-    }
+    fun getUseCount(context: Context, id: String): Int =
+        prefs(context).getInt(PREFIX_COUNT + id, 0)
 
     fun recordUse(context: Context, id: String) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val current = prefs.getInt(PREFIX_COUNT + id, 0)
-        prefs.edit().putInt(PREFIX_COUNT + id, current + 1).apply()
+        val p = prefs(context)
+        val current = p.getInt(PREFIX_COUNT + id, 0)
+        p.edit().putInt(PREFIX_COUNT + id, current + 1).apply()
     }
 
     fun resetUseCounts(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val editor = prefs.edit()
-        prefs.all.keys.filter { it.startsWith(PREFIX_COUNT) }.forEach { editor.remove(it) }
+        val p = prefs(context)
+        val editor = p.edit()
+        p.all.keys.filter { it.startsWith(PREFIX_COUNT) }.forEach { editor.remove(it) }
         editor.apply()
     }
 
     fun getManualOrderedTools(context: Context): List<ToolSpec> {
         val all = loadAllTools(context)
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedOrder = prefs.getString(KEY_ORDER, "")
+        val savedOrder = prefs(context).getString(KEY_ORDER, "")
             ?.split(",")
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() }
             ?: emptyList()
 
         val orderMap = savedOrder.withIndex().associate { it.value to it.index }
+        val fallbackIndex = all.withIndex().associate { it.value.id to it.index }
         return all.sortedWith(
-            compareBy { orderMap[it.id] ?: (1000 + all.indexOf(it)) }
+            compareBy { orderMap[it.id] ?: (1000 + (fallbackIndex[it.id] ?: 0)) }
         )
     }
 
@@ -1028,19 +919,23 @@ object ToolPrefs {
         val manual = getManualOrderedTools(context)
         if (!isSortMostUsed(context)) return manual
 
+        val p = prefs(context)
         val manualIndex = manual.withIndex().associate { it.value.id to it.index }
         return manual.sortedWith(
-            compareByDescending<ToolSpec> { getUseCount(context, it.id) }
+            compareByDescending<ToolSpec> { p.getInt(PREFIX_COUNT + it.id, 0) }
                 .thenBy { manualIndex[it.id] ?: 0 }
         )
     }
 
     fun getSortedToolsForPopup(context: Context): List<ToolSpec> {
+        val p = prefs(context)
+        val validFolders = getCustomFolders(context).toHashSet()
         return getAllSortedTools(context).filter { tool ->
-            if (isToolHidden(context, tool.id)) return@filter false
-            // Hide tools from root popup if user placed them inside a custom folder
-            if (getToolFolderAssignment(context, tool.id) != null) return@filter false
-            // Only show a custom folder in the popup if it has at least 1 tool inside
+            if (p.getBoolean(PREFIX_HIDDEN + tool.id, false)) return@filter false
+            if (tool.id != "copy" && !tool.id.startsWith("folder_custom_")) {
+                val assigned = p.getString(PREFIX_TOOL_FOLDER + tool.id, "")?.trim().orEmpty()
+                if (assigned.isNotEmpty() && assigned in validFolders) return@filter false
+            }
             if (tool.folderName != null && tool.customTarget == null) {
                 return@filter loadCustomFolderTools(context, tool.folderName).isNotEmpty()
             }
@@ -1049,15 +944,15 @@ object ToolPrefs {
     }
 
     fun saveExactOrder(context: Context, orderedIds: List<String>) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val editor = prefs.edit()
+        val p = prefs(context)
+        val editor = p.edit()
         editor.putString(KEY_ORDER, orderedIds.joinToString(","))
 
         if (isSortMostUsed(context) && orderedIds.isNotEmpty()) {
             var runningMax = 0
             for (i in orderedIds.indices.reversed()) {
                 val id = orderedIds[i]
-                val c = getUseCount(context, id)
+                val c = p.getInt(PREFIX_COUNT + id, 0)
                 if (c < runningMax) {
                     editor.putInt(PREFIX_COUNT + id, runningMax)
                 } else {
@@ -1070,11 +965,11 @@ object ToolPrefs {
 
     // --- Full Settings + Custom Commands JSON Export & Import ---
     fun exportBackupJson(context: Context): String {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val p = prefs(context)
         val rulesFile = ensureRulesFile(context)
         val root = JSONObject()
         root.put("app", "sel-android")
-        root.put("version", "2.6.0")
+        root.put("version", "2.7.0")
         root.put("timestamp", System.currentTimeMillis())
         root.put("follow_system_theme", isFollowSystemTheme(context))
         root.put("dark_theme_manual", isDarkThemeManual(context))
@@ -1084,14 +979,14 @@ object ToolPrefs {
         root.put("icon_row_1", getIconRowIds(context, 1).joinToString(","))
         root.put("icon_row_2", getIconRowIds(context, 2).joinToString(","))
         root.put("custom_folders", getCustomFolders(context).joinToString(","))
-        root.put("manual_order", prefs.getString(KEY_ORDER, "") ?: "")
-        root.put("blacklisted_pkgs", prefs.getString(KEY_BLACKLIST, "") ?: "")
+        root.put("manual_order", p.getString(KEY_ORDER, "") ?: "")
+        root.put("blacklisted_pkgs", p.getString(KEY_BLACKLIST, "") ?: "")
         root.put("rules_txt", if (rulesFile.exists()) rulesFile.readText() else "")
 
         val hiddenArr = JSONArray()
         val countsObj = JSONObject()
         val folderAssignObj = JSONObject()
-        for ((k, v) in prefs.all) {
+        for ((k, v) in p.all) {
             if (k.startsWith(PREFIX_HIDDEN) && v == true) {
                 hiddenArr.put(k.removePrefix(PREFIX_HIDDEN))
             } else if (k.startsWith(PREFIX_COUNT) && v is Int && v > 0) {
@@ -1115,8 +1010,8 @@ object ToolPrefs {
     fun importBackupJson(context: Context, rawJson: String): Boolean {
         return runCatching {
             val root = JSONObject(rawJson.trim())
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val editor = prefs.edit()
+            val p = prefs(context)
+            val editor = p.edit()
 
             if (root.has("follow_system_theme")) {
                 editor.putBoolean(KEY_FOLLOW_SYSTEM_THEME, root.optBoolean("follow_system_theme", true))
@@ -1149,10 +1044,11 @@ object ToolPrefs {
             }
             if (root.has("blacklisted_pkgs")) {
                 editor.putString(KEY_BLACKLIST, root.optString("blacklisted_pkgs", ""))
+                cachedBlacklist = null
             }
 
             if (root.has("hidden_tools")) {
-                prefs.all.keys.filter { it.startsWith(PREFIX_HIDDEN) }.forEach { editor.remove(it) }
+                p.all.keys.filter { it.startsWith(PREFIX_HIDDEN) }.forEach { editor.remove(it) }
                 val arr = root.getJSONArray("hidden_tools")
                 for (i in 0 until arr.length()) {
                     val id = arr.optString(i, "")
@@ -1161,7 +1057,7 @@ object ToolPrefs {
             }
 
             if (root.has("tool_folders")) {
-                prefs.all.keys.filter { it.startsWith(PREFIX_TOOL_FOLDER) }.forEach { editor.remove(it) }
+                p.all.keys.filter { it.startsWith(PREFIX_TOOL_FOLDER) }.forEach { editor.remove(it) }
                 val fObj = root.getJSONObject("tool_folders")
                 val keys = fObj.keys()
                 while (keys.hasNext()) {
@@ -1184,7 +1080,8 @@ object ToolPrefs {
             if (root.has("rules_txt")) {
                 val rulesTxt = root.optString("rules_txt", "")
                 if (rulesTxt.isNotBlank()) {
-                    File(context.filesDir, "rules.txt").writeText(rulesTxt)
+                    File(context.applicationContext.filesDir, "rules.txt").writeText(rulesTxt)
+                    invalidateRulesCache()
                 }
             }
 
@@ -1194,7 +1091,7 @@ object ToolPrefs {
                     val clip = pArr.optString(i, "")
                     if (clip.isNotBlank()) {
                         addClipToHistory(context, clip)
-                        togglePinClip(context, clip)
+                        setPinClip(context, clip, true)
                     }
                 }
             }
@@ -1224,7 +1121,7 @@ object ToolPrefs {
                         origIndex = container.indexOfChild(rowView)
                         targetIndex = origIndex
                         rowHeight = rowView.height.coerceAtLeast(1)
-                        rowView.setBackgroundColor(Color.parseColor(palette.bgPressed))
+                        rowView.setBackgroundColor(palette.bgPressedInt)
                         rowView.alpha = 0.94f
                         rowView.translationZ = 10f
                         runCatching { v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
@@ -1290,249 +1187,5 @@ object ToolPrefs {
                 }
             }.getOrDefault(false)
         }
-    }
-}
-
-/**
- * Automatic Favicon Loader + Memory/Disk Cache for built-in and user-added Web Search Engines.
- */
-object FaviconManager {
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val executor = Executors.newFixedThreadPool(3)
-    private val inFlight = Collections.synchronizedSet(HashSet<String>())
-
-    private val memoryCache = object : LruCache<String, Bitmap>(64) {}
-
-    fun extractDomain(rawUrlOrTemplate: String?): String? {
-        if (rawUrlOrTemplate.isNullOrBlank()) return null
-        val trimmed = rawUrlOrTemplate.trim()
-        if (!trimmed.startsWith("http://", ignoreCase = true) &&
-            !trimmed.startsWith("https://", ignoreCase = true)
-        ) {
-            return null
-        }
-        val sanitized = trimmed.replace("{text}", "test")
-        val host = runCatching { Uri.parse(sanitized).host?.lowercase() }.getOrNull()
-        if (!host.isNullOrBlank()) return host
-        return runCatching {
-            val withoutScheme = trimmed.substringAfter("://").substringBefore("/")
-            withoutScheme.lowercase().trim()
-        }.getOrNull()?.takeIf { it.isNotBlank() }
-    }
-
-    fun isWebEngineTool(tool: ToolSpec): Boolean {
-        if (tool.id == "youtube_folder" || tool.id == "web_search_folder") return false
-        return extractDomain(tool.customTarget) != null
-    }
-
-    private val fallbackCache = object : LruCache<String, Bitmap>(64) {}
-
-    fun bindFavicon(context: Context, imageView: ImageView, rawUrl: String, fallbackGlyph: String, sizePx: Int) {
-        val domain = extractDomain(rawUrl)
-        if (domain == null) {
-            val key = "glyph_${fallbackGlyph}_$sizePx"
-            val cached = fallbackCache.get(key) ?: createMonogramBitmap(fallbackGlyph, "#282A36", "#50FA7B", sizePx).also {
-                fallbackCache.put(key, it)
-            }
-            imageView.setImageBitmap(cached)
-            return
-        }
-
-        imageView.tag = domain
-
-        val memBmp = memoryCache.get(domain)
-        if (memBmp != null) {
-            imageView.setImageBitmap(memBmp)
-            return
-        }
-
-        val fbKey = "${domain}_$sizePx"
-        val fbBmp = fallbackCache.get(fbKey) ?: createBrandFallbackBitmap(domain, fallbackGlyph, sizePx).also {
-            fallbackCache.put(fbKey, it)
-        }
-        imageView.setImageBitmap(fbBmp)
-
-        fetchFaviconAsync(context.applicationContext, domain, sizePx) { fetched ->
-            if (fetched != null && imageView.tag == domain) {
-                imageView.setImageBitmap(fetched)
-            }
-        }
-    }
-
-    fun prefetchAllForTools(context: Context) {
-        val appCtx = context.applicationContext
-        val dp18 = (18 * appCtx.resources.displayMetrics.density).toInt().coerceAtLeast(36)
-        val urls = mutableSetOf<String>()
-
-        ToolPrefs.webSearchSubTools.forEach { it.customTarget?.let(urls::add) }
-        ToolPrefs.youtubeSubTools.forEach { it.customTarget?.let(urls::add) }
-        ToolPrefs.loadAllTools(appCtx).forEach { it.customTarget?.let(urls::add) }
-        ToolPrefs.loadWebSearchTools(appCtx).forEach { it.customTarget?.let(urls::add) }
-        ToolPrefs.loadYoutubeTools(appCtx).forEach { it.customTarget?.let(urls::add) }
-
-        val rulesFile = ToolPrefs.ensureRulesFile(appCtx)
-        if (rulesFile.exists()) {
-            rulesFile.readLines().forEach { line ->
-                val parts = line.split("|").map { it.trim() }
-                if (parts.size >= 3 && (parts[2].startsWith("http://", true) || parts[2].startsWith("https://", true))) {
-                    urls.add(parts[2])
-                }
-            }
-        }
-
-        for (u in urls) {
-            val domain = extractDomain(u) ?: continue
-            if (memoryCache.get(domain) != null) continue
-            val f = getDiskCacheFile(appCtx, domain)
-            if (f.exists() && f.length() > 64) continue
-            fetchFaviconAsync(appCtx, domain, dp18) {}
-        }
-    }
-
-    private fun fetchFaviconAsync(
-        context: Context,
-        domain: String,
-        sizePx: Int,
-        onComplete: (Bitmap?) -> Unit
-    ) {
-        if (!inFlight.add(domain)) return
-        executor.execute {
-            var resultBmp: Bitmap? = null
-            try {
-                val diskFile = getDiskCacheFile(context, domain)
-                if (diskFile.exists() && diskFile.length() > 64) {
-                    val diskBmp = runCatching { BitmapFactory.decodeFile(diskFile.absolutePath) }.getOrNull()
-                    if (diskBmp != null) {
-                        val rounded = makeRoundedIcon(diskBmp, sizePx)
-                        resultBmp = rounded
-                        memoryCache.put(domain, rounded)
-                    }
-                }
-                val baseDomain = domain.removePrefix("www.")
-                val candidates = listOf(
-                    "https://www.google.com/s2/favicons?domain=$domain&sz=64",
-                    "https://icons.duckduckgo.com/ip3/$domain.ico",
-                    "https://www.google.com/s2/favicons?domain=$baseDomain&sz=64",
-                    "https://$domain/favicon.ico"
-                )
-                if (resultBmp == null) for (endpoint in candidates) {
-                    val bmp = downloadBitmap(endpoint)
-                    if (bmp != null && bmp.width >= 8 && bmp.height >= 8) {
-                        val rounded = makeRoundedIcon(bmp, sizePx)
-                        resultBmp = rounded
-                        memoryCache.put(domain, rounded)
-                        saveToDiskCache(context, domain, rounded)
-                        break
-                    }
-                }
-            } finally {
-                inFlight.remove(domain)
-                val finalBmp = resultBmp
-                mainHandler.post { onComplete(finalBmp) }
-            }
-        }
-    }
-
-    private fun downloadBitmap(urlStr: String): Bitmap? {
-        return runCatching {
-            var currentUrl = urlStr
-            var redirects = 0
-            while (redirects < 4) {
-                val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 4000
-                    readTimeout = 4000
-                    instanceFollowRedirects = true
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; sel-android/2.5)")
-                }
-                val code = conn.responseCode
-                if (code in 300..399) {
-                    val loc = conn.getHeaderField("Location") ?: break
-                    currentUrl = if (loc.startsWith("http")) loc else URL(URL(currentUrl), loc).toString()
-                    redirects++
-                    continue
-                }
-                if (code == 200) {
-                    val bytes = conn.inputStream.use { it.readBytes() }
-                    if (bytes.isNotEmpty()) {
-                        return@runCatching BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    }
-                }
-                break
-            }
-            null
-        }.getOrNull()
-    }
-
-    private fun getDiskCacheFile(context: Context, domain: String): File {
-        val dir = File(context.cacheDir, "favicons")
-        if (!dir.exists()) dir.mkdirs()
-        val safe = domain.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        return File(dir, "$safe.png")
-    }
-
-    private fun saveToDiskCache(context: Context, domain: String, bitmap: Bitmap) {
-        runCatching {
-            val file = getDiskCacheFile(context, domain)
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            }
-        }
-    }
-
-    private fun makeRoundedIcon(src: Bitmap, sizePx: Int): Bitmap {
-        val target = sizePx.coerceAtLeast(32)
-        val scaled = Bitmap.createScaledBitmap(src, target, target, true)
-        val out = Bitmap.createBitmap(target, target, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(out)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val rect = Rect(0, 0, target, target)
-        val rectF = RectF(rect)
-        val radius = target * 0.20f
-
-        canvas.drawRoundRect(rectF, radius, radius, paint)
-        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
-        canvas.drawBitmap(scaled, rect, rect, paint)
-        return out
-    }
-
-    private fun createBrandFallbackBitmap(domain: String, fallbackGlyph: String, sizePx: Int): Bitmap {
-        val d = domain.lowercase()
-        return when {
-            d.contains("google.") -> createMonogramBitmap("G", "#4285F4", "#FFFFFF", sizePx)
-            d.contains("duckduckgo.") -> createMonogramBitmap("D", "#DE5833", "#FFFFFF", sizePx)
-            d.contains("bing.") -> createMonogramBitmap("b", "#008373", "#FFFFFF", sizePx)
-            d.contains("brave.") -> createMonogramBitmap("B", "#FB542B", "#FFFFFF", sizePx)
-            d.contains("youtube.") || d.contains("youtu.be") -> createMonogramBitmap("|>", "#FF0000", "#FFFFFF", sizePx)
-            d.contains("wikipedia.") -> createMonogramBitmap("W", "#E8E8E8", "#111111", sizePx)
-            else -> {
-                val letter = d.removePrefix("www.").removePrefix("search.").firstOrNull()?.uppercaseChar()?.toString()
-                    ?: fallbackGlyph.take(1)
-                createMonogramBitmap(letter, "#282A36", "#50FA7B", sizePx)
-            }
-        }
-    }
-
-    private fun createMonogramBitmap(letter: String, bgHex: String, fgHex: String, sizePx: Int): Bitmap {
-        val target = sizePx.coerceAtLeast(32)
-        val out = Bitmap.createBitmap(target, target, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(out)
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor(bgHex)
-            style = Paint.Style.FILL
-        }
-        val radius = target * 0.22f
-        canvas.drawRoundRect(RectF(0f, 0f, target.toFloat(), target.toFloat()), radius, radius, bgPaint)
-
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor(fgHex)
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            textSize = if (letter.length > 1) target * 0.46f else target * 0.58f
-            textAlign = Paint.Align.CENTER
-        }
-        val y = target / 2f - (textPaint.descent() + textPaint.ascent()) / 2f
-        canvas.drawText(letter.take(2), target / 2f, y, textPaint)
-        return out
     }
 }

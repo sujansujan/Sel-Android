@@ -1,17 +1,15 @@
 # `[sel_]` — Plain-Text Vertical Selection Palette for Android
 
-A minimal, zero-bloat (<1 MB) PopClip + Google Lens plain-text alternative for Android built with pure native views and `TYPE_ACCESSIBILITY_OVERLAY`, inspired by the clean ASCII scoreboard aesthetic of [PlainTextSports.com](https://plaintextsports.com/) and styled with the official [Dracula & Alucard](https://draculatheme.com/spec) palettes.
+A fast, minimal PopClip + Google Lens plain-text alternative for Android built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and on-device Google Play Services ML Kit OCR, inspired by the clean ASCII scoreboard aesthetic of [PlainTextSports.com](https://plaintextsports.com/) and styled with the official [Dracula & Alucard](https://draculatheme.com/spec) palettes.
 
-## v2.6.0 UX Highlights
-- **Streamlined `[HOME]` with 1-Tap Sandbox Test Chips & Smart Onboarding:**
-  - The top-right status badge (`[ ● ACTIVE ↗ ]` / `[ ○ ENABLE ↗ ]`) is now clickable from every screen, and `[HOME]` collapses the setup banner into a single status line once the service is active.
-  - Added 1-tap sample chips (`[PHONE]`, `[WORD]`, `[MATH]`, `[URL]`, `[HASH]`) above the Sandbox so anyone can test context-aware tools with a single tap, and tucked technical intent strings behind `[ ? AUTOMATION ▾ ]`.
-- **Interactive 4-Slot Top Row Matrix & Checklist Folder Manager in `[TOOLS]`:**
-  - Tap any slot in `ROW 1` or `ROW 2` (`[/]`, `[|>]`, `[<>]`, `[?=]`, or `[ + ]`) to assign or swap bracketed top-row icons via a plain-text slot picker dialog — eliminating button wrapping.
-  - Tap `[ + ITEMS ]` on any custom folder to check/uncheck multiple tools into that folder at once.
-- **1-Tap Popular Search Presets & Visual Rule List in `[RULES]`:**
-  - Added 1-tap presets (`[+REDDIT]`, `[+MAPS]`, `[+PERPLEXITY]`, `[+GITHUB]`, `[+IMDB]`, `[+CHATGPT]`), a visual placement selector (`[ IN: WEB SEARCH > ]` / `[ IN: MAIN LIST ]` / `[ IN: YOUTUBE > ]` / custom folder), and a visual list of active custom rules with `[ × ]` delete buttons.
-- **Unified Popup Behavior Controls & 1-Tap Installed App Picker in `[SET]`:**
-  - Toggle Dracula/Alucard theme, `1-COL` vs `2-COL` layout, `LEFT` vs `RIGHT` screen edge, and `MOST USED` vs `MANUAL` sort in one place, plus mute apps via `[ + PICK INSTALLED APP ]` without typing package names.
-- **Polished `[CLIPS]` & Submenu Header Navigation:**
-  - Added `[ + SAVE CURRENT CLIP ]`, replaced the literal `"(Empty)"` scratchpad text with a proper hint + `[ ✓ SAVE NOTES ]`, and made the floating popup header display `< BACK · [MODE]` in submenus.
+## v2.7.0 Highlights
+- **Universal Cross-App Popup Reliability (`SelectionDetector`):**
+  - Detects floating ActionMode & selection toolbars across **all** apps (Chrome, Firefox/GeckoView, WebViews, Jetpack Compose `SelectionContainer`, WhatsApp, Telegram, Gmail, React Native, PDF readers) via multi-window scanning, view-ID matching, deep BFS, and class-agnostic `ACTION_COPY`.
+  - Uses API 26+ `EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY` for exact pixel selection bounds and `WindowInsets` / IME awareness so the popup never gets hidden behind notches, nav bars, or keyboards.
+  - Eliminated premature touch-dismissal bugs, stuck-detached overlay states, stale foreground package tracking, and clipboard listener leaks.
+- **Intuitive Dual-Mode Screen Grab + On-Device Pixel OCR (`ScreenTextHarvester`, `ScreenOcrEngine`, `LensOverlayView`):**
+  - Translucent screen visibility keeps the real app crisp underneath—with accurate per-line highlights, natural multi-tap block selection, **live drag-to-lasso box selection**, 1-tap detected entity chips, and a **`[LIST]` Reader + `[EDIT]` Inline Editor** sheet.
+  - Built-in **Google Play Services ML Kit Pixel OCR** (`[OCR]` button & automatic fallback when 0 accessibility nodes exist) freezes video/image frames via API 30+ `takeScreenshot()` and recognizes text right off images, memes, and videos.
+- **Performance, Modularity & Automated CI Tests:**
+  - Cached `rules.txt`, blacklist, and clipboard history in memory (`0` disk reads per popup open), pre-parsed `ThemePalette` colors, pre-compiled regexes (`TextTransforms`), bounded cached `NetworkTools`, lazy `TextToSpeech`, and removed dead background favicon fetching.
+  - Modularized `MainActivity` into dedicated tab controllers (`Home`, `Settings`, `Tools`, `Rules`, `Clips`) with shared `UiKit` helpers, and added JVM JUnit tests executed automatically in GitHub Actions.

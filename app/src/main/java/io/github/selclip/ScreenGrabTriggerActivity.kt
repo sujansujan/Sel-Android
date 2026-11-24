@@ -12,7 +12,7 @@ class ScreenGrabTriggerActivity : Activity() {
         super.onCreate(savedInstanceState)
         val service = SelAccessibilityService.instance
         if (service != null) {
-            service.triggerScreenGrab(delayMs = 150L)
+            service.triggerScreenGrab(delayMs = 240L)
         } else {
             Toast.makeText(
                 this,
