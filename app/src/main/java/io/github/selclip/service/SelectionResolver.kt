@@ -6,6 +6,7 @@ import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -75,6 +76,10 @@ class SelectionResolver(
         "android:id/floating_toolbar_menu_item_text",
         "android:id/action_mode_close_button"
     )
+
+    private val isDebugBuild: Boolean by lazy {
+        (service.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
 
     val density: Float get() = service.resources.displayMetrics.density
     private fun dp(v: Int): Int = (v * density).toInt()
@@ -280,6 +285,9 @@ class SelectionResolver(
             }
         }
 
+        if (isDebugBuild) {
+            Log.d("SelDiag", "floatWin id=$windowId rect=$windowRect visited=$visited matched=${matchedButtons.size} pkg=${root.packageName}")
+        }
         // STRICT verification: require at least ONE genuine selection toolbar button ID or keyword
         // (Copy/Cut/Select all/Share/Web search/Translate/Sel) so unrelated floating tooltips or
         // browser popups NEVER false-trigger Sel!
@@ -453,7 +461,8 @@ class SelectionResolver(
     fun findSelectionAcrossAppWindows(
         preferredRoot: AccessibilityNodeInfo?,
         toolbarBounds: Box?,
-        toolbarWindowId: Int = -1
+        toolbarWindowId: Int = -1,
+        debugDump: Boolean = false
     ): ResolvedSelection? {
         // Fast O(1) check on focused input first (browser address bar, <input>, <textarea>)
         findFocusedNode()?.let { focused ->
@@ -499,7 +508,7 @@ class SelectionResolver(
         }
 
         for (scanRoot in roots) {
-            findSelectionSpatial(scanRoot, toolbarBounds, maxNodes = 550, maxDepth = 28)?.let { return it }
+            findSelectionSpatial(scanRoot, toolbarBounds, maxNodes = 550, maxDepth = 28, debugDump = debugDump)?.let { return it }
         }
         return null
     }
@@ -521,7 +530,8 @@ class SelectionResolver(
         root: AccessibilityNodeInfo,
         toolbarBounds: Box?,
         maxNodes: Int,
-        maxDepth: Int
+        maxDepth: Int,
+        debugDump: Boolean = false
     ): ResolvedSelection? {
         val (_, realH) = readRealScreenSize()
         val targetY = toolbarBounds?.bottom?.plus(dp(36)) ?: (realH / 2)
@@ -531,6 +541,7 @@ class SelectionResolver(
 
         val hits = mutableListOf<ResolvedSelection>()
         var visited = 0
+        var debugLogged = 0
         val tmpRect = Rect()
 
         while (pq.isNotEmpty() && visited < maxNodes) {
@@ -540,6 +551,26 @@ class SelectionResolver(
 
             if (isBrowserSurfaceNode(node)) {
                 runCatching { node.refresh() }
+            }
+
+            if (debugDump && debugLogged < 14) {
+                val ns = node.textSelectionStart
+                val ne = node.textSelectionEnd
+                val t = node.text?.toString().orEmpty()
+                val cls = node.className?.toString()?.substringAfterLast('.').orEmpty()
+                val interesting = ns >= 0 || ne >= 0 || node.isSelected || isBrowserSurfaceNode(node) ||
+                    (cur.distToToolbar <= dp(120) && t.isNotBlank())
+                if (interesting) {
+                    val acts = runCatching { node.actionList.map { it.id } }.getOrDefault(emptyList())
+                    val hasCopyAct = AccessibilityNodeInfo.ACTION_COPY in acts
+                    val extraKeys = runCatching { node.extras?.keySet()?.joinToString(",") }.getOrNull().orEmpty()
+                    node.getBoundsInScreen(tmpRect)
+                    Log.d(
+                        "SelDiag",
+                        "node[$visited] d=${cur.depth} dist=${cur.distToToolbar} cls=$cls vis=${node.isVisibleToUser} sel=${node.isSelected} idx=$ns..$ne copy=$hasCopyAct ch=${node.childCount} r=$tmpRect txt='${t.take(36)}' extras=[$extraKeys]"
+                    )
+                    debugLogged++
+                }
             }
 
             // Check virtual nodes even if isVisibleToUser is false when explicit selection indices exist
