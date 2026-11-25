@@ -9,18 +9,15 @@ import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
 import io.github.selclip.SelAccessibilityService
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ThemeMode
-import java.io.File
 
 /**
- * Tab 3 (Settings): Appearance, Muted Apps, Clips & Scratchpad Notes, and JSON Backup.
+ * Tab 3 (Settings): Popup Style (Labels vs Icons Only), Appearance, Muted Apps, and JSON Backup.
+ * (Clipboard History & Notes completely removed.)
  */
 class SettingsTab(
     private val activity: Activity,
@@ -30,22 +27,43 @@ class SettingsTab(
 ) {
 
     private lateinit var mutedAppsContainer: LinearLayout
-    private lateinit var clipsToggleBtn: TextView
-    private lateinit var clipsBody: LinearLayout
-    private lateinit var notesInput: EditText
 
     fun buildView(): View {
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
         val themeMode = PrefsStore.getThemeMode(activity)
+        val iconsOnly = PrefsStore.isIconsOnlyMode(activity)
 
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
 
-            // 1. Theme
+            // 1. Popup Bar Style (Labels vs Icons Only with Auto-Fetched Favicons)
+            addView(UiKit.sectionTitle(activity, "Popup Bar Style"))
+            addView(
+                UiKit.text(
+                    activity,
+                    "Icons Only shows crisp native icons and auto-fetched favicons for your search portals.",
+                    12.5f,
+                    p.fgMutedInt
+                ).apply { setPadding(dp(2), 0, dp(2), dp(8)) }
+            )
+            val styleRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            styleRow.addView(UiKit.equalPill(activity, "Labels", p.accentPrimaryInt, selected = !iconsOnly) {
+                PrefsStore.setIconsOnlyMode(activity, false)
+                SelAccessibilityService.instance?.refreshThemeIfVisible()
+                onRebuildUi()
+            })
+            styleRow.addView(UiKit.equalPill(activity, "Icons Only", p.accentPrimaryInt, selected = iconsOnly) {
+                PrefsStore.setIconsOnlyMode(activity, true)
+                SelAccessibilityService.instance?.refreshThemeIfVisible()
+                onRebuildUi()
+            })
+            addView(styleRow)
+
+            // 2. Theme (Auto follows Android 12+ Material You dynamic colors)
             addView(UiKit.sectionTitle(activity, "Appearance"))
             val themeRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-            themeRow.addView(UiKit.equalPill(activity, "Auto", p.accentSuccessInt, selected = themeMode == ThemeMode.AUTO) {
+            themeRow.addView(UiKit.equalPill(activity, "Auto (Native)", p.accentPrimaryInt, selected = themeMode == ThemeMode.AUTO) {
                 PrefsStore.setThemeMode(activity, ThemeMode.AUTO)
                 SelAccessibilityService.instance?.refreshThemeIfVisible()
                 onRebuildUi()
@@ -55,14 +73,14 @@ class SettingsTab(
                 SelAccessibilityService.instance?.refreshThemeIfVisible()
                 onRebuildUi()
             })
-            themeRow.addView(UiKit.equalPill(activity, "Light", p.accentInfoInt, selected = themeMode == ThemeMode.LIGHT) {
+            themeRow.addView(UiKit.equalPill(activity, "Light", p.accentPrimaryInt, selected = themeMode == ThemeMode.LIGHT) {
                 PrefsStore.setThemeMode(activity, ThemeMode.LIGHT)
                 SelAccessibilityService.instance?.refreshThemeIfVisible()
                 onRebuildUi()
             })
             addView(themeRow)
 
-            // 2. Muted Apps
+            // 3. Muted Apps
             addView(UiKit.sectionTitle(activity, "Muted Apps"))
             addView(UiKit.fullButton(activity, "Pick App to Mute", p.accentPrimaryInt) {
                 showMuteAppPicker()
@@ -75,55 +93,6 @@ class SettingsTab(
             }
             addView(mutedAppsContainer)
 
-            // 3. Clips & Notes
-            addView(UiKit.sectionTitle(activity, "Clips & Notes"))
-            clipsBody = UiKit.card(activity, padH = 10, padV = 8).apply { visibility = View.GONE }
-            clipsToggleBtn = UiKit.fullButton(activity, "Clipboard History (0) ▾", p.fgPrimaryInt) {
-                val show = clipsBody.visibility != View.VISIBLE
-                clipsBody.visibility = if (show) View.VISIBLE else View.GONE
-                refreshClips()
-            }
-            addView(clipsToggleBtn)
-            addView(clipsBody)
-
-            val notesBox = UiKit.card(activity).apply {
-                visibility = View.GONE
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = dp(6) }
-            }
-            notesInput = UiKit.inputField(activity, "Saved notes appear here…", singleLine = false).apply {
-                minLines = 5
-                gravity = Gravity.TOP or Gravity.START
-            }
-            val notesBtns = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(8), 0, 0)
-            }
-            notesBtns.addView(UiKit.equalPill(activity, "Save", p.accentSuccessInt) {
-                File(activity.filesDir, "scratchpad.txt").writeText(notesInput.text.toString())
-                Toast.makeText(activity, "Saved notes", Toast.LENGTH_SHORT).show()
-            })
-            notesBtns.addView(UiKit.equalPill(activity, "Copy", p.accentInfoInt) {
-                UiKit.copyPlain(activity, notesInput.text.toString(), "Copied notes")
-            })
-            notesBtns.addView(UiKit.equalPill(activity, "Clear", p.dangerInt) {
-                File(activity.filesDir, "scratchpad.txt").writeText("")
-                notesInput.setText("")
-            })
-            notesBox.addView(notesInput)
-            notesBox.addView(notesBtns)
-
-            lateinit var notesToggle: TextView
-            notesToggle = UiKit.fullButton(activity, "Scratchpad Notes ▾", p.fgPrimaryInt) {
-                val show = notesBox.visibility != View.VISIBLE
-                notesBox.visibility = if (show) View.VISIBLE else View.GONE
-                notesToggle.text = if (show) "Scratchpad Notes ▴" else "Scratchpad Notes ▾"
-            }
-            addView(notesToggle)
-            addView(notesBox)
-
             // 4. Backup & Restore
             addView(UiKit.sectionTitle(activity, "Backup & Restore"))
             val backupRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
@@ -135,12 +104,6 @@ class SettingsTab(
 
     fun refresh() {
         if (::mutedAppsContainer.isInitialized) refreshMutedApps()
-        if (::clipsBody.isInitialized) refreshClips()
-        if (::notesInput.isInitialized) {
-            val f = File(activity.filesDir, "scratchpad.txt")
-            val txt = if (f.exists()) f.readText() else ""
-            notesInput.setText(if (txt == "(Empty)") "" else txt)
-        }
     }
 
     private fun refreshMutedApps() {
@@ -165,7 +128,7 @@ class SettingsTab(
             })
             row.addView(UiKit.text(activity, "×", 17f, p.dangerInt, bold = true).apply {
                 minWidth = dp(38)
-                minHeight = dp(38)
+                minimumHeight = dp(38)
                 gravity = Gravity.CENTER
                 setOnClickListener {
                     PrefsStore.setAppMuted(activity, pkg, false)
@@ -174,57 +137,6 @@ class SettingsTab(
             })
             mutedAppsContainer.addView(row)
         }
-    }
-
-    private fun refreshClips() {
-        val p = UiKit.pal(activity)
-        val dp = { v: Int -> UiKit.dp(activity, v) }
-        val clips = PrefsStore.getClipHistory(activity)
-        val open = clipsBody.visibility == View.VISIBLE
-        clipsToggleBtn.text = "Clipboard History (${clips.size}) ${if (open) "▴" else "▾"}"
-        if (!open) return
-
-        clipsBody.removeAllViews()
-        if (clips.isEmpty()) {
-            clipsBody.addView(UiKit.text(activity, "No saved clips yet.", 12.5f, p.fgMutedInt))
-            return
-        }
-        clips.forEach { entry ->
-            val row = LinearLayout(activity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(42)
-            }
-            row.addView(UiKit.text(activity, if (entry.pinned) "★" else "☆", 15f, if (entry.pinned) p.accentSuccessInt else p.fgMutedInt, bold = true).apply {
-                minWidth = dp(38)
-                minimumHeight = dp(40)
-                gravity = Gravity.CENTER
-                setOnClickListener {
-                    PrefsStore.togglePinClip(activity, entry.text)
-                    refreshClips()
-                }
-            })
-            row.addView(UiKit.text(activity, entry.text.replace("\n", " ↵ "), 13f, p.fgPrimaryInt).apply {
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { UiKit.copyPlain(activity, entry.text, "Copied clip") }
-            })
-            row.addView(UiKit.text(activity, "×", 17f, p.dangerInt, bold = true).apply {
-                minWidth = dp(38)
-                minimumHeight = dp(40)
-                gravity = Gravity.CENTER
-                setOnClickListener {
-                    PrefsStore.deleteClip(activity, entry.text)
-                    refreshClips()
-                }
-            })
-            clipsBody.addView(row)
-        }
-        clipsBody.addView(UiKit.fullButton(activity, "Clear Unpinned Clips", p.dangerInt) {
-            PrefsStore.clearUnpinnedClips(activity)
-            refreshClips()
-        })
     }
 
     private fun showMuteAppPicker() {
@@ -276,7 +188,7 @@ class SettingsTab(
                     if (muted) p.dangerInt else p.fgPrimaryInt,
                     bold = muted
                 ).apply {
-                    minHeight = dp(44)
+                    minimumHeight = dp(44)
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(10), dp(8), dp(10), dp(8))
                     background = GradientDrawable().apply {
@@ -309,7 +221,7 @@ class SettingsTab(
         dialogRoot.addView(scroll)
 
         var dialog: AlertDialog? = null
-        dialogRoot.addView(UiKit.fullButton(activity, "Done", p.accentSuccessInt, filled = true) {
+        dialogRoot.addView(UiKit.fullButton(activity, "Done", p.accentPrimaryInt, filled = true) {
             refreshMutedApps()
             dialog?.dismiss()
         })

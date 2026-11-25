@@ -114,7 +114,6 @@ object ContextActionResolver {
         "define" -> "Define"
         "translate" -> "Translate"
         "qr" -> "QR"
-        "clip_history" -> "Clips"
         "markdown_folder" -> "MD"
         "regex_pipe" -> "Pipe"
         "clean_url" -> "Clean"
@@ -123,7 +122,6 @@ object ContextActionResolver {
         "sort" -> "Sort"
         "case" -> "Aa"
         "speak" -> "Speak"
-        "log" -> "Note"
         "magnet" -> "Magnet"
         else -> tool.label.substringBefore(">").trim().take(8)
     }
@@ -132,7 +130,8 @@ object ContextActionResolver {
         ctx: SelectionContext,
         hiddenToolIds: Set<String> = emptySet(),
         pinnedTools: List<ToolSpec> = emptyList(),
-        searchLabel: String = "Search"
+        searchLabel: String = "Search",
+        defaultSearchUrl: String? = "https://www.google.com/search?q={text}"
     ): List<PopAction> {
         val actions = ArrayList<PopAction>(10)
         fun isAllowed(toolId: String): Boolean = toolId !in hiddenToolIds
@@ -206,8 +205,8 @@ object ContextActionResolver {
         }
 
         // Always-visible customizable Search + YouTube (tap = instant search, long-press = all options)
-        addUnique(PopAction("default_search", searchLabel, accent = actions.isEmpty()))
-        addUnique(PopAction("youtube_direct", "YT"))
+        addUnique(PopAction("default_search", searchLabel, accent = actions.isEmpty(), faviconUrl = defaultSearchUrl))
+        addUnique(PopAction("youtube_direct", "YT", faviconUrl = "https://www.youtube.com"))
 
         // Always-visible user-pinned tools
         for (pinned in pinnedTools) {
@@ -217,7 +216,10 @@ object ContextActionResolver {
                     id = pinned.id,
                     label = shortLabelForPinnedTool(pinned),
                     accent = false,
-                    customTool = pinned
+                    customTool = pinned,
+                    faviconUrl = pinned.customTarget?.takeIf {
+                        it.startsWith("http://", true) || it.startsWith("https://", true)
+                    }
                 )
             )
         }

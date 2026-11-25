@@ -63,12 +63,20 @@ class ContextActionResolverTest {
             ToolSpec("custom_gpt", "GPT", "ChatGPT", customTarget = "https://chatgpt.com/?q={text}")
         )
         val ctx = ContextActionResolver.analyze("serendipity")
-        val ids = ContextActionResolver.resolveBarActions(ctx, pinnedTools = pinned, searchLabel = "DDG").map { it.id }
+        val actions = ContextActionResolver.resolveBarActions(
+            ctx,
+            pinnedTools = pinned,
+            searchLabel = "DDG",
+            defaultSearchUrl = "https://duckduckgo.com/?q={text}"
+        )
+        val ids = actions.map { it.id }
         assertEquals(
             listOf("define", "translate", "default_search", "youtube_direct", "qr", "custom_gpt"),
             ids
         )
         assertEquals(1, ids.count { it == "translate" })
+        assertEquals("https://duckduckgo.com/?q={text}", actions.first { it.id == "default_search" }.faviconUrl)
+        assertEquals("https://chatgpt.com/?q={text}", actions.first { it.id == "custom_gpt" }.faviconUrl)
     }
 
     @Test

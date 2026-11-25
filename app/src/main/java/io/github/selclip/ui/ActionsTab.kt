@@ -1,20 +1,26 @@
 package io.github.selclip.ui
 
 import android.app.Activity
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import io.github.selclip.SelAccessibilityService
 import io.github.selclip.data.BuiltInRegistry
+import io.github.selclip.data.FaviconRepository
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.RulesRepository
+import io.github.selclip.overlay.ActionIconFactory
 
 /**
- * Tab 2 (Actions): Default Search Engine picker, Custom Web Search & Rules, and Actions/Pins/Ordering.
+ * Tab 2 (Actions): Default Search Engine picker (with live favicons), Custom Web Search & Rules
+ * (auto-fetching favicons on creation), and Actions/Pins/Ordering.
  */
 class ActionsTab(private val activity: Activity) {
 
@@ -28,6 +34,10 @@ class ActionsTab(private val activity: Activity) {
         val dp = { v: Int -> UiKit.dp(activity, v) }
         val rulesFile = RulesRepository.ensureRulesFile(activity)
 
+        // Prefetch favicons for existing search portals cleanly in background
+        val existingUrls = PrefsStore.loadWebSearchTools(activity).mapNotNull { it.customTarget } + "https://www.youtube.com"
+        FaviconRepository.prefetchAll(activity, existingUrls)
+
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
 
@@ -36,7 +46,7 @@ class ActionsTab(private val activity: Activity) {
             addView(
                 UiKit.text(
                     activity,
-                    "Always visible on the popup bar. Tap to search immediately; long-press for all engines.",
+                    "Always on the popup bar. Tap to search immediately; long-press for all engines.",
                     12.5f,
                     p.fgMutedInt
                 ).apply { setPadding(dp(2), 0, dp(2), dp(8)) }
@@ -45,7 +55,7 @@ class ActionsTab(private val activity: Activity) {
             addView(defaultSearchContainer)
 
             // 2. Custom Web Search & Presets
-            addView(UiKit.sectionTitle(activity, "Custom Web Search"))
+            addView(UiKit.sectionTitle(activity, "Custom Search Portals"))
             val presetRow1 = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
             val presetRow2 = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -55,10 +65,11 @@ class ActionsTab(private val activity: Activity) {
                 val targetRow = if (idx < 3) presetRow1 else presetRow2
                 targetRow.addView(UiKit.equalPill(activity, preset.buttonLabel, p.accentInfoInt) {
                     val added = RulesRepository.appendRule(activity, preset.glyph, preset.ruleName, preset.url)
+                    FaviconRepository.getOrFetch(activity, preset.url) { refresh() }
                     refresh()
                     Toast.makeText(
                         activity,
-                        if (added) "Added ${preset.ruleName.substringAfter("/")}" else "Already added",
+                        if (added) "Added ${preset.ruleName.substringAfter("/")} (fetching icon…)" else "Already added",
                         Toast.LENGTH_SHORT
                     ).show()
                 })
@@ -76,7 +87,7 @@ class ActionsTab(private val activity: Activity) {
             }
             addCard.addView(nameIn)
             addCard.addView(urlIn)
-            addCard.addView(UiKit.fullButton(activity, "Add to Web Search", p.accentSuccessInt, filled = true) {
+            addCard.addView(UiKit.fullButton(activity, "Add Search Portal", p.accentPrimaryInt, filled = true) {
                 val name = nameIn.text.toString().trim().uppercase()
                 var url = urlIn.text.toString().trim()
                 if (name.isEmpty() || url.isEmpty()) {
@@ -92,10 +103,12 @@ class ActionsTab(private val activity: Activity) {
                 val label = if (name.contains("/")) name else "SEARCH/$name"
                 val glyph = RulesRepository.inferShortCode("", label, url)
                 RulesRepository.appendRule(activity, glyph, label, url)
+                // Auto-fetch favicon for the newly created search portal!
+                FaviconRepository.getOrFetch(activity, url) { refresh() }
                 nameIn.setText("")
                 urlIn.setText("")
                 refresh()
-                Toast.makeText(activity, "Added $name", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, "Added $name (fetching favicon…)", Toast.LENGTH_SHORT).show()
             })
             addView(addCard)
 
@@ -107,7 +120,7 @@ class ActionsTab(private val activity: Activity) {
             }
             addView(customListContainer)
 
-            // Collapsible raw rules.txt editor for power users
+            // Collapsible raw rules.txt editor
             val rawBox = LinearLayout(activity).apply {
                 orientation = LinearLayout.VERTICAL
                 visibility = View.GONE
@@ -120,6 +133,8 @@ class ActionsTab(private val activity: Activity) {
             rawBox.addView(rawRulesInput)
             rawBox.addView(UiKit.fullButton(activity, "Save rules.txt", p.accentSuccessInt) {
                 RulesRepository.writeRawRules(activity, rawRulesInput.text.toString())
+                val urls = PrefsStore.loadWebSearchTools(activity).mapNotNull { it.customTarget }
+                FaviconRepository.prefetchAll(activity, urls)
                 refresh()
                 Toast.makeText(activity, "Saved rules.txt", Toast.LENGTH_SHORT).show()
             })
@@ -142,7 +157,7 @@ class ActionsTab(private val activity: Activity) {
             addView(
                 UiKit.text(
                     activity,
-                    "Tap ★ to pin an action permanently to the bar. Drag ⋮⋮ to reorder the drawer.",
+                    "Tap ★ to pin an action permanently onto the popup bar. Drag ⋮⋮ to reorder the overflow menu.",
                     12.5f,
                     p.fgMutedInt
                 ).apply { setPadding(dp(2), 0, dp(2), dp(8)) }
@@ -156,8 +171,9 @@ class ActionsTab(private val activity: Activity) {
         if (!::defaultSearchContainer.isInitialized) return
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
+        val iconPx = dp(18)
 
-        // 1. Default Search Engine Grid
+        // 1. Default Search Engine Grid (with favicons!)
         defaultSearchContainer.removeAllViews()
         val engines = PrefsStore.loadWebSearchTools(activity)
         val defaultId = PrefsStore.resolveDefaultSearchEngine(activity).id
@@ -170,24 +186,72 @@ class ActionsTab(private val activity: Activity) {
             for (col in 0 until 2) {
                 val eng = engines.getOrNull(idx + col) ?: continue
                 val selected = eng.id == defaultId
-                val label = if (selected) "✓ ${eng.label}" else eng.label
-                row.addView(UiKit.equalPill(activity, label, if (selected) p.accentSuccessInt else p.fgPrimaryInt, selected) {
-                    PrefsStore.setDefaultSearchEngineId(activity, eng.id)
-                    refresh()
-                    SelAccessibilityService.instance?.refreshThemeIfVisible()
-                    Toast.makeText(activity, "Default search: ${eng.label}", Toast.LENGTH_SHORT).show()
+                val pill = LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    minimumHeight = dp(42)
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    background = StateListDrawable().apply {
+                        addState(
+                            intArrayOf(android.R.attr.state_pressed),
+                            GradientDrawable().apply {
+                                setColor(p.bgPressedInt)
+                                cornerRadius = UiKit.dpF(activity, 10f)
+                            }
+                        )
+                        addState(
+                            intArrayOf(),
+                            GradientDrawable().apply {
+                                setColor(if (selected) p.accentPrimaryInt else p.bgSurfaceInt)
+                                setStroke(dp(1), if (selected) p.accentPrimaryInt else p.borderInt)
+                                cornerRadius = UiKit.dpF(activity, 10f)
+                            }
+                        )
+                    }
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        topMargin = dp(3)
+                        bottomMargin = dp(3)
+                        marginStart = dp(3)
+                        marginEnd = dp(3)
+                    }
+                    setOnClickListener {
+                        PrefsStore.setDefaultSearchEngineId(activity, eng.id)
+                        refresh()
+                        SelAccessibilityService.instance?.refreshThemeIfVisible()
+                        Toast.makeText(activity, "Default search: ${eng.label}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                val icon = ActionIconFactory.createFaviconOrBadge(
+                    context = activity,
+                    urlTemplate = eng.customTarget,
+                    fallbackText = eng.glyph,
+                    tintColor = if (selected) p.onAccentInt else p.fgMutedInt,
+                    sizePx = iconPx,
+                    onFaviconLoaded = { refresh() }
+                )
+                pill.addView(ImageView(activity).apply {
+                    setImageDrawable(icon)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(6) }
                 })
+                pill.addView(
+                    UiKit.text(activity, eng.label, 12.5f, if (selected) p.onAccentInt else p.fgPrimaryInt, bold = true).apply {
+                        isSingleLine = true
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+                )
+                row.addView(pill)
             }
             defaultSearchContainer.addView(row)
             idx += 2
         }
 
-        // 2. Custom Rules
+        // 2. Custom Rules (with auto-fetched favicons + ★ pin toggle!)
         customListContainer.removeAllViews()
         val entries = RulesRepository.getEntries(activity)
         val searchByTarget = PrefsStore.loadWebSearchTools(activity).associateBy { it.customTarget }
         if (entries.isEmpty()) {
-            customListContainer.addView(UiKit.text(activity, "No custom actions yet.", 12.5f, p.fgMutedInt))
+            customListContainer.addView(UiKit.text(activity, "No custom portals yet.", 12.5f, p.fgMutedInt))
         } else {
             entries.forEach { entry ->
                 val row = LinearLayout(activity).apply {
@@ -195,6 +259,21 @@ class ActionsTab(private val activity: Activity) {
                     gravity = Gravity.CENTER_VERTICAL
                     minimumHeight = dp(44)
                     setPadding(dp(2), dp(4), dp(2), dp(4))
+                }
+                if (entry.target.startsWith("http://", true) || entry.target.startsWith("https://", true)) {
+                    val icon = ActionIconFactory.createFaviconOrBadge(
+                        context = activity,
+                        urlTemplate = entry.target,
+                        fallbackText = entry.glyph,
+                        tintColor = p.fgMutedInt,
+                        sizePx = iconPx,
+                        onFaviconLoaded = { refresh() }
+                    )
+                    row.addView(ImageView(activity).apply {
+                        setImageDrawable(icon)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(8) }
+                    })
                 }
                 row.addView(UiKit.text(activity, entry.rawLabel, 13f, p.fgPrimaryInt).apply {
                     isSingleLine = true
@@ -204,9 +283,9 @@ class ActionsTab(private val activity: Activity) {
                 val matchedEngine = searchByTarget[entry.target]
                 if (matchedEngine != null) {
                     val pinned = PrefsStore.isToolPinned(activity, matchedEngine.id)
-                    row.addView(UiKit.text(activity, if (pinned) "★" else "☆", 16f, if (pinned) p.accentSuccessInt else p.fgMutedInt, bold = true).apply {
+                    row.addView(UiKit.text(activity, if (pinned) "★" else "☆", 16f, if (pinned) p.accentPrimaryInt else p.fgMutedInt, bold = true).apply {
                         minWidth = dp(40)
-                        minHeight = dp(40)
+                        minimumHeight = dp(40)
                         gravity = Gravity.CENTER
                         setOnClickListener {
                             val nowPinned = PrefsStore.toggleToolPinned(activity, matchedEngine.id)
@@ -221,7 +300,7 @@ class ActionsTab(private val activity: Activity) {
                 }
                 row.addView(UiKit.text(activity, "×", 17f, p.dangerInt, bold = true).apply {
                     minWidth = dp(38)
-                    minHeight = dp(40)
+                    minimumHeight = dp(40)
                     gravity = Gravity.CENTER
                     setOnClickListener {
                         RulesRepository.deleteRuleAtLine(activity, entry.lineIndex)
@@ -249,7 +328,7 @@ class ActionsTab(private val activity: Activity) {
 
             val handle = UiKit.text(activity, "⋮⋮", 14f, p.fgMutedInt, bold = true).apply {
                 minWidth = dp(34)
-                minHeight = dp(40)
+                minimumHeight = dp(40)
                 gravity = Gravity.CENTER
             }
             val title = UiKit.text(activity, tool.label, 13.5f, if (hidden) p.fgMutedInt else p.fgPrimaryInt).apply {
@@ -266,9 +345,9 @@ class ActionsTab(private val activity: Activity) {
                     setPadding(dp(6), dp(4), dp(8), dp(4))
                 })
             } else {
-                row.addView(UiKit.text(activity, if (pinned) "★" else "☆", 16f, if (pinned) p.accentSuccessInt else p.fgMutedInt, bold = true).apply {
+                row.addView(UiKit.text(activity, if (pinned) "★" else "☆", 16f, if (pinned) p.accentPrimaryInt else p.fgMutedInt, bold = true).apply {
                     minWidth = dp(40)
-                    minHeight = dp(40)
+                    minimumHeight = dp(40)
                     gravity = Gravity.CENTER
                     setOnClickListener {
                         val nowPinned = PrefsStore.toggleToolPinned(activity, tool.id)
@@ -285,7 +364,7 @@ class ActionsTab(private val activity: Activity) {
 
             row.addView(UiKit.text(activity, if (hidden) "Off" else "On", 12.5f, if (hidden) p.fgMutedInt else p.accentSuccessInt, bold = true).apply {
                 minWidth = dp(42)
-                minHeight = dp(40)
+                minimumHeight = dp(40)
                 gravity = Gravity.CENTER
                 setOnClickListener {
                     PrefsStore.setToolHidden(activity, tool.id, !hidden)

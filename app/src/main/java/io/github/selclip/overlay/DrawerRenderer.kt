@@ -23,7 +23,8 @@ import io.github.selclip.data.ThemePalette
 import io.github.selclip.data.ToolSpec
 
 /**
- * Renders all expandable drawers inside the floating popup card with clean mobile-first rows.
+ * Renders all expandable drawers inside the native Material dropdown card
+ * (Clipboard History removed; Search Engine drawer displays auto-fetched favicons).
  */
 object DrawerRenderer {
 
@@ -58,7 +59,6 @@ object DrawerRenderer {
             PopupMode.MoreTools -> renderMoreTools(context, container, activePackage, pal, cb)
             PopupMode.WebSearch -> renderWebSearch(context, container, pal, cb)
             PopupMode.YouTube -> renderYouTube(context, container, pal, cb)
-            PopupMode.ClipHistory -> renderClipHistory(context, container, pal, cb)
             PopupMode.Markdown -> renderMarkdown(context, container, selectedText, pal, cb)
             PopupMode.RegexPipe -> renderPipe(context, container, selectedText, pal, cb)
             is PopupMode.CustomFolder -> renderCustomFolder(context, container, mode.folderName, pal, cb)
@@ -106,20 +106,53 @@ object DrawerRenderer {
     private fun renderWebSearch(context: Context, container: LinearLayout, pal: ThemePalette, cb: Callbacks) {
         val defaultId = PrefsStore.getDefaultSearchEngineId(context)
         container.addView(makeBackHeader(context, "Search Engines (hold to set default)", pal, cb))
+        val iconPx = dp(context, 18)
+
         for (engine in PrefsStore.loadWebSearchTools(context)) {
             val isDefault = engine.id == defaultId
-            val label = if (isDefault) "★  ${engine.label}" else engine.label
-            val row = makeRow(context, label, pal, if (isDefault) pal.accentSuccessInt else pal.fgPrimaryInt) {
-                PrefsStore.recordUse(context, "web_search_folder")
-                cb.onExecuteTool(engine)
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(context, 44)
+                setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
+                background = pressedBg(context, pal)
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    PrefsStore.recordUse(context, "web_search_folder")
+                    cb.onExecuteTool(engine)
+                }
+                setOnLongClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                    PrefsStore.setDefaultSearchEngineId(context, engine.id)
+                    Toast.makeText(context, "Default search: ${engine.label}", Toast.LENGTH_SHORT).show()
+                    cb.onRerender()
+                    true
+                }
             }
-            row.setOnLongClickListener {
-                runCatching { row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-                PrefsStore.setDefaultSearchEngineId(context, engine.id)
-                Toast.makeText(context, "Default search: ${engine.label}", Toast.LENGTH_SHORT).show()
-                cb.onRerender()
-                true
-            }
+
+            val icon = ActionIconFactory.createFaviconOrBadge(
+                context = context,
+                urlTemplate = engine.customTarget,
+                fallbackText = engine.glyph,
+                tintColor = if (isDefault) pal.accentPrimaryInt else pal.fgMutedInt,
+                sizePx = iconPx,
+                onFaviconLoaded = { cb.onRerender() }
+            )
+            row.addView(ImageView(context).apply {
+                setImageDrawable(icon)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(context, 10) }
+            })
+
+            row.addView(TextView(context).apply {
+                text = if (isDefault) "${engine.label}  ★" else engine.label
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+                setTextColor(if (isDefault) pal.accentPrimaryInt else pal.fgPrimaryInt)
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
             container.addView(row)
         }
     }
@@ -192,59 +225,6 @@ object DrawerRenderer {
         }
     }
 
-    private fun renderClipHistory(context: Context, container: LinearLayout, pal: ThemePalette, cb: Callbacks) {
-        container.addView(makeBackHeader(context, "Clipboard History", pal, cb))
-        val clips = PrefsStore.getClipHistory(context)
-        if (clips.isEmpty()) {
-            container.addView(makeNote(context, "No saved clips yet.", pal))
-            return
-        }
-        for (entry in clips) {
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
-            }
-            row.addView(TextView(context).apply {
-                text = if (entry.pinned) "★" else "☆"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-                setTextColor(if (entry.pinned) pal.accentSuccessInt else pal.fgMutedInt)
-                minWidth = dp(context, 36)
-                minHeight = dp(context, 40)
-                gravity = Gravity.CENTER
-                setOnClickListener {
-                    PrefsStore.togglePinClip(context, entry.text)
-                    cb.onRerender()
-                }
-            })
-            row.addView(TextView(context).apply {
-                text = entry.text.replace("\n", " ↵ ")
-                typeface = Typeface.SANS_SERIF
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                setTextColor(pal.fgPrimaryInt)
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                minHeight = dp(context, 40)
-                gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { cb.onApplyResult(entry.text) }
-            })
-            row.addView(TextView(context).apply {
-                text = "×"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-                setTextColor(pal.dangerInt)
-                minWidth = dp(context, 36)
-                minHeight = dp(context, 40)
-                gravity = Gravity.CENTER
-                setOnClickListener {
-                    PrefsStore.deleteClip(context, entry.text)
-                    cb.onRerender()
-                }
-            })
-            container.addView(row)
-        }
-    }
-
     private fun renderDefine(
         context: Context,
         container: LinearLayout,
@@ -267,7 +247,7 @@ object DrawerRenderer {
             setPadding(dp(context, 10), dp(context, 6), dp(context, 10), dp(context, 8))
             setLineSpacing(0f, 1.25f)
         }
-        val copyBtn = makeRow(context, "Copy definition", pal, pal.accentSuccessInt) {
+        val copyBtn = makeRow(context, "Copy definition", pal, pal.accentPrimaryInt) {
             cb.onCopyPlain(defView.text.toString(), "Definition copied")
         }.apply { visibility = View.GONE }
 
@@ -300,7 +280,7 @@ object DrawerRenderer {
             setPadding(dp(context, 10), dp(context, 6), dp(context, 10), dp(context, 8))
             setLineSpacing(0f, 1.25f)
         }
-        val applyBtn = makeRow(context, "Copy / Replace text", pal, pal.accentSuccessInt) {
+        val applyBtn = makeRow(context, "Copy / Replace text", pal, pal.accentPrimaryInt) {
             cb.onApplyResult(trView.text.toString())
         }.apply { visibility = View.GONE }
 
@@ -366,11 +346,11 @@ object DrawerRenderer {
             maxLines = 4
             ellipsize = TextUtils.TruncateAt.END
         })
-        container.addView(makeRow(context, "Copy magnet URI", pal, pal.accentSuccessInt) {
+        container.addView(makeRow(context, "Copy magnet URI", pal, pal.accentPrimaryInt) {
             cb.onCopyPlain(magnetUri, "Magnet copied")
             cb.onBackToBar()
         })
-        container.addView(makeRow(context, "Open in torrent app", pal, pal.accentPrimaryInt) {
+        container.addView(makeRow(context, "Open in torrent app", pal, pal.accentSuccessInt) {
             cb.onCopyPlain(magnetUri, "Opening magnet…")
             cb.onOpenUrl(magnetUri)
         })
@@ -409,12 +389,12 @@ object DrawerRenderer {
         }
         fun cell(tool: ToolSpec): TextView = TextView(context).apply {
             text = tool.label
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
             setTextColor(pal.fgPrimaryInt)
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
-            minHeight = dp(context, 44)
+            minimumHeight = dp(context, 44)
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -448,12 +428,12 @@ object DrawerRenderer {
         onClick: () -> Unit
     ): TextView = TextView(context).apply {
         text = label
-        typeface = Typeface.create(Typeface.SANS_SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
+        typeface = Typeface.create(if (bold) "sans-serif-medium" else "sans-serif", if (bold) Typeface.BOLD else Typeface.NORMAL)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
         setTextColor(colorInt)
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
-        minHeight = dp(context, 44)
+        minimumHeight = dp(context, 44)
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
         background = pressedBg(context, pal)
@@ -474,7 +454,7 @@ object DrawerRenderer {
 
     private fun makeDivider(context: Context, pal: ThemePalette): View =
         View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(context, 1)).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
                 topMargin = dp(context, 4)
                 bottomMargin = dp(context, 4)
             }
@@ -487,7 +467,7 @@ object DrawerRenderer {
                 intArrayOf(android.R.attr.state_pressed),
                 GradientDrawable().apply {
                     setColor(pal.bgPressedInt)
-                    cornerRadius = dpF(context, 8f)
+                    cornerRadius = dpF(context, 10f)
                 }
             )
             addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })

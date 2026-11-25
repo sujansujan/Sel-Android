@@ -8,7 +8,6 @@ sealed class PopupMode {
     data object MoreTools : PopupMode()
     data object WebSearch : PopupMode()
     data object YouTube : PopupMode()
-    data object ClipHistory : PopupMode()
     data object Markdown : PopupMode()
     data object RegexPipe : PopupMode()
     data class CustomFolder(val folderName: String) : PopupMode()

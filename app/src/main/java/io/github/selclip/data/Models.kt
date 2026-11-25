@@ -1,6 +1,8 @@
 package io.github.selclip.data
 
+import android.content.Context
 import android.graphics.Color
+import android.os.Build
 
 data class ToolSpec(
     val id: String,
@@ -15,7 +17,8 @@ data class PopAction(
     val label: String,
     val accent: Boolean = false,
     val payload: String? = null,
-    val customTool: ToolSpec? = null
+    val customTool: ToolSpec? = null,
+    val faviconUrl: String? = null
 )
 
 data class CustomRuleEntry(
@@ -23,12 +26,6 @@ data class CustomRuleEntry(
     val glyph: String,
     val rawLabel: String,
     val target: String
-)
-
-data class ClipEntry(
-    val text: String,
-    val pinned: Boolean,
-    val timestamp: Long
 )
 
 data class SearchPreset(
@@ -45,8 +42,7 @@ enum class ThemeMode {
 }
 
 /**
- * High-contrast mobile-optimized Dark and Light themes with pre-parsed color ints
- * so popup rendering performs zero Color.parseColor() calls on hot paths.
+ * Native Android Material-style theme palette (with Android 12+ Material You system colors in Auto mode).
  */
 data class ThemePalette(
     val name: String,
@@ -64,62 +60,106 @@ data class ThemePalette(
     val accentPrimaryInt: Int,
     val accentSuccessInt: Int,
     val accentInfoInt: Int,
-    val accentWarnInt: Int,
     val dangerInt: Int,
     val onAccentInt: Int
 )
 
 object AppPalettes {
 
+    // Matches native Android 13-15 dark FloatingToolbarPopup surface & ink
     val DARK = ThemePalette(
         name = "Dark",
         isDark = true,
-        bgPrimaryInt = Color.parseColor("#1E202B"),
-        bgHeaderInt = Color.parseColor("#181A24"),
-        bgSurfaceInt = Color.parseColor("#282B3A"),
-        bgInputInt = Color.parseColor("#14161F"),
-        bgPressedInt = Color.parseColor("#383C52"),
-        borderInt = Color.parseColor("#444963"),
-        dividerInt = Color.parseColor("#34384D"),
-        fgPrimaryInt = Color.parseColor("#F5F6FA"),
-        fgSecondaryInt = Color.parseColor("#C7A6FF"),
-        fgMutedInt = Color.parseColor("#8D95B3"),
-        accentPrimaryInt = Color.parseColor("#A78BFA"),
-        accentSuccessInt = Color.parseColor("#4ADE80"),
-        accentInfoInt = Color.parseColor("#38BDF8"),
-        accentWarnInt = Color.parseColor("#FBBF24"),
-        dangerInt = Color.parseColor("#F87171"),
-        onAccentInt = Color.parseColor("#11131B")
+        bgPrimaryInt = Color.parseColor("#282A2E"),
+        bgHeaderInt = Color.parseColor("#282A2E"),
+        bgSurfaceInt = Color.parseColor("#1F2124"),
+        bgInputInt = Color.parseColor("#17191C"),
+        bgPressedInt = Color.parseColor("#3C4043"),
+        borderInt = Color.parseColor("#3F4247"),
+        dividerInt = Color.parseColor("#3C4043"),
+        fgPrimaryInt = Color.parseColor("#E8EAED"),
+        fgSecondaryInt = Color.parseColor("#A8C7FA"),
+        fgMutedInt = Color.parseColor("#9AA0A6"),
+        accentPrimaryInt = Color.parseColor("#A8C7FA"),
+        accentSuccessInt = Color.parseColor("#81C995"),
+        accentInfoInt = Color.parseColor("#7FCFFF"),
+        dangerInt = Color.parseColor("#F28B82"),
+        onAccentInt = Color.parseColor("#1F1F1F")
     )
 
+    // Matches native Android 13-15 light FloatingToolbarPopup surface & ink
     val LIGHT = ThemePalette(
         name = "Light",
         isDark = false,
-        bgPrimaryInt = Color.parseColor("#FAF9F5"),
-        bgHeaderInt = Color.parseColor("#F2EFE6"),
-        bgSurfaceInt = Color.parseColor("#FFFFFF"),
-        bgInputInt = Color.parseColor("#EFECE3"),
-        bgPressedInt = Color.parseColor("#E3DFD3"),
-        borderInt = Color.parseColor("#D5D0C3"),
-        dividerInt = Color.parseColor("#E5E1D6"),
-        fgPrimaryInt = Color.parseColor("#1A1C23"),
-        fgSecondaryInt = Color.parseColor("#5B42D6"),
-        fgMutedInt = Color.parseColor("#6B7280"),
-        accentPrimaryInt = Color.parseColor("#5B42D6"),
-        accentSuccessInt = Color.parseColor("#15803D"),
-        accentInfoInt = Color.parseColor("#0369A1"),
-        accentWarnInt = Color.parseColor("#B45309"),
-        dangerInt = Color.parseColor("#DC2626"),
+        bgPrimaryInt = Color.parseColor("#FFFFFF"),
+        bgHeaderInt = Color.parseColor("#FFFFFF"),
+        bgSurfaceInt = Color.parseColor("#F6F7F9"),
+        bgInputInt = Color.parseColor("#EFF1F5"),
+        bgPressedInt = Color.parseColor("#E8EAED"),
+        borderInt = Color.parseColor("#DADCE0"),
+        dividerInt = Color.parseColor("#E0E3E7"),
+        fgPrimaryInt = Color.parseColor("#1F1F1F"),
+        fgSecondaryInt = Color.parseColor("#1A73E8"),
+        fgMutedInt = Color.parseColor("#5F6368"),
+        accentPrimaryInt = Color.parseColor("#1A73E8"),
+        accentSuccessInt = Color.parseColor("#188038"),
+        accentInfoInt = Color.parseColor("#0B57D0"),
+        dangerInt = Color.parseColor("#D93025"),
         onAccentInt = Color.parseColor("#FFFFFF")
     )
+
+    /**
+     * Resolves Android 12+ Material You dynamic system surface & accent colors so the popup
+     * blends seamlessly with the device's native FloatingToolbarPopup.
+     */
+    fun resolveDynamic(context: Context, dark: Boolean): ThemePalette {
+        val base = if (dark) DARK else LIGHT
+        if (Build.VERSION.SDK_INT < 31) return base
+        return runCatching {
+            if (dark) {
+                val surface = context.getColor(android.R.color.system_neutral1_800)
+                val bg = context.getColor(android.R.color.system_neutral1_900)
+                val pressed = context.getColor(android.R.color.system_neutral1_700)
+                val accent = context.getColor(android.R.color.system_accent1_200)
+                val onAcc = context.getColor(android.R.color.system_accent1_900)
+                base.copy(
+                    bgPrimaryInt = surface,
+                    bgHeaderInt = surface,
+                    bgSurfaceInt = bg,
+                    bgPressedInt = pressed,
+                    borderInt = pressed,
+                    dividerInt = pressed,
+                    fgSecondaryInt = accent,
+                    accentPrimaryInt = accent,
+                    onAccentInt = onAcc
+                )
+            } else {
+                val surface = context.getColor(android.R.color.system_neutral1_10)
+                val bg = context.getColor(android.R.color.system_neutral1_50)
+                val pressed = context.getColor(android.R.color.system_neutral1_100)
+                val border = context.getColor(android.R.color.system_neutral1_200)
+                val accent = context.getColor(android.R.color.system_accent1_600)
+                base.copy(
+                    bgPrimaryInt = surface,
+                    bgHeaderInt = surface,
+                    bgSurfaceInt = bg,
+                    bgPressedInt = pressed,
+                    borderInt = border,
+                    dividerInt = border,
+                    fgSecondaryInt = accent,
+                    accentPrimaryInt = accent
+                )
+            }
+        }.getOrDefault(base)
+    }
 }
 
 object BuiltInRegistry {
 
+    // Clipboard History and Scratchpad Notes completely removed per user request.
     val builtInTools = listOf(
         ToolSpec("web_search_folder", "WEB", "Web Search"),
         ToolSpec("youtube_folder", "YT", "YouTube"),
-        ToolSpec("clip_history", "CLP", "Clip History"),
         ToolSpec("define", "DEF", "Define Word"),
         ToolSpec("translate", "TR", "Translate"),
         ToolSpec("markdown_folder", "MD", "Markdown"),
@@ -131,8 +171,7 @@ object BuiltInRegistry {
         ToolSpec("clean_text", "TDY", "Clean Text"),
         ToolSpec("sort", "A↓", "Sort Lines"),
         ToolSpec("case", "Aa", "Cycle Case"),
-        ToolSpec("speak", "TTS", "Speak Aloud"),
-        ToolSpec("log", "LOG", "Append Note")
+        ToolSpec("speak", "TTS", "Speak Aloud")
     )
 
     val webSearchEngines = listOf(

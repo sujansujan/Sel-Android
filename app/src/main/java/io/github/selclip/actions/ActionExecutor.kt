@@ -13,13 +13,10 @@ import io.github.selclip.core.TextTransforms
 import io.github.selclip.data.PopAction
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ToolSpec
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Executes popup actions cleanly and manages lazy handlers (network, TTS) + editable Undo state.
+ * (Clipboard history & scratchpad notes removed.)
  */
 class ActionExecutor(
     private val context: Context,
@@ -119,12 +116,6 @@ class ActionExecutor(
                 PrefsStore.recordUse(context, "speak")
                 ttsSpeaker.speak(trimmed)
             }
-            "log" -> {
-                PrefsStore.recordUse(context, "log")
-                appendToScratchpad(selectedText)
-                Toast.makeText(context, "Saved to notes", Toast.LENGTH_SHORT).show()
-                onDismiss()
-            }
             "define" -> {
                 PrefsStore.recordUse(context, "define")
                 onSwitchMode(PopupMode.Define)
@@ -184,7 +175,6 @@ class ActionExecutor(
         when (tool.id) {
             "web_search_folder" -> onSwitchMode(PopupMode.WebSearch)
             "youtube_folder" -> onSwitchMode(PopupMode.YouTube)
-            "clip_history" -> onSwitchMode(PopupMode.ClipHistory)
             "markdown_folder" -> onSwitchMode(PopupMode.Markdown)
             "regex_pipe" -> onSwitchMode(PopupMode.RegexPipe)
             "define" -> onSwitchMode(PopupMode.Define)
@@ -197,18 +187,12 @@ class ActionExecutor(
             "case" -> applyResult(TextTransforms.cycleCase(selectedText), editableNode)
             "sort" -> applyResult(TextTransforms.sortUniqueLines(selectedText), editableNode)
             "speak" -> ttsSpeaker.speak(trimmed)
-            "log" -> {
-                appendToScratchpad(selectedText)
-                Toast.makeText(context, "Saved to notes", Toast.LENGTH_SHORT).show()
-                onDismiss()
-            }
         }
     }
 
     fun copyPlain(text: String, toastMsg: String? = null) {
         onMarkInternalCopy()
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", text))
-        PrefsStore.addClip(context, text)
         val preview = text.replace("\n", " ").let { if (it.length > 28) it.take(27) + "…" else it }
         Toast.makeText(context, toastMsg ?: "Copied: $preview", Toast.LENGTH_SHORT).show()
     }
@@ -216,7 +200,6 @@ class ActionExecutor(
     fun applyResult(newText: String, editableNode: AccessibilityNodeInfo?) {
         onMarkInternalCopy()
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", newText))
-        PrefsStore.addClip(context, newText)
 
         var replaced = false
         if (editableNode != null && editableNode.isEditable) {
@@ -289,11 +272,6 @@ class ActionExecutor(
             return
         }
         openUrl("https://wa.me/$waDigits")
-    }
-
-    private fun appendToScratchpad(text: String) {
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
-        File(context.applicationContext.filesDir, "scratchpad.txt").appendText("[$stamp]\n${text.trim()}\n\n")
     }
 
     private fun launchIntent(intent: Intent): Boolean {

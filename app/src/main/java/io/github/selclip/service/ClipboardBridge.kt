@@ -12,11 +12,8 @@ import android.view.View
 import android.view.WindowManager
 
 /**
- * Single-flight, leak-free clipboard bridge:
- * - Suppresses self-initiated clipboard writes (650ms window).
- * - Skips Android 13+ EXTRA_IS_SENSITIVE password clips.
- * - Uses a transient 1x1 non-touchable TYPE_ACCESSIBILITY_OVERLAY focus probe when Android 10+
- *   blocks background clipboard reads, removing it immediately on focus or within 360ms max.
+ * Single-flight internal clipboard bridge used to read browser/WebView selections reliably on
+ * Android 10+ (never stores user clipboard history).
  */
 class ClipboardBridge(
     private val context: Context,
@@ -32,6 +29,8 @@ class ClipboardBridge(
     private var probeCleanupRunnable: Runnable? = null
     private var probeRetry1: Runnable? = null
     private var probeRetry2: Runnable? = null
+
+    val isProbeActive: Boolean get() = activeProbe != null
 
     private val listener = ClipboardManager.OnPrimaryClipChangedListener {
         val now = System.currentTimeMillis()
@@ -146,8 +145,8 @@ class ClipboardBridge(
         probeRetry1 = r1
         probeRetry2 = r2
         probeCleanupRunnable = clean
-        handler.postDelayed(r1, 40L)
-        handler.postDelayed(r2, 130L)
-        handler.postDelayed(clean, 360L)
+        handler.postDelayed(r1, 45L)
+        handler.postDelayed(r2, 150L)
+        handler.postDelayed(clean, 380L)
     }
 }

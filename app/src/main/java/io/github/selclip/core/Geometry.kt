@@ -1,7 +1,5 @@
 package io.github.selclip.core
 
-import kotlin.math.abs
-
 /**
  * Pure JVM rectangle (no android.graphics.Rect dependency) for deterministic geometry & unit tests.
  */
@@ -41,6 +39,15 @@ data class Viewport(
 }
 
 /**
+ * Anchor metadata telling [PopupPositioner] whether we are docking directly to Android's native
+ * floating selection toolbar or anchoring around raw selection bounds.
+ */
+data class AnchorTarget(
+    val zone: Box,
+    val dockedToNativeToolbar: Boolean
+)
+
+/**
  * Final computed screen coordinates and drawer height budget for the floating popup window.
  */
 data class PopupPlacement(
@@ -54,32 +61,41 @@ data class PopupPlacement(
 /**
  * Pure, deterministic popup positioning & clamping engine.
  *
- * Guarantees:
- * - Never clips off-screen horizontally or vertically.
- * - Avoids colliding with system selection handles (~10dp top / ~28dp bottom) and nearby native
- *   ActionMode floating toolbars.
- * - Stays strictly below status bar/cutout and above nav bar / open IME keyboard.
- * - Falls back cleanly when an app omits exact selection bounds.
+ * Native Android Docking Behavior:
+ * - When Android's native floating selection toolbar is detected, docks directly BELOW it
+ *   (`toolbar.bottom + 4dp`) aligned to the toolbar's center so both pills feel like one cohesive
+ *   native Android UI (flipping cleanly to `toolbar.top - 4dp - popupH` only if bottom/IME is cramped).
+ * - When no native toolbar is detected, anchors cleanly below the selection + teardrop handles,
+ *   or flips above when cramped by keyboard/bottom edge, with a clean fallback band if bounds are absent.
  */
 object PopupPositioner {
 
     private fun Int.safeClamp(minVal: Int, maxVal: Int): Int =
         if (minVal <= maxVal) this.coerceIn(minVal, maxVal) else minVal
 
-    /**
-     * Resolves an exclusion zone around the selected text + handles + nearby system toolbar.
-     */
-    fun computeAnchorZone(
+    fun computeAnchorTarget(
         selectionBounds: Box?,
         toolbarBounds: Box?,
         viewport: Viewport,
         density: Float
-    ): Box {
+    ): AnchorTarget {
         fun dp(v: Int): Int = (v * density).toInt()
         val topSafe = viewport.topSafeInset
         val visBottom = viewport.visibleBottom
         val realW = viewport.screenWidth.coerceAtLeast(dp(240))
         val realH = viewport.screenHeight.coerceAtLeast(dp(360))
+
+        // Priority 1: Attach seamlessly directly below Android's native floating toolbar!
+        if (toolbarBounds != null && !toolbarBounds.isEmpty &&
+            toolbarBounds.top >= topSafe - dp(12) &&
+            toolbarBounds.bottom <= visBottom + dp(12)
+        ) {
+            val left = toolbarBounds.left.coerceAtLeast(dp(8))
+            val right = toolbarBounds.right.coerceAtMost(realW - dp(8)).coerceAtLeast(left + dp(24))
+            val top = toolbarBounds.top.safeClamp(topSafe, (visBottom - dp(32)).coerceAtLeast(topSafe))
+            val bottom = toolbarBounds.bottom.safeClamp(top + dp(28), visBottom)
+            return AnchorTarget(Box(left, top, right, bottom), dockedToNativeToolbar = true)
+        }
 
         val isCompactSelection = selectionBounds != null &&
             !selectionBounds.isEmpty &&
@@ -93,65 +109,39 @@ object PopupPositioner {
             selectionBounds.top < visBottom &&
             selectionBounds.bottom > topSafe
 
-        // Case 1: Compact selection bounds (single line or short multi-line)
         if (isCompactSelection && selectionBounds != null) {
-            var zTop = selectionBounds.top - dp(10)
-            // Reserve extra clearance below for Android's teardrop selection handles
-            var zBottom = selectionBounds.bottom + dp(28)
-
-            // Merge nearby native floating toolbar so we never cover Copy/Cut/Paste
-            if (toolbarBounds != null && !toolbarBounds.isEmpty &&
-                abs(toolbarBounds.centerY - selectionBounds.centerY) <= dp(165)
-            ) {
-                zTop = minOf(zTop, toolbarBounds.top - dp(8))
-                zBottom = maxOf(zBottom, toolbarBounds.bottom + dp(12))
-            }
-
-            val clampedTop = zTop.safeClamp(topSafe, (visBottom - dp(64)).coerceAtLeast(topSafe))
-            val clampedBottom = zBottom.safeClamp(
+            val clampedTop = (selectionBounds.top - dp(10)).safeClamp(topSafe, (visBottom - dp(64)).coerceAtLeast(topSafe))
+            val clampedBottom = (selectionBounds.bottom + dp(26)).safeClamp(
                 clampedTop + dp(28),
                 (visBottom - dp(8)).coerceAtLeast(clampedTop + dp(28))
             )
             val left = selectionBounds.left.coerceAtLeast(dp(12))
             val right = selectionBounds.right.coerceAtMost(realW - dp(12)).coerceAtLeast(left + dp(24))
-            return Box(left, clampedTop, right, clampedBottom)
+            return AnchorTarget(Box(left, clampedTop, right, clampedBottom), dockedToNativeToolbar = false)
         }
 
-        // Case 2: App didn't expose compact selection bounds, but native floating toolbar is visible
-        if (toolbarBounds != null && !toolbarBounds.isEmpty) {
-            val clampedTop = (toolbarBounds.top - dp(10)).safeClamp(topSafe, (visBottom - dp(80)).coerceAtLeast(topSafe))
-            val clampedBottom = (toolbarBounds.bottom + dp(56)).safeClamp(
-                clampedTop + dp(36),
-                (visBottom - dp(8)).coerceAtLeast(clampedTop + dp(36))
-            )
-            val left = toolbarBounds.left.coerceAtLeast(dp(12))
-            val right = toolbarBounds.right.coerceAtMost(realW - dp(12)).coerceAtLeast(left + dp(24))
-            return Box(left, clampedTop, right, clampedBottom)
-        }
-
-        // Case 3: Medium multi-line container bounds
         if (isMediumSelection && selectionBounds != null) {
             val clampedTop = (selectionBounds.top - dp(10)).safeClamp(topSafe, (visBottom - dp(80)).coerceAtLeast(topSafe))
-            val clampedBottom = (selectionBounds.bottom + dp(24)).safeClamp(
+            val clampedBottom = (selectionBounds.bottom + dp(22)).safeClamp(
                 clampedTop + dp(32),
                 (visBottom - dp(8)).coerceAtLeast(clampedTop + dp(32))
             )
             val left = selectionBounds.left.coerceAtLeast(dp(12))
             val right = selectionBounds.right.coerceAtMost(realW - dp(12)).coerceAtLeast(left + dp(24))
-            return Box(left, clampedTop, right, clampedBottom)
+            return AnchorTarget(Box(left, clampedTop, right, clampedBottom), dockedToNativeToolbar = false)
         }
 
-        // Case 4: Clean fallback anchor (thumb-reachable upper-middle band)
+        // Clean fallback anchor when an app omits both selection and toolbar bounds
         val midY = (topSafe + (visBottom - topSafe) * 0.36f).toInt()
             .safeClamp(topSafe + dp(40), (visBottom - dp(88)).coerceAtLeast(topSafe + dp(40)))
-        return Box(dp(16), midY - dp(24), (realW - dp(16)).coerceAtLeast(dp(120)), midY + dp(32))
+        return AnchorTarget(
+            Box(dp(16), midY - dp(24), (realW - dp(16)).coerceAtLeast(dp(120)), midY + dp(32)),
+            dockedToNativeToolbar = false
+        )
     }
 
-    /**
-     * Computes exact window (x, y) and drawer height budget from the anchor zone and measured popup size.
-     */
     fun place(
-        anchorZone: Box,
+        target: AnchorTarget,
         viewport: Viewport,
         popupWidth: Int,
         popupHeight: Int,
@@ -159,30 +149,31 @@ object PopupPositioner {
         isDrawerOpen: Boolean
     ): PopupPlacement {
         fun dp(v: Int): Int = (v * density).toInt()
+        val anchorZone = target.zone
         val topSafe = viewport.topSafeInset
         val visBottom = viewport.visibleBottom
         val realW = viewport.screenWidth.coerceAtLeast(dp(240))
         val marginH = dp(10)
-        val gap = dp(10)
+        // Tight 4dp native attachment gap when docked to Android's floating toolbar!
+        val gap = if (target.dockedToNativeToolbar) dp(4) else dp(10)
 
-        val effectiveW = popupWidth.takeIf { it > dp(80) }
-            ?: (realW - marginH * 2).coerceAtMost(dp(356))
+        val effectiveW = popupWidth.takeIf { it > dp(72) }
+            ?: (realW - marginH * 2).coerceAtMost(dp(348))
         val effectiveH = popupHeight.takeIf { it > dp(28) }
-            ?: if (isDrawerOpen) dp(280) else dp(54)
+            ?: if (isDrawerOpen) dp(260) else dp(48)
 
         val spaceBelow = visBottom - (anchorZone.bottom + gap)
         val spaceAbove = (anchorZone.top - gap) - topSafe
 
-        // Prefer below the exclusion zone (thumb-friendly & naturally beneath native toolbar),
-        // flip above if cramped below (e.g., IME open or near bottom of screen).
+        // Always prefer attached directly BELOW the native toolbar when it fits!
         val placeAbove = when {
-            spaceBelow >= effectiveH + dp(10) -> false
-            spaceAbove >= effectiveH -> true
+            spaceBelow >= effectiveH + dp(4) -> false
+            spaceAbove >= effectiveH + dp(4) -> true
             else -> spaceAbove > spaceBelow
         }
 
         val chosenSpace = if (placeAbove) spaceAbove else spaceBelow
-        val maxDrawerH = (chosenSpace - dp(58)).safeClamp(dp(120), dp(320))
+        val maxDrawerH = (chosenSpace - dp(54)).safeClamp(dp(120), dp(310))
 
         val x = (anchorZone.centerX - effectiveW / 2)
             .safeClamp(marginH, (realW - effectiveW - marginH).coerceAtLeast(marginH))
@@ -203,9 +194,6 @@ object PopupPositioner {
         )
     }
 
-    /**
-     * Clamps a manually dragged popup position safely inside viewport bounds.
-     */
     fun clampDragged(
         targetX: Int,
         targetY: Int,

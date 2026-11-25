@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import io.github.selclip.core.AnchorTarget
 import io.github.selclip.core.Box
 import io.github.selclip.core.PopupPositioner
 import io.github.selclip.core.Viewport
@@ -20,8 +21,9 @@ import io.github.selclip.data.PrefsStore
 import kotlin.math.abs
 
 /**
- * Owns the single lightweight TYPE_ACCESSIBILITY_OVERLAY window.
- * Strictly leak-free: creates views lazily on show and tears down references completely on hide.
+ * Owns the single lightweight TYPE_ACCESSIBILITY_OVERLAY window styled to match Android's native
+ * Material 3 FloatingToolbarPopup (full 24dp pill when collapsed, 16dp Material menu when expanded)
+ * and docked seamlessly right below Android's native selection popup.
  */
 class OverlayWindowController(
     private val context: Context,
@@ -33,13 +35,13 @@ class OverlayWindowController(
     private val handler = Handler(Looper.getMainLooper())
 
     private var rootView: LinearLayout? = null
-    private var layoutParams: WindowManager.LayoutParams? = null
+    private var windowParams: WindowManager.LayoutParams? = null
     private var barContainer: LinearLayout? = null
     private var drawerDivider: View? = null
     private var drawerScroll: ScrollView? = null
     private var drawerContainer: LinearLayout? = null
 
-    private var lastAnchorZone: Box = Box(0, 0, 0, 0)
+    private var lastAnchorTarget: AnchorTarget = AnchorTarget(Box(0, 0, 0, 0), false)
     private var lastViewport: Viewport = Viewport(1080, 2200, 96, 120)
     private var maxDrawerHeightPx: Int = 540
     private var manuallyDragged: Boolean = false
@@ -52,18 +54,19 @@ class OverlayWindowController(
     private fun dpF(v: Float): Float = v * density
 
     fun showOrUpdate(
-        anchorZone: Box,
+        anchorTarget: AnchorTarget,
         viewport: Viewport,
         isDrawerOpen: Boolean,
         isNewSession: Boolean,
+        iconsOnly: Boolean,
         actions: List<PopAction>,
         onActionClick: (PopAction) -> Unit,
         onActionLongClick: (PopAction) -> Unit,
         onToggleMore: () -> Unit,
-        onClose: () -> Unit,
+        onFaviconReady: () -> Unit,
         renderDrawer: (LinearLayout) -> Unit
     ) {
-        lastAnchorZone = anchorZone
+        lastAnchorTarget = anchorTarget
         lastViewport = viewport
         currentIsDrawerOpen = isDrawerOpen
         if (isNewSession) manuallyDragged = false
@@ -76,20 +79,21 @@ class OverlayWindowController(
         val createdNow = rootView == null
 
         if (createdNow) {
-            createWindow(anchorZone, viewport, isDrawerOpen)
+            createWindow(anchorTarget, viewport, isDrawerOpen)
         }
 
         val root = rootView ?: return
-        val params = layoutParams ?: return
+        val params = windowParams ?: return
         val bar = barContainer ?: return
         val div = drawerDivider ?: return
         val scroll = drawerScroll ?: return
         val drawer = drawerContainer ?: return
 
+        val cornerDp = if (isDrawerOpen) 16f else 24f
         root.background = GradientDrawable().apply {
             setColor(pal.bgPrimaryInt)
             setStroke(dp(1), pal.borderInt)
-            cornerRadius = dpF(14f)
+            cornerRadius = dpF(cornerDp)
         }
         bar.setBackgroundColor(pal.bgHeaderInt)
         div.setBackgroundColor(pal.dividerInt)
@@ -99,12 +103,12 @@ class OverlayWindowController(
             container = bar,
             actions = actions,
             pal = pal,
+            iconsOnly = iconsOnly,
             isDrawerOpen = isDrawerOpen,
-            onAttachDrag = { grip -> attachDrag(grip, root) },
             onActionClick = onActionClick,
             onActionLongClick = onActionLongClick,
             onToggleMore = onToggleMore,
-            onClose = onClose
+            onFaviconLoaded = onFaviconReady
         )
 
         drawer.removeAllViews()
@@ -119,7 +123,7 @@ class OverlayWindowController(
 
         if (!manuallyDragged) {
             val placement = PopupPositioner.place(
-                anchorZone = anchorZone,
+                target = anchorTarget,
                 viewport = viewport,
                 popupWidth = root.width,
                 popupHeight = root.height,
@@ -144,7 +148,7 @@ class OverlayWindowController(
                 .alpha(1f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setDuration(90L)
+                .setDuration(85L)
                 .setInterpolator(DecelerateInterpolator())
                 .start()
         } else {
@@ -154,7 +158,7 @@ class OverlayWindowController(
 
     fun relayout() {
         val v = rootView ?: return
-        val p = layoutParams ?: return
+        val p = windowParams ?: return
         if (v.isAttachedToWindow) {
             v.requestLayout()
             runCatching { windowManager.updateViewLayout(v, p) }
@@ -167,7 +171,7 @@ class OverlayWindowController(
             runCatching { windowManager.removeView(v) }
         }
         rootView = null
-        layoutParams = null
+        windowParams = null
         barContainer = null
         drawerDivider = null
         drawerScroll = null
@@ -176,10 +180,10 @@ class OverlayWindowController(
         currentIsDrawerOpen = false
     }
 
-    private fun createWindow(anchorZone: Box, viewport: Viewport, isDrawerOpen: Boolean) {
+    private fun createWindow(anchorTarget: AnchorTarget, viewport: Viewport, isDrawerOpen: Boolean) {
         val pal = PrefsStore.resolvePalette(context)
         val placement = PopupPositioner.place(
-            anchorZone = anchorZone,
+            target = anchorTarget,
             viewport = viewport,
             popupWidth = 0,
             popupHeight = 0,
@@ -202,7 +206,7 @@ class OverlayWindowController(
             y = placement.y
         }
 
-        val maxBarW = (viewport.screenWidth - dp(20)).coerceAtLeast(dp(260))
+        val maxBarW = (viewport.screenWidth - dp(20)).coerceAtLeast(dp(240))
 
         val card = object : LinearLayout(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -210,20 +214,20 @@ class OverlayWindowController(
             }
         }.apply {
             orientation = LinearLayout.VERTICAL
-            elevation = dpF(12f)
+            elevation = dpF(8f)
             clipToOutline = true
             background = GradientDrawable().apply {
                 setColor(pal.bgPrimaryInt)
                 setStroke(dp(1), pal.borderInt)
-                cornerRadius = dpF(14f)
+                cornerRadius = dpF(if (isDrawerOpen) 16f else 24f)
             }
             addOnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
                 val actualW = right - left
                 val actualH = bottom - top
-                val p = this@OverlayWindowController.layoutParams ?: return@addOnLayoutChangeListener
-                if (actualW > 0 && actualH > 0 && !manuallyDragged && !lastAnchorZone.isEmpty) {
+                val p = windowParams ?: return@addOnLayoutChangeListener
+                if (actualW > 0 && actualH > 0 && !manuallyDragged && !lastAnchorTarget.zone.isEmpty) {
                     val refined = PopupPositioner.place(
-                        anchorZone = lastAnchorZone,
+                        target = lastAnchorTarget,
                         viewport = lastViewport,
                         popupWidth = actualW,
                         popupHeight = actualH,
@@ -281,53 +285,10 @@ class OverlayWindowController(
         card.addView(scroll)
 
         rootView = card
-        layoutParams = params
+        windowParams = params
         barContainer = bar
         drawerDivider = div
         drawerScroll = scroll
         drawerContainer = drawer
-    }
-
-    private fun attachDrag(handle: View, root: View) {
-        var startX = 0
-        var startY = 0
-        var downRawX = 0f
-        var downRawY = 0f
-
-        handle.setOnTouchListener { _, event ->
-            val p = layoutParams ?: return@setOnTouchListener false
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = p.x
-                    startY = p.y
-                    downRawX = event.rawX
-                    downRawY = event.rawY
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - downRawX).toInt()
-                    val dy = (event.rawY - downRawY).toInt()
-                    if (abs(dx) > dp(4) || abs(dy) > dp(4)) {
-                        if (!manuallyDragged) {
-                            manuallyDragged = true
-                            onUserDragged()
-                        }
-                    }
-                    val (clampedX, clampedY) = PopupPositioner.clampDragged(
-                        targetX = startX + dx,
-                        targetY = startY + dy,
-                        popupWidth = root.width.coerceAtLeast(dp(160)),
-                        popupHeight = root.height.coerceAtLeast(dp(48)),
-                        viewport = lastViewport,
-                        density = density
-                    )
-                    p.x = clampedX
-                    p.y = clampedY
-                    if (root.isAttachedToWindow) runCatching { windowManager.updateViewLayout(root, p) }
-                    true
-                }
-                else -> false
-            }
-        }
     }
 }

@@ -32,8 +32,8 @@ import io.github.selclip.service.SelectionResolver
 /**
  * Lean, strictly event-driven AccessibilityService orchestrator.
  *
- * Zero polling, zero background timers, zero eager threads:
- * Accessibility events -> SelectionResolver -> PopupStateMachine -> OverlayWindowController.
+ * Works seamlessly across native views, browsers (Chrome, Brave, Edge, Firefox, WebViews),
+ * Jetpack Compose, and messaging apps — docking right below Android's native selection popup.
  */
 class SelAccessibilityService : AccessibilityService() {
 
@@ -44,8 +44,8 @@ class SelAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val stateMachine = PopupStateMachine()
-    private val windowsDebouncer = EventDebouncer(140L)
-    private val contentDebouncer = EventDebouncer(220L)
+    private val windowsDebouncer = EventDebouncer(120L)
+    private val contentDebouncer = EventDebouncer(200L)
 
     private lateinit var windowManager: WindowManager
     private lateinit var clipboardManager: ClipboardManager
@@ -61,10 +61,13 @@ class SelAccessibilityService : AccessibilityService() {
 
     private var pendingProbe1: Runnable? = null
     private var pendingProbe2: Runnable? = null
+    private var pendingClipRetry1: Runnable? = null
+    private var pendingClipRetry2: Runnable? = null
     private var pendingProbeSource: AccessibilityNodeInfo? = null
     private var pendingProbePkg: String = ""
     private var pendingProbeSig: String = ""
     private var lastAutoCopyMs: Long = 0L
+    private var lastAutoCopySig: String = ""
 
     override fun onServiceConnected() {
         instance = this
@@ -138,7 +141,6 @@ class SelAccessibilityService : AccessibilityService() {
     fun showFromExternalText(text: String, openExpanded: Boolean = false) {
         handler.post {
             val clean = SelectionFilter.sanitizeCandidate(text) ?: return@post
-            PrefsStore.addClip(this, clean)
             currentNode = selectionResolver.findFocusedNode()
             val candidateBounds = currentNode?.let { n ->
                 val r = Rect()
@@ -154,6 +156,7 @@ class SelAccessibilityService : AccessibilityService() {
                     text = clean,
                     sourcePackage = activePackage,
                     isEditable = currentNode?.isEditable == true,
+                    toolbarSig = pendingProbeSig,
                     openExpanded = openExpanded,
                     nowMs = now()
                 )
@@ -169,13 +172,11 @@ class SelAccessibilityService : AccessibilityService() {
     private fun processAccessibilityEvent(event: AccessibilityEvent) {
         val type = event.eventType
 
-        // Fast zero-allocation exit for scroll events when popup is not visible
+        // Fast zero-allocation exit for scroll events when popup is Hidden
         if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
             if (stateMachine.state is PopupState.Visible) {
                 val pkg = event.packageName?.toString().orEmpty()
-                if (pkg != packageName) {
-                    dispatch(PopupEvent.Scrolled(now()))
-                }
+                if (pkg != packageName) dispatch(PopupEvent.Scrolled(now()))
             }
             return
         }
@@ -183,7 +184,7 @@ class SelAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString().orEmpty()
         val cls = event.className?.toString().orEmpty()
 
-        // Track foreground app & dismiss immediately on Home / Launcher / App switch
+        // Track foreground app & dismiss cleanly on Home / Launcher / App switch
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
                 if (SelectionFilter.isLauncherPackage(pkg)) {
@@ -199,6 +200,10 @@ class SelAccessibilityService : AccessibilityService() {
                     }
                 }
             }
+        } else if (activePackage.isEmpty() && pkg.isNotEmpty() && pkg != packageName &&
+            !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)
+        ) {
+            activePackage = pkg
         }
 
         if (pkg.isNotEmpty() && PrefsStore.isAppMuted(this, pkg)) return
@@ -210,23 +215,32 @@ class SelAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
                 if (pkg != packageName && !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)) {
                     stateMachine.resetToolbarMemory()
+                    lastAutoCopySig = ""
                     requestProbe(event.source, activePackage.ifEmpty { pkg }, toolbarSig = "")
                 }
             }
 
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                if (clipboardBridge.isProbeActive) return
                 if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return
                 if (!windowsDebouncer.shouldAllow(now())) return
+
                 val toolbar = selectionResolver.findActiveToolbarNow()
                 if (toolbar == null) {
                     selectionResolver.clearCachedToolbar()
+                    lastAutoCopySig = ""
                     dispatch(PopupEvent.ToolbarGone(now()))
-                } else if (stateMachine.state !is PopupState.Visible) {
-                    requestProbe(null, activePackage, toolbar.signature)
+                } else {
+                    val cur = stateMachine.state
+                    // Trigger when Hidden OR when toolbar moved (user dragged browser selection handles!)
+                    if (cur !is PopupState.Visible || (toolbar.signature.isNotEmpty() && toolbar.signature != cur.toolbarSig)) {
+                        requestProbe(null, activePackage, toolbar.signature)
+                    }
                 }
             }
 
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                if (clipboardBridge.isProbeActive) return
                 if (stateMachine.state !is PopupState.Visible &&
                     pkg != packageName &&
                     !SelectionFilter.isImePackage(pkg) &&
@@ -240,6 +254,7 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                if (clipboardBridge.isProbeActive) return
                 if (stateMachine.state !is PopupState.Visible &&
                     pkg.isNotEmpty() &&
                     pkg != packageName &&
@@ -250,6 +265,7 @@ class SelAccessibilityService : AccessibilityService() {
                     val toolbar = selectionResolver.findActiveToolbarNow()
                     if (toolbar == null) {
                         selectionResolver.clearCachedToolbar()
+                        lastAutoCopySig = ""
                         dispatch(PopupEvent.ToolbarGone(now()))
                     } else {
                         requestProbe(event.source, pkg, toolbar.signature)
@@ -268,25 +284,25 @@ class SelAccessibilityService : AccessibilityService() {
             if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
                 activePackage = pkg
             }
+            val tbSig = selectionResolver.findActiveToolbarNow()?.signature.orEmpty()
             dispatch(
                 PopupEvent.SelectionDetected(
                     text = resolved.text,
                     sourcePackage = activePackage.ifEmpty { pkg },
                     isEditable = resolved.node?.isEditable == true,
+                    toolbarSig = tbSig,
                     nowMs = now()
                 )
             )
             return
         }
 
-        // Range signaled on event but text hidden (WebView/Compose) -> probe
         if (event.fromIndex >= 0 && event.toIndex >= 0 && event.fromIndex != event.toIndex) {
             captureCandidateNodeBounds(event.source)
             requestProbe(event.source, activePackage.ifEmpty { pkg }, toolbarSig = "")
             return
         }
 
-        // Selection collapsed on the active node -> clean dismissal
         val src = event.source
         if (stateMachine.state is PopupState.Visible && src != null && src == currentNode) {
             val s = src.textSelectionStart
@@ -317,14 +333,14 @@ class SelAccessibilityService : AccessibilityService() {
 
     private fun executeProbeAttempt(): Boolean {
         val tNow = now()
-        if (tNow - lastAutoCopyMs < 500L) return false
+        if (tNow - lastAutoCopyMs < 480L) return false
         val pkg = pendingProbePkg
         if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
             activePackage = pkg
         }
         if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return true
 
-        // Tier 1: Zero-side-effect BFS read of selection from accessibility tree
+        // Tier 1: Zero-side-effect deep BFS read of selection from accessibility tree
         val treeHit = selectionResolver.findSelectionInTreeBfs(pendingProbeSource ?: rootInActiveWindow)
         if (treeHit != null) {
             currentNode = treeHit.node
@@ -342,31 +358,65 @@ class SelAccessibilityService : AccessibilityService() {
             return true
         }
 
-        // Tier 2: Trigger ACTION_COPY only when a real selection toolbar is on screen
-        if (selectionResolver.findActiveToolbarNow() == null) return false
+        // Tier 2: Browser / WebView / Compose extraction when a real native selection toolbar is visible
+        val activeToolbar = selectionResolver.findActiveToolbarNow() ?: return false
+        val effSig = pendingProbeSig.ifEmpty { activeToolbar.signature }
+        if (effSig.isNotEmpty() && effSig == lastAutoCopySig && (tNow - lastAutoCopyMs) < 1600L) {
+            return false
+        }
+
         lastAutoCopyMs = tNow
+        lastAutoCopySig = effSig
+        pendingProbeSig = effSig
         captureCandidateNodeBounds(pendingProbeSource)
 
-        val copied = selectionResolver.performBestCopyAction(pendingProbeSource)
+        val copied = selectionResolver.performBestCopyAction(pendingProbeSource, activeToolbar)
         if (copied) {
             val triggerTime = now()
-            handler.postDelayed({
-                val st = stateMachine.state
-                if (st !is PopupState.Visible || st.lastUpdateAtMs < triggerTime) {
-                    clipboardBridge.readNowOrProbe()
-                }
-            }, 60L)
+            scheduleClipboardReadRetries(triggerTime)
             return true
         }
         return false
+    }
+
+    private fun scheduleClipboardReadRetries(triggerTime: Long) {
+        cancelClipRetries()
+        val r1 = Runnable {
+            val st = stateMachine.state
+            if (st !is PopupState.Visible || st.lastUpdateAtMs < triggerTime) {
+                clipboardBridge.readNowOrProbe()
+            }
+        }
+        val r2 = Runnable {
+            val st = stateMachine.state
+            if (st !is PopupState.Visible || st.lastUpdateAtMs < triggerTime) {
+                clipboardBridge.readNowOrProbe()
+            }
+        }
+        pendingClipRetry1 = r1
+        pendingClipRetry2 = r2
+        handler.postDelayed(r1, 80L)
+        handler.postDelayed(r2, 210L)
+    }
+
+    private fun cancelClipRetries() {
+        pendingClipRetry1?.let { handler.removeCallbacks(it) }
+        pendingClipRetry2?.let { handler.removeCallbacks(it) }
+        pendingClipRetry1 = null
+        pendingClipRetry2 = null
     }
 
     private fun dispatch(event: PopupEvent) {
         val result = stateMachine.onEvent(event)
         for (effect in result.effects) {
             when (effect) {
-                is PopupEffect.ShowOrUpdate -> renderVisibleState(effect.state, effect.isNewSession)
+                is PopupEffect.ShowOrUpdate -> {
+                    cancelClipRetries()
+                    renderVisibleState(effect.state, effect.isNewSession)
+                }
                 PopupEffect.HideOverlay -> {
+                    cancelClipRetries()
+                    lastAutoCopySig = ""
                     overlayController.hide()
                     selectionResolver.clearCachedToolbar()
                 }
@@ -404,7 +454,7 @@ class SelAccessibilityService : AccessibilityService() {
     private fun renderVisibleState(visible: PopupState.Visible, isNewSession: Boolean) {
         val snap = selectionResolver.captureScreenSnapshot(force = isNewSession)
         val freshBounds = lastSelectionBounds?.takeIf { now() - lastSelectionBoundsMs < 2600L }
-        val anchorZone = PopupPositioner.computeAnchorZone(
+        val anchorTarget = PopupPositioner.computeAnchorTarget(
             selectionBounds = freshBounds,
             toolbarBounds = snap.toolbar?.bounds,
             viewport = snap.viewport,
@@ -414,7 +464,8 @@ class SelAccessibilityService : AccessibilityService() {
         val hiddenIds = PrefsStore.getHiddenToolIds(this)
         val pinnedTools = PrefsStore.getPinnedToolSpecs(this)
         val defaultEngine = PrefsStore.resolveDefaultSearchEngine(this)
-        val searchLabel = defaultEngine.glyph.take(6).ifEmpty { "Search" }
+        val searchLabel = defaultEngine.glyph.take(7).ifEmpty { "Search" }
+        val iconsOnly = PrefsStore.isIconsOnlyMode(this)
 
         val ctx = ContextActionResolver.analyze(
             rawText = visible.text,
@@ -425,22 +476,29 @@ class SelAccessibilityService : AccessibilityService() {
             ctx = ctx,
             hiddenToolIds = hiddenIds,
             pinnedTools = pinnedTools,
-            searchLabel = searchLabel
+            searchLabel = searchLabel,
+            defaultSearchUrl = defaultEngine.customTarget
         )
 
         val pal = PrefsStore.resolvePalette(this)
         val isDrawerOpen = visible.mode != PopupMode.Bar
 
         overlayController.showOrUpdate(
-            anchorZone = anchorZone,
+            anchorTarget = anchorTarget,
             viewport = snap.viewport,
             isDrawerOpen = isDrawerOpen,
             isNewSession = isNewSession,
+            iconsOnly = iconsOnly,
             actions = barActions,
             onActionClick = { act -> actionExecutor.executePopAction(act, visible.text, currentNode) },
             onActionLongClick = { act -> actionExecutor.executePopActionLongPress(act, visible.text, currentNode) },
             onToggleMore = { dispatch(PopupEvent.ToggleMore(now())) },
-            onClose = { dispatch(PopupEvent.Dismiss) },
+            onFaviconReady = {
+                val st = stateMachine.state
+                if (st is PopupState.Visible && overlayController.isAttached) {
+                    renderVisibleState(st, isNewSession = false)
+                }
+            },
             renderDrawer = { drawerContainer ->
                 DrawerRenderer.render(
                     context = this,

@@ -13,33 +13,28 @@ import org.json.JSONObject
 import kotlin.math.roundToInt
 
 /**
- * Lean, cached preferences store with O(1) hot-path lookups and backward-compatible JSON backup.
- * Zero legacy dead keys.
+ * Lean, cached preferences store (clipboard history & notes completely removed).
  */
 object PrefsStore {
 
     private const val PREFS_NAME = "sel_tool_prefs"
     private const val KEY_ORDER = "manual_order"
     private const val KEY_BLACKLIST = "blacklisted_pkgs"
-    private const val KEY_CLIP_HISTORY = "clip_history_json"
     private const val KEY_FOLLOW_SYSTEM_THEME = "follow_system_theme"
     private const val KEY_DARK_THEME_MANUAL = "dark_theme_manual"
+    private const val KEY_ICONS_ONLY = "icons_only_mode"
     private const val KEY_DEFAULT_SEARCH_ID = "default_search_engine_id"
     private const val KEY_PINNED_TOOLS = "pinned_bar_tool_ids"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
-    private const val MAX_CLIPS = 20
 
     @Volatile
     private var cachedBlacklist: Set<String>? = null
 
-    @Volatile
-    private var cachedClips: List<ClipEntry>? = null
-
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    // --- Theme ---
+    // --- Theme & Bar Display Style ---
 
     fun getThemeMode(context: Context): ThemeMode {
         val p = prefs(context)
@@ -63,12 +58,24 @@ object PrefsStore {
     }
 
     fun resolvePalette(context: Context): ThemePalette {
-        val dark = when (getThemeMode(context)) {
+        val mode = getThemeMode(context)
+        val dark = when (mode) {
             ThemeMode.AUTO -> isSystemInDarkMode(context)
             ThemeMode.DARK -> true
             ThemeMode.LIGHT -> false
         }
-        return if (dark) AppPalettes.DARK else AppPalettes.LIGHT
+        return if (mode == ThemeMode.AUTO) {
+            AppPalettes.resolveDynamic(context, dark)
+        } else {
+            if (dark) AppPalettes.DARK else AppPalettes.LIGHT
+        }
+    }
+
+    fun isIconsOnlyMode(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ICONS_ONLY, false)
+
+    fun setIconsOnlyMode(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ICONS_ONLY, enabled).apply()
     }
 
     // --- Default Search Engine ---
@@ -112,11 +119,13 @@ object PrefsStore {
 
     // --- Pinned Bar Tools ---
 
+    private val excludedPinIds = setOf("copy", "screen_grab", "clip_history", "log", "web_search_folder", "youtube_folder")
+
     fun getPinnedToolIds(context: Context): List<String> {
         val raw = prefs(context).getString(KEY_PINNED_TOOLS, "") ?: ""
         return raw.split(",")
             .map { it.trim() }
-            .filter { it.isNotEmpty() && it != "copy" && it != "screen_grab" && it != "web_search_folder" && it != "youtube_folder" }
+            .filter { it.isNotEmpty() && it !in excludedPinIds }
             .distinct()
     }
 
@@ -124,7 +133,7 @@ object PrefsStore {
         toolId in getPinnedToolIds(context)
 
     fun toggleToolPinned(context: Context, toolId: String): Boolean {
-        if (toolId == "web_search_folder" || toolId == "youtube_folder") return false
+        if (toolId in excludedPinIds) return false
         val current = getPinnedToolIds(context).toMutableList()
         val nowPinned = if (toolId in current) {
             current.remove(toolId)
@@ -208,84 +217,21 @@ object PrefsStore {
         prefs(context).edit().putString(KEY_BLACKLIST, next.sorted().joinToString(",")).apply()
     }
 
-    // --- Clipboard History ---
-
-    fun getClipHistory(context: Context): List<ClipEntry> {
-        cachedClips?.let { return it }
-        val raw = prefs(context).getString(KEY_CLIP_HISTORY, "[]") ?: "[]"
-        val list = mutableListOf<ClipEntry>()
-        runCatching {
-            val arr = JSONArray(raw)
-            for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val txt = obj.optString("t", "")
-                if (txt.isNotBlank()) {
-                    list.add(ClipEntry(txt, obj.optBoolean("p", false), obj.optLong("ts", 0L)))
-                }
-            }
-        }
-        return list.sortedWith(compareByDescending<ClipEntry> { it.pinned }.thenByDescending { it.timestamp })
-            .also { cachedClips = it }
-    }
-
-    private fun saveClips(context: Context, list: List<ClipEntry>) {
-        val sorted = list.sortedWith(compareByDescending<ClipEntry> { it.pinned }.thenByDescending { it.timestamp })
-        val arr = JSONArray()
-        for (c in sorted) {
-            arr.put(JSONObject().apply {
-                put("t", c.text)
-                put("p", c.pinned)
-                put("ts", c.timestamp)
-            })
-        }
-        cachedClips = sorted
-        prefs(context).edit().putString(KEY_CLIP_HISTORY, arr.toString()).apply()
-    }
-
-    fun addClip(context: Context, text: String) {
-        val clean = text.trim()
-        if (clean.isEmpty() || clean.length > 4000) return
-        val current = getClipHistory(context).toMutableList()
-        val existing = current.firstOrNull { it.text == clean }
-        val wasPinned = existing?.pinned == true
-        current.removeAll { it.text == clean }
-        current.add(0, ClipEntry(clean, wasPinned, System.currentTimeMillis()))
-
-        val pinned = current.filter { it.pinned }
-        val unpinned = current.filter { !it.pinned }.take((MAX_CLIPS - pinned.size).coerceAtLeast(4))
-        saveClips(context, pinned + unpinned)
-    }
-
-    fun togglePinClip(context: Context, text: String) {
-        val updated = getClipHistory(context).map {
-            if (it.text == text) it.copy(pinned = !it.pinned) else it
-        }
-        saveClips(context, updated)
-    }
-
-    fun deleteClip(context: Context, text: String) {
-        saveClips(context, getClipHistory(context).filterNot { it.text == text })
-    }
-
-    fun clearUnpinnedClips(context: Context) {
-        saveClips(context, getClipHistory(context).filter { it.pinned })
-    }
-
-    // --- JSON Backup Export / Import (Backward Compatible) ---
+    // --- JSON Backup Export / Import ---
 
     fun exportBackupJson(context: Context): String {
         val p = prefs(context)
         val root = JSONObject().apply {
-            put("version", 4)
+            put("version", 5)
             put("follow_system_theme", p.getBoolean(KEY_FOLLOW_SYSTEM_THEME, true))
             put("dark_theme_manual", p.getBoolean(KEY_DARK_THEME_MANUAL, true))
+            put("icons_only_mode", isIconsOnlyMode(context))
             put("default_search_engine_id", getDefaultSearchEngineId(context))
             put("pinned_bar_tool_ids", getPinnedToolIds(context).joinToString(","))
             put("manual_order", p.getString(KEY_ORDER, ""))
             put("blacklisted_pkgs", p.getString(KEY_BLACKLIST, ""))
             put("rules_txt", RulesRepository.ensureRulesFile(context).readText())
             put("hidden_tools", JSONArray(getHiddenToolIds(context).toList()))
-            put("pinned_clips", JSONArray(getClipHistory(context).filter { it.pinned }.map { it.text }))
         }
         return root.toString(2)
     }
@@ -300,6 +246,9 @@ object PrefsStore {
         }
         if (root.has("dark_theme_manual")) {
             editor.putBoolean(KEY_DARK_THEME_MANUAL, root.optBoolean("dark_theme_manual", true))
+        }
+        if (root.has("icons_only_mode")) {
+            editor.putBoolean(KEY_ICONS_ONLY, root.optBoolean("icons_only_mode", false))
         }
         if (root.has("default_search_engine_id")) {
             editor.putString(KEY_DEFAULT_SEARCH_ID, root.optString("default_search_engine_id", "web_google"))
@@ -328,17 +277,6 @@ object PrefsStore {
             val rulesTxt = root.optString("rules_txt", "")
             if (rulesTxt.isNotBlank()) {
                 RulesRepository.writeRawRules(context, rulesTxt)
-            }
-        }
-        if (root.has("pinned_clips")) {
-            val arr = root.getJSONArray("pinned_clips")
-            for (i in 0 until arr.length()) {
-                val clip = arr.optString(i, "")
-                if (clip.isNotBlank()) {
-                    addClip(context, clip)
-                    val updated = getClipHistory(context).map { if (it.text == clip) it.copy(pinned = true) else it }
-                    saveClips(context, updated)
-                }
             }
         }
         true

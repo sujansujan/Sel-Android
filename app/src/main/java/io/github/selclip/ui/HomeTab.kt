@@ -85,11 +85,11 @@ class HomeTab(private val activity: Activity) {
 
             addView(UiKit.sectionTitle(activity, "Quick Tips"))
             val tipsCard = UiKit.card(activity).apply {
-                addView(UiKit.text(activity, "• Tap Search or YT for instant lookup; long-press either button for more engines or time filters.", 12.5f, p.fgPrimaryInt))
-                addView(UiKit.text(activity, "• Pin your favorite actions with ★ in the Actions tab so they always appear on the bar.", 12.5f, p.fgPrimaryInt).apply {
+                addView(UiKit.text(activity, "• Docks directly below Android's native selection popup in browsers and apps.", 12.5f, p.fgPrimaryInt))
+                addView(UiKit.text(activity, "• Tap Search or YT for instant lookup; long-press either for all engines or time filters.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
-                addView(UiKit.text(activity, "• Drag the ⋮⋮ grip to reposition the bar, or tap Sel in Android's native menu as a fallback in any app.", 12.5f, p.fgPrimaryInt).apply {
+                addView(UiKit.text(activity, "• Switch to Icons Only in Settings to use crisp icons and auto-fetched site favicons.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
             }

@@ -9,16 +9,20 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import io.github.selclip.data.PopAction
 import io.github.selclip.data.ThemePalette
 
 /**
- * Renders the sleek, thumb-friendly native floating PopClip bar:
- * - Large 48dp touch targets, clean sans-serif typography, subtle pressed highlights.
- * - Wraps neatly into 1 row (<= 4 actions) or 2 tidy rows (no awkward horizontal scrolling).
- * - Drag handle (⋮⋮) to reposition, [+] / [–] drawer toggle, and [×] close button.
+ * Renders the floating bar to look and feel indistinguishable from Android's native
+ * Material 3 FloatingToolbarPopup:
+ * - Clean single-row 48dp native pill with smooth horizontal scrolling when needed.
+ * - Supports both Native Text Mode (crisp sans-serif-medium 14sp + portal favicons) and
+ *   Icons-Only Mode (razor-sharp 20dp native vector icons & auto-fetched search favicons).
+ * - Right-aligned native ⋮ overflow button matching Android's system popup.
  */
 object PopupBarRenderer {
 
@@ -30,140 +34,183 @@ object PopupBarRenderer {
         container: LinearLayout,
         actions: List<PopAction>,
         pal: ThemePalette,
+        iconsOnly: Boolean,
         isDrawerOpen: Boolean,
-        onAttachDrag: (View) -> Unit,
         onActionClick: (PopAction) -> Unit,
         onActionLongClick: (PopAction) -> Unit,
         onToggleMore: () -> Unit,
-        onClose: () -> Unit
+        onFaviconLoaded: () -> Unit
     ) {
         container.removeAllViews()
 
-        val rows: List<List<PopAction>> = if (actions.size <= 4) {
-            listOf(actions)
-        } else {
-            val split = (actions.size + 1) / 2
-            listOf(actions.subList(0, split), actions.subList(split, actions.size))
+        val outerRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(context, 4), 0, dp(context, 4), 0)
         }
 
-        rows.forEachIndexed { rowIdx, rowActions ->
-            if (rowIdx > 0) {
-                container.addView(View(context).apply {
-                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(context, 1))
-                    setBackgroundColor(pal.dividerInt)
-                })
-            }
+        val itemsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
 
-            val rowView = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
+        val scroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(itemsRow)
+        }
 
-            if (rowIdx == 0) {
-                val grip = TextView(context).apply {
-                    text = "⋮⋮"
-                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                    setTextColor(pal.fgMutedInt)
-                    gravity = Gravity.CENTER
-                    minHeight = dp(context, 48)
-                    setPadding(dp(context, 10), dp(context, 10), dp(context, 8), dp(context, 10))
-                }
-                onAttachDrag(grip)
-                rowView.addView(grip)
-                rowView.addView(makeVertDivider(context, pal))
-            }
+        val iconSize = dp(context, 20)
 
-            rowActions.forEachIndexed { colIdx, act ->
-                if (colIdx > 0) rowView.addView(makeVertDivider(context, pal))
-                rowView.addView(
-                    makeBarButton(
+        actions.forEach { act ->
+            val fg = if (act.accent) pal.accentPrimaryInt else pal.fgPrimaryInt
+            // Computed values (e.g., "= 1740") always show their text so the user can read the answer!
+            val showAsIconOnly = iconsOnly && act.id != "apply_computed"
+
+            if (showAsIconOnly) {
+                itemsRow.addView(
+                    makeIconCell(
                         context = context,
-                        label = act.label,
-                        fgColor = if (act.accent) pal.accentSuccessInt else pal.fgPrimaryInt,
+                        action = act,
+                        tintColor = fg,
                         pal = pal,
+                        iconSize = iconSize,
+                        onFaviconLoaded = onFaviconLoaded,
+                        onLongClick = { onActionLongClick(act) }
+                    ) {
+                        onActionClick(act)
+                    }
+                )
+            } else {
+                itemsRow.addView(
+                    makeTextCell(
+                        context = context,
+                        action = act,
+                        fgColor = fg,
+                        pal = pal,
+                        iconSize = dp(context, 16),
+                        onFaviconLoaded = onFaviconLoaded,
                         onLongClick = { onActionLongClick(act) }
                     ) {
                         onActionClick(act)
                     }
                 )
             }
-
-            if (rowIdx == 0) {
-                rowView.addView(makeVertDivider(context, pal))
-                rowView.addView(
-                    makeBarButton(
-                        context = context,
-                        label = if (isDrawerOpen) "−" else "+",
-                        fgColor = if (isDrawerOpen) pal.accentPrimaryInt else pal.accentInfoInt,
-                        pal = pal,
-                        minWidthDp = 44
-                    ) {
-                        onToggleMore()
-                    }
-                )
-                rowView.addView(makeVertDivider(context, pal))
-                rowView.addView(
-                    makeBarButton(
-                        context = context,
-                        label = "×",
-                        fgColor = pal.dangerInt,
-                        pal = pal,
-                        minWidthDp = 44
-                    ) {
-                        onClose()
-                    }
-                )
-            }
-
-            container.addView(rowView)
         }
+
+        outerRow.addView(scroll)
+
+        // Subtle hairline divider + native Android ⋮ overflow button
+        outerRow.addView(View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(context, 1), dp(context, 22)).apply {
+                marginStart = dp(context, 2)
+                marginEnd = dp(context, 2)
+            }
+            setBackgroundColor(pal.dividerInt)
+        })
+
+        val overflowTint = if (isDrawerOpen) pal.accentPrimaryInt else pal.fgPrimaryInt
+        outerRow.addView(ImageView(context).apply {
+            setImageDrawable(ActionIconFactory.createOverflowIcon(overflowTint, iconSize))
+            scaleType = ImageView.ScaleType.CENTER
+            contentDescription = "More actions"
+            layoutParams = LinearLayout.LayoutParams(dp(context, 44), dp(context, 48))
+            background = pillItemBackground(context, pal)
+            setOnClickListener {
+                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                onToggleMore()
+            }
+        })
+
+        container.addView(outerRow)
     }
 
-    private fun makeVertDivider(context: Context, pal: ThemePalette): View =
-        View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(context, 1), dp(context, 22))
-            setBackgroundColor(pal.dividerInt)
-        }
-
-    private fun makeBarButton(
+    private fun makeIconCell(
         context: Context,
-        label: String,
-        fgColor: Int,
+        action: PopAction,
+        tintColor: Int,
         pal: ThemePalette,
-        minWidthDp: Int = 48,
-        onLongClick: (() -> Unit)? = null,
+        iconSize: Int,
+        onFaviconLoaded: () -> Unit,
+        onLongClick: () -> Unit,
         onClick: () -> Unit
-    ): TextView = TextView(context).apply {
-        text = label
-        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-        setTextColor(fgColor)
-        gravity = Gravity.CENTER
-        isSingleLine = true
-        minHeight = dp(context, 48)
-        minWidth = dp(context, minWidthDp)
-        setPadding(dp(context, 14), dp(context, 11), dp(context, 14), dp(context, 11))
-        background = StateListDrawable().apply {
-            addState(
-                intArrayOf(android.R.attr.state_pressed),
-                GradientDrawable().apply {
-                    setColor(pal.bgPressedInt)
-                    cornerRadius = dpF(context, 8f)
-                }
-            )
-            addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
-        }
+    ): ImageView = ImageView(context).apply {
+        setImageDrawable(ActionIconFactory.createForAction(context, action, tintColor, iconSize, onFaviconLoaded))
+        scaleType = ImageView.ScaleType.CENTER
+        contentDescription = action.label
+        layoutParams = LinearLayout.LayoutParams(dp(context, 46), dp(context, 48))
+        background = pillItemBackground(context, pal)
         setOnClickListener {
             runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
             onClick()
         }
-        if (onLongClick != null) {
+        setOnLongClickListener {
+            runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+            onLongClick()
+            true
+        }
+    }
+
+    private fun makeTextCell(
+        context: Context,
+        action: PopAction,
+        fgColor: Int,
+        pal: ThemePalette,
+        iconSize: Int,
+        onFaviconLoaded: () -> Unit,
+        onLongClick: () -> Unit,
+        onClick: () -> Unit
+    ): View {
+        val hasPortalFavicon = !action.faviconUrl.isNullOrBlank()
+        val cell = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            minimumHeight = dp(context, 48)
+            setPadding(dp(context, 13), dp(context, 10), dp(context, 13), dp(context, 10))
+            background = pillItemBackground(context, pal)
+            setOnClickListener {
+                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                onClick()
+            }
             setOnLongClickListener {
                 runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
                 onLongClick()
                 true
             }
         }
+
+        if (hasPortalFavicon) {
+            val icon = ActionIconFactory.createForAction(context, action, fgColor, iconSize, onFaviconLoaded)
+            cell.addView(ImageView(context).apply {
+                setImageDrawable(icon)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).apply {
+                    marginEnd = dp(context, 6)
+                }
+            })
+        }
+
+        cell.addView(TextView(context).apply {
+            text = action.label
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(fgColor)
+            isSingleLine = true
+            gravity = Gravity.CENTER
+        })
+        return cell
     }
+
+    private fun pillItemBackground(context: Context, pal: ThemePalette): StateListDrawable =
+        StateListDrawable().apply {
+            addState(
+                intArrayOf(android.R.attr.state_pressed),
+                GradientDrawable().apply {
+                    setColor(pal.bgPressedInt)
+                    cornerRadius = dpF(context, 20f)
+                }
+            )
+            addState(intArrayOf(), GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+        }
 }
