@@ -34,6 +34,14 @@ class SelectionFilterTest {
         assertTrue(SelectionFilter.isLauncherPackage("com.google.android.apps.nexuslauncher"))
         assertTrue(SelectionFilter.isTransientPopupClass("android.widget.PopupWindow\$PopupDecorView"))
         assertFalse(SelectionFilter.isTransientPopupClass("android.widget.LinearLayout"))
+
+        assertTrue(SelectionFilter.isGeckoBrowserPackage("org.mozilla.firefox"))
+        assertTrue(SelectionFilter.isGeckoBrowserPackage("eu.weblibre.gecko.alpha"))
+        assertFalse(SelectionFilter.isGeckoBrowserPackage("com.vivaldi.browser"))
+
+        assertTrue(SelectionFilter.isSystemUiOrFramework("miui.systemui.plugin"))
+        assertEquals("hello", SelectionFilter.sanitizeCandidate("\uFFFC hello \uFFFC"))
+        assertNull(SelectionFilter.sanitizeCandidate("\uFFFC\uFFFC"))
     }
 
     @Test

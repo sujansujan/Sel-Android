@@ -6,7 +6,6 @@ import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
 import android.util.DisplayMetrics
-import android.util.Log
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -78,14 +77,10 @@ class SelectionResolver(
         "android:id/action_mode_close_button"
     )
 
-    private val isDebugBuild: Boolean by lazy {
-        (service.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-    }
-
-    // Cached reflection handles for Android 16 (API 36+) AccessibilityNodeInfo.getSelection()
-    // which Chromium (Chrome/Vivaldi/Brave/Edge) populates on WebView for static webpage selections!
+    // Cached reflection handles for Android 16.1+ AccessibilityNodeInfo.getSelection()
+    // which Chromium populates on WebView for static webpage selections.
     private val getSelectionMethod: Method? by lazy {
-        val m = runCatching { AccessibilityNodeInfo::class.java.getMethod("getSelection") }.getOrNull()
+        runCatching { AccessibilityNodeInfo::class.java.getMethod("getSelection") }.getOrNull()
             ?: runCatching {
                 AccessibilityNodeInfo::class.java.methods.firstOrNull {
                     it.parameterCount == 0 &&
@@ -95,13 +90,6 @@ class SelectionResolver(
                         it.returnType != Void.TYPE
                 }
             }.getOrNull()
-        if (isDebugBuild) {
-            val allSel = AccessibilityNodeInfo::class.java.methods
-                .filter { it.name.contains("Selection", ignoreCase = true) }
-                .joinToString(",") { "${it.name}(${it.parameterCount})->${it.returnType.simpleName}" }
-            Log.d("SelDiag", "a11ySelMethods=[$allSel] chosen=${m?.name}")
-        }
-        m
     }
     @Volatile private var selGetStartMethod: Method? = null
     @Volatile private var selGetEndMethod: Method? = null
@@ -320,9 +308,6 @@ class SelectionResolver(
             }
         }
 
-        if (isDebugBuild) {
-            Log.d("SelDiag", "floatWin id=$windowId rect=$windowRect visited=$visited matched=${matchedButtons.size} pkg=${root.packageName}")
-        }
         // STRICT verification: require at least ONE genuine selection toolbar button ID or keyword
         // (Copy/Cut/Select all/Share/Web search/Translate/Sel) so unrelated floating tooltips or
         // browser popups NEVER false-trigger Sel!
@@ -497,8 +482,7 @@ class SelectionResolver(
     fun findSelectionAcrossAppWindows(
         preferredRoot: AccessibilityNodeInfo?,
         toolbarBounds: Box?,
-        toolbarWindowId: Int = -1,
-        debugDump: Boolean = false
+        toolbarWindowId: Int = -1
     ): ResolvedSelection? {
         // Fast O(1) check on focused input first (browser address bar, <input>, <textarea>)
         findFocusedNode()?.let { focused ->
@@ -544,7 +528,7 @@ class SelectionResolver(
         }
 
         for (scanRoot in roots) {
-            findSelectionSpatial(scanRoot, toolbarBounds, maxNodes = 550, maxDepth = 28, debugDump = debugDump)?.let { return it }
+            findSelectionSpatial(scanRoot, toolbarBounds, maxNodes = 550, maxDepth = 28)?.let { return it }
         }
         return null
     }
@@ -566,8 +550,7 @@ class SelectionResolver(
         root: AccessibilityNodeInfo,
         toolbarBounds: Box?,
         maxNodes: Int,
-        maxDepth: Int,
-        debugDump: Boolean = false
+        maxDepth: Int
     ): ResolvedSelection? {
         val (_, realH) = readRealScreenSize()
         val targetY = toolbarBounds?.bottom?.plus(dp(36)) ?: (realH / 2)
@@ -577,7 +560,6 @@ class SelectionResolver(
 
         val hits = mutableListOf<ResolvedSelection>()
         var visited = 0
-        var debugLogged = 0
         val tmpRect = Rect()
 
         while (pq.isNotEmpty() && visited < maxNodes) {
@@ -594,26 +576,6 @@ class SelectionResolver(
                 }.getOrDefault(false)
                 if (hasSelExtra) {
                     extractExtendedSelection(node, resolveCharBounds = toolbarBounds == null)?.let { return it }
-                }
-            }
-
-            if (debugDump && debugLogged < 14) {
-                val ns = node.textSelectionStart
-                val ne = node.textSelectionEnd
-                val t = node.text?.toString().orEmpty()
-                val cls = node.className?.toString()?.substringAfterLast('.').orEmpty()
-                val interesting = ns >= 0 || ne >= 0 || node.isSelected || isBrowserSurfaceNode(node) ||
-                    (cur.distToToolbar <= dp(120) && t.isNotBlank())
-                if (interesting) {
-                    val acts = runCatching { node.actionList.map { it.id } }.getOrDefault(emptyList())
-                    val hasCopyAct = AccessibilityNodeInfo.ACTION_COPY in acts
-                    val extraKeys = runCatching { node.extras?.keySet()?.joinToString(",") }.getOrNull().orEmpty()
-                    node.getBoundsInScreen(tmpRect)
-                    Log.d(
-                        "SelDiag",
-                        "node[$visited] d=${cur.depth} dist=${cur.distToToolbar} cls=$cls vis=${node.isVisibleToUser} sel=${node.isSelected} idx=$ns..$ne copy=$hasCopyAct ch=${node.childCount} r=$tmpRect txt='${t.take(36)}' extras=[$extraKeys]"
-                    )
-                    debugLogged++
                 }
             }
 
@@ -721,42 +683,20 @@ class SelectionResolver(
         containerNode: AccessibilityNodeInfo,
         resolveCharBounds: Boolean = true
     ): ResolvedSelection? {
-        val getSel = getSelectionMethod
-        val selObj = if (getSel != null) runCatching { getSel.invoke(containerNode) }.getOrNull() else null
-
-        if (isDebugBuild) {
-            val selExtras = runCatching {
-                containerNode.extras?.keySet()
-                    ?.filter { it.contains("SELECTION", ignoreCase = true) }
-                    ?.joinToString(",") { k -> "$k=${containerNode.extras?.get(k)}" }
-            }.getOrNull().orEmpty()
-            Log.d(
-                "SelDiag",
-                "extSelProbe cls=${containerNode.className?.toString()?.substringAfterLast('.')} getSel=${getSel?.name} selObj=$selObj extras=[$selExtras]"
-            )
-        }
-
-        if (selObj == null) return null
+        val getSel = getSelectionMethod ?: return null
+        val selObj = runCatching { getSel.invoke(containerNode) }.getOrNull() ?: return null
 
         val getStart = selGetStartMethod ?: runCatching {
             selObj.javaClass.methods.firstOrNull {
                 it.parameterCount == 0 && it.name.contains("Start", ignoreCase = true) && it.returnType != Int::class.javaPrimitiveType
             }
-        }.getOrNull()?.also { selGetStartMethod = it }
+        }.getOrNull()?.also { selGetStartMethod = it } ?: return null
 
         val getEnd = selGetEndMethod ?: runCatching {
             selObj.javaClass.methods.firstOrNull {
                 it.parameterCount == 0 && it.name.contains("End", ignoreCase = true) && it.returnType != Int::class.javaPrimitiveType
             }
-        }.getOrNull()?.also { selGetEndMethod = it }
-
-        if (getStart == null || getEnd == null) {
-            if (isDebugBuild) {
-                val ms = selObj.javaClass.methods.joinToString(",") { "${it.name}(${it.parameterCount})->${it.returnType.simpleName}" }
-                Log.d("SelDiag", "extSelMethods=[$ms]")
-            }
-            return null
-        }
+        }.getOrNull()?.also { selGetEndMethod = it } ?: return null
 
         val startPos = runCatching { getStart.invoke(selObj) }.getOrNull() ?: return null
         val endPos = runCatching { getEnd.invoke(selObj) }.getOrNull() ?: return null
@@ -765,7 +705,7 @@ class SelectionResolver(
             startPos.javaClass.methods.firstOrNull {
                 it.parameterCount == 0 && AccessibilityNodeInfo::class.java.isAssignableFrom(it.returnType)
             }
-        }.getOrNull()?.also { posGetNodeMethod = it }
+        }.getOrNull()?.also { posGetNodeMethod = it } ?: return null
 
         val getOffset = posGetOffsetMethod ?: runCatching {
             startPos.javaClass.methods.firstOrNull {
@@ -774,27 +714,12 @@ class SelectionResolver(
                     it.name.contains("Offset", ignoreCase = true) &&
                     !it.name.contains("Type", ignoreCase = true)
             }
-        }.getOrNull()?.also { posGetOffsetMethod = it }
-
-        if (getNode == null || getOffset == null) {
-            if (isDebugBuild) {
-                val ms = startPos.javaClass.methods.joinToString(",") { "${it.name}(${it.parameterCount})->${it.returnType.simpleName}" }
-                Log.d("SelDiag", "extPosMethods=[$ms] startPos=$startPos endPos=$endPos")
-            }
-            return null
-        }
+        }.getOrNull()?.also { posGetOffsetMethod = it } ?: return null
 
         val startNode = runCatching { getNode.invoke(startPos) as? AccessibilityNodeInfo }.getOrNull()
         val endNode = runCatching { getNode.invoke(endPos) as? AccessibilityNodeInfo }.getOrNull()
         val startOffset = runCatching { (getOffset.invoke(startPos) as? Int) ?: -1 }.getOrDefault(-1)
         val endOffset = runCatching { (getOffset.invoke(endPos) as? Int) ?: -1 }.getOrDefault(-1)
-
-        if (isDebugBuild) {
-            Log.d(
-                "SelDiag",
-                "extSel start=${startNode?.className?.toString()?.substringAfterLast('.')}@$startOffset('${startNode?.text?.toString()?.take(24)}') end=${endNode?.className?.toString()?.substringAfterLast('.')}@$endOffset('${endNode?.text?.toString()?.take(24)}')"
-            )
-        }
 
         if (startNode == null || endNode == null) return null
         if (startNode.isPassword || endNode.isPassword) return null

@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.selclip"
         minSdk = 26
         targetSdk = 34
-        versionCode = 33
-        versionName = "4.7.1"
+        versionCode = 34
+        versionName = "4.7.2"
     }
 
     buildTypes {

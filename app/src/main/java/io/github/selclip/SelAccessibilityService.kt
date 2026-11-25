@@ -3,12 +3,10 @@ package io.github.selclip
 import android.accessibilityservice.AccessibilityService
 import android.content.ClipboardManager
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -92,14 +90,6 @@ class SelAccessibilityService : AccessibilityService() {
     private var pendingProbeSource: AccessibilityNodeInfo? = null
     private var pendingProbePkg: String = ""
     private var pendingProbeSig: String = ""
-
-    private val isDebugBuild: Boolean by lazy {
-        (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-    }
-
-    private fun diag(msg: String) {
-        if (isDebugBuild) Log.d("SelDiag", msg)
-    }
 
     private fun getOrCreateScanExecutor(): ExecutorService {
         scanExecutor?.let { if (!it.isShutdown) return it }
@@ -306,15 +296,11 @@ class SelAccessibilityService : AccessibilityService() {
 
         when (type) {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_SELECTED -> {
-                diag("EV sel type=$type pkg=$pkg cls=$cls from=${event.fromIndex} to=${event.toIndex} evText='${event.text.joinToString("").take(40)}' srcSel=${event.source?.textSelectionStart}..${event.source?.textSelectionEnd}")
-                handleDirectSelectionEvent(event, pkg)
-            }
+            AccessibilityEvent.TYPE_VIEW_SELECTED -> handleDirectSelectionEvent(event, pkg)
 
             // Long-press fires while user's finger is still down (Magnifier active).
             // Reset memory and remember source node ONLY — never spawn blindly before finger-up!
             AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
-                diag("EV longClick pkg=$pkg cls=$cls srcCls=${event.source?.className}")
                 if (pkg != packageName && !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)) {
                     stateMachine.resetToolbarMemory()
                     pendingProbeSource = event.source
@@ -327,7 +313,6 @@ class SelAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 if (overlayController.isRecentSelfWindowMutation(90L)) return
                 if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return
-                diag("EV windowsChanged activePkg=$activePackage")
                 syncWithNativeToolbarNow(scheduleFollowUpIfMissing = true)
             }
 
@@ -337,7 +322,6 @@ class SelAccessibilityService : AccessibilityService() {
                     !SelectionFilter.isImePackage(pkg) &&
                     SelectionFilter.isTransientPopupClass(cls)
                 ) {
-                    diag("EV transientWinState pkg=$pkg cls=$cls")
                     syncWithNativeToolbarNow(scheduleFollowUpIfMissing = true)
                 }
             }
@@ -371,7 +355,6 @@ class SelAccessibilityService : AccessibilityService() {
 
         val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
         val toolbar = snap.toolbar
-        diag("syncToolbar activePkg=$activePackage toolbar=${toolbar?.bounds} sig=${toolbar?.signature} hasMag=${snap.hasMagnifierOrTransientFloating}")
 
         if (toolbar == null) {
             if (cur is PopupState.Visible || cur is PopupState.PendingProbe) {
@@ -586,11 +569,9 @@ class SelAccessibilityService : AccessibilityService() {
                 selectionResolver.findSelectionAcrossAppWindows(
                     preferredRoot = preferredRoot,
                     toolbarBounds = toolbar?.bounds,
-                    toolbarWindowId = toolbar?.windowId ?: -1,
-                    debugDump = isDebugBuild
+                    toolbarWindowId = toolbar?.windowId ?: -1
                 )
             }.getOrNull()
-            diag("asyncScan done pkg=$pkgSnapshot hit='${treeHit?.text?.take(40)}' bounds=${treeHit?.bounds}")
 
             handler.post {
                 if (gen != scanGeneration.get()) return@post
