@@ -17,11 +17,10 @@ import io.github.selclip.data.PopAction
 import io.github.selclip.data.ThemePalette
 
 /**
- * Renders the floating bar to match Android's native FloatingToolbarPopup:
- * - Single-row 48dp native pill with smooth horizontal scroll when needed.
- * - Labels mode: clean native `sans-serif-medium` 14sp labels + crisp 16dp icons for EVERY item.
- * - Icons-Only mode: crisp 20dp native vector icons + auto-fetched favicons for search portals.
- * - Right-aligned native ⋮ overflow button matching Android's system selection popup.
+ * Renders the native Android FloatingToolbar-style pill.
+ *
+ * Updates downloaded favicons IN-PLACE on their ImageView without rebuilding the bar or
+ * triggering WindowManager.updateViewLayout — completely eliminating post-appear stutter!
  */
 object PopupBarRenderer {
 
@@ -37,8 +36,7 @@ object PopupBarRenderer {
         isDrawerOpen: Boolean,
         onActionClick: (PopAction) -> Unit,
         onActionLongClick: (PopAction) -> Unit,
-        onToggleMore: () -> Unit,
-        onFaviconLoaded: () -> Unit
+        onToggleMore: () -> Unit
     ) {
         container.removeAllViews()
 
@@ -63,7 +61,6 @@ object PopupBarRenderer {
         val iconSize = dp(context, 20)
 
         actions.forEach { act ->
-            // Match Android's native popup: neutral primary ink for standard buttons, accent only for computed answers!
             val fg = if (act.id == "apply_computed" || act.id == "undo") pal.accentPrimaryInt else pal.fgPrimaryInt
             val showAsIconOnly = iconsOnly && act.id != "apply_computed"
 
@@ -75,11 +72,8 @@ object PopupBarRenderer {
                         tintColor = fg,
                         pal = pal,
                         iconSize = iconSize,
-                        onFaviconLoaded = onFaviconLoaded,
                         onLongClick = { onActionLongClick(act) }
-                    ) {
-                        onActionClick(act)
-                    }
+                    ) { onActionClick(act) }
                 )
             } else {
                 itemsRow.addView(
@@ -89,11 +83,8 @@ object PopupBarRenderer {
                         fgColor = fg,
                         pal = pal,
                         iconSize = dp(context, 16),
-                        onFaviconLoaded = onFaviconLoaded,
                         onLongClick = { onActionLongClick(act) }
-                    ) {
-                        onActionClick(act)
-                    }
+                    ) { onActionClick(act) }
                 )
             }
         }
@@ -130,15 +121,21 @@ object PopupBarRenderer {
         tintColor: Int,
         pal: ThemePalette,
         iconSize: Int,
-        onFaviconLoaded: () -> Unit,
         onLongClick: () -> Unit,
         onClick: () -> Unit
     ): ImageView = ImageView(context).apply {
-        setImageDrawable(ActionIconFactory.createForAction(context, action, tintColor, iconSize, onFaviconLoaded))
         scaleType = ImageView.ScaleType.CENTER
         contentDescription = action.label
         layoutParams = LinearLayout.LayoutParams(dp(context, 46), dp(context, 48))
         background = pillItemBackground(context, pal)
+        // Update image drawable directly in place when favicon arrives — zero window relayout!
+        setImageDrawable(
+            ActionIconFactory.createForAction(context, action, tintColor, iconSize) {
+                if (isAttachedToWindow) {
+                    setImageDrawable(ActionIconFactory.createForAction(context, action, tintColor, iconSize))
+                }
+            }
+        )
         setOnClickListener {
             runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
             onClick()
@@ -156,7 +153,6 @@ object PopupBarRenderer {
         fgColor: Int,
         pal: ThemePalette,
         iconSize: Int,
-        onFaviconLoaded: () -> Unit,
         onLongClick: () -> Unit,
         onClick: () -> Unit
     ): View {
@@ -177,16 +173,21 @@ object PopupBarRenderer {
             }
         }
 
-        // Every item (except computed answers like "= 1740") shows its dedicated crisp icon/favicon!
         if (action.id != "apply_computed") {
-            val icon = ActionIconFactory.createForAction(context, action, fgColor, iconSize, onFaviconLoaded)
-            cell.addView(ImageView(context).apply {
-                setImageDrawable(icon)
+            val iconView = ImageView(context).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).apply {
                     marginEnd = dp(context, 6)
                 }
-            })
+            }
+            iconView.setImageDrawable(
+                ActionIconFactory.createForAction(context, action, fgColor, iconSize) {
+                    if (iconView.isAttachedToWindow) {
+                        iconView.setImageDrawable(ActionIconFactory.createForAction(context, action, fgColor, iconSize))
+                    }
+                }
+            )
+            cell.addView(iconView)
         }
 
         cell.addView(TextView(context).apply {

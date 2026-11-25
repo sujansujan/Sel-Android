@@ -103,4 +103,21 @@ class PopupStateMachineTest {
         val hidden = sm.onEvent(PopupEvent.SelectionCleared(nowMs = 1800L))
         assertEquals(PopupState.Hidden, hidden.state)
     }
+
+    @Test
+    fun toolbarGone_andExternalViewClick_dismissVisibleBarInLockstep() {
+        val sm = PopupStateMachine()
+        sm.onEvent(PopupEvent.SelectionDetected("chrome text", "com.android.chrome", false, toolbarSig = "tb1", nowMs = 1000L))
+
+        // Native toolbar disappears after grace -> Sel dismisses immediately!
+        val gone = sm.onEvent(PopupEvent.ToolbarGone(nowMs = 1300L))
+        assertEquals(PopupState.Hidden, gone.state)
+        assertTrue(gone.effects.contains(PopupEffect.HideOverlay))
+
+        // External click in another view -> dismisses cleanly even if ACTION_OUTSIDE was blocked
+        sm.onEvent(PopupEvent.SelectionDetected("other text", "com.notes", false, nowMs = 2000L))
+        val clicked = sm.onEvent(PopupEvent.ExternalViewClicked(nowMs = 2300L))
+        assertEquals(PopupState.Hidden, clicked.state)
+        assertTrue(clicked.effects.contains(PopupEffect.HideOverlay))
+    }
 }

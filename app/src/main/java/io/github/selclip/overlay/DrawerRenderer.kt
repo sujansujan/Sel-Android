@@ -34,6 +34,7 @@ object DrawerRenderer {
 
     interface Callbacks {
         fun onBackToBar()
+        fun onDismiss()
         fun onRerender()
         fun onRelayout()
         fun onExecuteTool(tool: ToolSpec)
@@ -406,12 +407,32 @@ object DrawerRenderer {
     }
 
     private fun makeBackHeader(context: Context, title: String, pal: ThemePalette, cb: Callbacks): View {
-        val header = makeTextRow(context, "←  $title", pal, pal.accentPrimaryInt, bold = true) {
-            cb.onBackToBar()
+        val topRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
+        topRow.addView(
+            makeTextRow(context, "←  $title", pal, pal.accentPrimaryInt, bold = true) {
+                cb.onBackToBar()
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+        )
+        topRow.addView(
+            TextView(context).apply {
+                text = "×"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                setTextColor(pal.fgMutedInt)
+                gravity = Gravity.CENTER
+                minWidth = dp(context, 36)
+                minimumHeight = dp(context, 36)
+                background = pressedBg(context, pal)
+                setOnClickListener { cb.onDismiss() }
+            }
+        )
         return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            addView(header)
+            addView(topRow)
             addView(makeDivider(context, pal))
         }
     }

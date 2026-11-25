@@ -66,6 +66,7 @@ sealed class PopupEvent {
     data class ToolbarGone(val nowMs: Long) : PopupEvent()
     data class SelectionCleared(val nowMs: Long) : PopupEvent()
     data class OutsideTouch(val nowMs: Long) : PopupEvent()
+    data class ExternalViewClicked(val nowMs: Long) : PopupEvent()
     data class Scrolled(val nowMs: Long) : PopupEvent()
     data class AppSwitched(val newPackage: String, val nowMs: Long) : PopupEvent()
     data object BackOrHomePressed : PopupEvent()
@@ -93,24 +94,21 @@ data class TransitionResult(
 )
 
 /**
- * Pure, deterministic finite state machine governing popup visibility, debouncing, and dismissal.
- *
- * Guarantees:
- * - Single source of truth for popup lifecycle (no scattered booleans racing each other).
- * - Automatic signature reset on dismiss so re-selecting in the same spot always triggers.
- * - Clean grace windows to ignore touch-up bounce immediately after showing.
- * - Immediate dismissal on outside tap, scroll, app switch, selection clear, or Back/Home.
+ * Pure, deterministic finite state machine governing popup visibility, instant lockstep timing
+ * with Android's native toolbar, and bulletproof dismissal (impossible to get stuck on screen).
  */
 class PopupStateMachine {
 
     companion object {
-        const val OUTSIDE_TOUCH_GRACE_MS = 220L
-        const val SCROLL_DISMISS_GRACE_MS = 260L
-        const val APP_SWITCH_GRACE_MS = 380L
-        const val SELECTION_CLEAR_GRACE_MS = 320L
-        const val DUPLICATE_SUPPRESS_MS = 240L
-        const val PROBE_FIRST_DELAY_MS = 90L
-        const val PROBE_SECOND_DELAY_MS = 210L
+        const val OUTSIDE_TOUCH_GRACE_MS = 180L
+        const val EXTERNAL_CLICK_GRACE_MS = 220L
+        const val TOOLBAR_GONE_GRACE_MS = 220L
+        const val SCROLL_DISMISS_GRACE_MS = 220L
+        const val APP_SWITCH_GRACE_MS = 320L
+        const val SELECTION_CLEAR_GRACE_MS = 260L
+        const val DUPLICATE_SUPPRESS_MS = 220L
+        const val PROBE_FIRST_DELAY_MS = 30L
+        const val PROBE_SECOND_DELAY_MS = 110L
     }
 
     var state: PopupState = PopupState.Hidden
@@ -133,9 +131,10 @@ class PopupStateMachine {
         val result = when (event) {
             is PopupEvent.SelectionDetected -> handleSelectionDetected(cur, event)
             is PopupEvent.ProbeRequested -> handleProbeRequested(cur, event)
-            is PopupEvent.ToolbarGone -> handleToolbarGone(cur)
+            is PopupEvent.ToolbarGone -> handleToolbarGone(cur, event)
             is PopupEvent.SelectionCleared -> handleSelectionCleared(cur, event)
             is PopupEvent.OutsideTouch -> handleOutsideTouch(cur, event)
+            is PopupEvent.ExternalViewClicked -> handleExternalClick(cur, event)
             is PopupEvent.Scrolled -> handleScrolled(cur, event)
             is PopupEvent.AppSwitched -> handleAppSwitched(cur, event)
             PopupEvent.BackOrHomePressed -> dismissIfActive(cur)
@@ -160,9 +159,7 @@ class PopupStateMachine {
         ev: PopupEvent.SelectionDetected
     ): TransitionResult {
         val cleanText = ev.text
-        if (cleanText.isBlank()) {
-            return TransitionResult(cur, emptyList())
-        }
+        if (cleanText.isBlank()) return TransitionResult(cur, emptyList())
 
         val targetMode = if (ev.openExpanded) PopupMode.MoreTools else PopupMode.Bar
 
@@ -222,17 +219,11 @@ class PopupStateMachine {
         cur: PopupState,
         ev: PopupEvent.ProbeRequested
     ): TransitionResult {
-        // Don't re-probe while popup is already visible unless toolbar explicitly moved
-        if (cur is PopupState.Visible) {
-            if (ev.toolbarSig.isEmpty() || ev.toolbarSig == cur.toolbarSig) {
-                return TransitionResult(cur, emptyList())
-            }
-        }
+        if (cur is PopupState.Visible) return TransitionResult(cur, emptyList())
 
-        // Suppress duplicate probes for the exact same toolbar within 1.2s
         if (ev.toolbarSig.isNotEmpty() &&
             ev.toolbarSig == lastProbeToolbarSig &&
-            (ev.nowMs - lastProbeTimeMs) < 1200L
+            (ev.nowMs - lastProbeTimeMs) < 900L
         ) {
             return TransitionResult(cur, emptyList())
         }
@@ -243,16 +234,12 @@ class PopupStateMachine {
             lastProbeTimeMs = ev.nowMs
         }
 
-        val nextState = if (cur is PopupState.Visible) {
-            cur
-        } else {
-            PopupState.PendingProbe(
-                token = token,
-                sourcePackage = ev.sourcePackage,
-                toolbarSig = ev.toolbarSig,
-                startedAtMs = ev.nowMs
-            )
-        }
+        val nextState = PopupState.PendingProbe(
+            token = token,
+            sourcePackage = ev.sourcePackage,
+            toolbarSig = ev.toolbarSig,
+            startedAtMs = ev.nowMs
+        )
         return TransitionResult(
             state = nextState,
             effects = listOf(
@@ -262,12 +249,23 @@ class PopupStateMachine {
         )
     }
 
-    private fun handleToolbarGone(cur: PopupState): TransitionResult {
+    /**
+     * Lockstep dismissal with Android's native toolbar:
+     * When the native toolbar disappears while Sel is showing in Bar mode (after the brief grace
+     * window), Sel dismisses immediately so both popups disappear together and Sel never gets stuck!
+     */
+    private fun handleToolbarGone(cur: PopupState, ev: PopupEvent.ToolbarGone): TransitionResult {
         resetToolbarMemory()
-        return if (cur is PopupState.PendingProbe) {
-            TransitionResult(PopupState.Hidden, listOf(PopupEffect.CancelProbes))
-        } else {
-            TransitionResult(cur, emptyList())
+        return when (cur) {
+            is PopupState.PendingProbe -> TransitionResult(PopupState.Hidden, listOf(PopupEffect.CancelProbes))
+            is PopupState.Visible -> {
+                if (cur.mode == PopupMode.Bar && (ev.nowMs - cur.shownAtMs) >= TOOLBAR_GONE_GRACE_MS) {
+                    dismissIfActive(cur)
+                } else {
+                    TransitionResult(cur, emptyList())
+                }
+            }
+            PopupState.Hidden -> TransitionResult(cur, emptyList())
         }
     }
 
@@ -276,7 +274,6 @@ class PopupStateMachine {
         ev: PopupEvent.SelectionCleared
     ): TransitionResult {
         if (cur !is PopupState.Visible) return TransitionResult(cur, emptyList())
-        // Keep open if user actively opened a drawer (Define, Translate, QR, Clips, etc.)
         if (cur.mode != PopupMode.Bar) return TransitionResult(cur, emptyList())
         if (ev.nowMs - cur.shownAtMs < SELECTION_CLEAR_GRACE_MS) {
             return TransitionResult(cur, emptyList())
@@ -295,12 +292,22 @@ class PopupStateMachine {
         return dismissIfActive(cur)
     }
 
+    private fun handleExternalClick(
+        cur: PopupState,
+        ev: PopupEvent.ExternalViewClicked
+    ): TransitionResult {
+        if (cur !is PopupState.Visible) return TransitionResult(cur, emptyList())
+        if (ev.nowMs - cur.shownAtMs < EXTERNAL_CLICK_GRACE_MS) {
+            return TransitionResult(cur, emptyList())
+        }
+        return dismissIfActive(cur)
+    }
+
     private fun handleScrolled(
         cur: PopupState,
         ev: PopupEvent.Scrolled
     ): TransitionResult {
         if (cur !is PopupState.Visible) return TransitionResult(cur, emptyList())
-        // Don't dismiss while user is scrolling inside our own drawer or reading an expanded drawer
         if (cur.mode != PopupMode.Bar) return TransitionResult(cur, emptyList())
         if (ev.nowMs - cur.lastUpdateAtMs < SCROLL_DISMISS_GRACE_MS) {
             return TransitionResult(cur, emptyList())
