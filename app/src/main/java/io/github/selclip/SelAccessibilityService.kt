@@ -52,7 +52,10 @@ class SelAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: SelAccessibilityService? = null
 
-        private const val DIRECT_TOOLBAR_WAIT_MS = 55L
+        // Wait long enough for a real human long-press + Magnifier to finish before ever
+        // falling back to non-toolbar bounds; spawns in 0ms the instant Android's toolbar appears!
+        private const val DIRECT_TOOLBAR_WAIT_MS = 420L
+        private const val DIRECT_MAGNIFIER_RECHECK_MS = 260L
     }
 
     private data class PendingDirectSelection(
@@ -251,19 +254,26 @@ class SelAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString().orEmpty()
         val cls = event.className?.toString().orEmpty()
 
-        // Immediate dismissal on Home/Launcher, SystemUI (Recents/Notification Shade/Lockscreen), or App Switch
+        // Immediate dismissal on Home/Launcher switch, SystemUI (Recents/Shade/Lockscreen), or App Switch.
+        // IMPORTANT: Never treat a transient PopupWindow (Cut/Copy/Share) inside a launcher search bar as Home!
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
-                if (SelectionFilter.isLauncherPackage(pkg) || pkg == "com.android.systemui") {
+                val isTransient = SelectionFilter.isTransientPopupClass(cls)
+                if (pkg == "com.android.systemui" && !isTransient) {
                     cancelPendingDirectSelection()
-                    if (SelectionFilter.isLauncherPackage(pkg)) activePackage = pkg
                     dispatch(PopupEvent.BackOrHomePressed)
                     return
                 }
-                if (!SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isTransientPopupClass(cls)) {
+                if (!isTransient) {
                     val prev = activePackage
                     activePackage = pkg
-                    if (prev.isNotEmpty() && prev != pkg) {
+                    if (SelectionFilter.isLauncherPackage(pkg)) {
+                        if (prev.isNotEmpty() && prev != pkg) {
+                            cancelPendingDirectSelection()
+                            dispatch(PopupEvent.BackOrHomePressed)
+                            return
+                        }
+                    } else if (!SelectionFilter.isSystemUiOrFramework(pkg) && prev.isNotEmpty() && prev != pkg) {
                         cancelPendingDirectSelection()
                         dispatch(PopupEvent.AppSwitched(pkg, now()))
                     }
@@ -281,11 +291,15 @@ class SelAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SELECTED -> handleDirectSelectionEvent(event, pkg)
 
+            // Long-press fires WHILE the user's finger is still down (Magnifier active).
+            // Reset memory and remember source node ONLY — never spawn blindly before finger-up!
             AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
                 if (pkg != packageName && !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)) {
                     stateMachine.resetToolbarMemory()
                     lastFallbackCopySig = ""
-                    requestProbe(event.source, activePackage.ifEmpty { pkg }, toolbarSig = "")
+                    pendingProbeSource = event.source
+                    pendingProbePkg = activePackage.ifEmpty { pkg }
+                    pendingProbeSig = ""
                 }
             }
 
@@ -351,10 +365,10 @@ class SelAccessibilityService : AccessibilityService() {
 
         cancelWindowsCheck()
 
-        // Lockstep Fast-Path: if a direct text selection arrived ~15-40ms earlier waiting for
-        // Android's native toolbar, spawn ONCE right now on this exact frame at the docked position!
+        // Lockstep Fast-Path: if a direct text selection arrived earlier while the user was holding
+        // their finger down (Magnifier open), consume it in 0ms the instant Android's toolbar opens!
         val buffered = pendingDirectSelection
-        if (buffered != null && (now() - buffered.capturedAtMs) < 350L) {
+        if (buffered != null && (now() - buffered.capturedAtMs) < 2500L) {
             cancelPendingDirectSelection()
             currentNode = buffered.node
             lastSelectionBounds = buffered.bounds
@@ -419,6 +433,40 @@ class SelAccessibilityService : AccessibilityService() {
         pendingDirectSelection = null
     }
 
+    private fun scheduleDirectFallbackFlush(delayMs: Long) {
+        pendingDirectFlush?.let { handler.removeCallbacks(it) }
+        val flush = Runnable {
+            pendingDirectFlush = null
+            val curPending = pendingDirectSelection ?: return@Runnable
+            if (stateMachine.state is PopupState.Visible) {
+                pendingDirectSelection = null
+                return@Runnable
+            }
+            val freshSnap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
+            // If Android's Text Magnifier loupe is still open, user's finger is still pressed down!
+            if (freshSnap.toolbar == null &&
+                freshSnap.hasMagnifierOrTransientFloating &&
+                (now() - curPending.capturedAtMs) < 2200L
+            ) {
+                scheduleDirectFallbackFlush(DIRECT_MAGNIFIER_RECHECK_MS)
+                return@Runnable
+            }
+            pendingDirectSelection = null
+            dispatch(
+                event = PopupEvent.SelectionDetected(
+                    text = curPending.text,
+                    sourcePackage = curPending.sourcePackage,
+                    isEditable = curPending.isEditable,
+                    toolbarSig = freshSnap.toolbar?.signature.orEmpty(),
+                    nowMs = now()
+                ),
+                preCapturedSnap = freshSnap
+            )
+        }
+        pendingDirectFlush = flush
+        handler.postDelayed(flush, delayMs)
+    }
+
     private fun handleDirectSelectionEvent(event: AccessibilityEvent, pkg: String) {
         val resolved = selectionResolver.extractSelectionFromEvent(event)
         if (resolved != null) {
@@ -450,9 +498,10 @@ class SelAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // Otherwise, Android's native FloatingToolbarPopup almost always spawns 15-40ms after
-            // TYPE_VIEW_TEXT_SELECTION_CHANGED. Buffer briefly (55ms max) so Sel spawns ONCE in
-            // lockstep with the native toolbar instead of spawning early and teleporting mid-fade!
+            // Otherwise, the user is almost certainly still holding their finger down (Magnifier
+            // open) and Android's native FloatingToolbarPopup will open the instant they lift!
+            // Buffer cleanly so Sel NEVER flashes prematurely over the toolbar zone, spawning in
+            // 0ms lockstep when the native toolbar appears (or after 420ms if an app has none).
             cancelPendingDirectSelection()
             val pending = PendingDirectSelection(
                 text = resolved.text,
@@ -463,25 +512,7 @@ class SelAccessibilityService : AccessibilityService() {
                 capturedAtMs = now()
             )
             pendingDirectSelection = pending
-            val flush = Runnable {
-                val curPending = pendingDirectSelection ?: return@Runnable
-                pendingDirectSelection = null
-                pendingDirectFlush = null
-                if (stateMachine.state is PopupState.Visible) return@Runnable
-                val freshSnap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-                dispatch(
-                    event = PopupEvent.SelectionDetected(
-                        text = curPending.text,
-                        sourcePackage = curPending.sourcePackage,
-                        isEditable = curPending.isEditable,
-                        toolbarSig = freshSnap.toolbar?.signature.orEmpty(),
-                        nowMs = now()
-                    ),
-                    preCapturedSnap = freshSnap
-                )
-            }
-            pendingDirectFlush = flush
-            handler.postDelayed(flush, DIRECT_TOOLBAR_WAIT_MS)
+            scheduleDirectFallbackFlush(DIRECT_TOOLBAR_WAIT_MS)
             return
         }
 
@@ -628,12 +659,17 @@ class SelAccessibilityService : AccessibilityService() {
         val first = Runnable {
             if (stateMachine.state is PopupState.Visible || clipboardBridge.isProbeOrSettling) return@Runnable
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-            launchAsyncSpatialProbe(snap = snap, allowFallbackScheduleOnMiss = false, allowClipboardFallbackOnMiss = false)
+            // Never spawn blindly from a delayed probe while no native toolbar exists yet (finger still down!)
+            if (snap.toolbar != null) {
+                launchAsyncSpatialProbe(snap = snap, allowFallbackScheduleOnMiss = false, allowClipboardFallbackOnMiss = false)
+            }
 
             val second = Runnable {
                 if (stateMachine.state is PopupState.Visible || clipboardBridge.isProbeOrSettling) return@Runnable
                 val snap2 = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-                launchAsyncSpatialProbe(snap = snap2, allowFallbackScheduleOnMiss = false, allowClipboardFallbackOnMiss = true)
+                if (snap2.toolbar != null) {
+                    launchAsyncSpatialProbe(snap = snap2, allowFallbackScheduleOnMiss = false, allowClipboardFallbackOnMiss = true)
+                }
             }
             pendingProbe2 = second
             handler.postDelayed(second, secondDelayMs)

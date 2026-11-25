@@ -33,7 +33,8 @@ data class ToolbarHit(
 
 data class ScreenSnapshot(
     val viewport: Viewport,
-    val toolbar: ToolbarHit?
+    val toolbar: ToolbarHit?,
+    val hasMagnifierOrTransientFloating: Boolean = false
 )
 
 /**
@@ -201,11 +202,14 @@ class SelectionResolver(
 
             val effectiveToolbar = detectedToolbar
                 ?: if (allowStaleToolbar) lastToolbar?.takeIf { now - lastToolbarTimeMs < 350L } else null
-            return ScreenSnapshot(viewport, effectiveToolbar).also { cachedSnapshot = it }
+            // A small non-toolbar floating window (e.g., Android Text Magnifier loupe) signals
+            // the user's finger is still held down selecting text — wait for finger-up!
+            val hasMagnifier = detectedToolbar == null && floatingCandidates.isNotEmpty()
+            return ScreenSnapshot(viewport, effectiveToolbar, hasMagnifier).also { cachedSnapshot = it }
         }
 
         val viewport = Viewport(realW, realH, topInset, bottomInset, null)
-        return ScreenSnapshot(viewport, null).also { cachedSnapshot = it }
+        return ScreenSnapshot(viewport, null, false).also { cachedSnapshot = it }
     }
 
     fun findActiveToolbarNow(): ToolbarHit? {
