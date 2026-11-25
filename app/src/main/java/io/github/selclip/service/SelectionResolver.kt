@@ -15,6 +15,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import io.github.selclip.core.Box
 import io.github.selclip.core.SelectionFilter
 import io.github.selclip.core.Viewport
+import java.lang.reflect.Method
 import java.util.ArrayDeque
 import java.util.PriorityQueue
 import kotlin.math.abs
@@ -80,6 +81,16 @@ class SelectionResolver(
     private val isDebugBuild: Boolean by lazy {
         (service.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
+
+    // Cached reflection handles for Android 16 (API 36+) AccessibilityNodeInfo.getSelection()
+    // which Chromium (Chrome/Vivaldi/Brave/Edge) populates on WebView for static webpage selections!
+    private val getSelectionMethod: Method? by lazy {
+        runCatching { AccessibilityNodeInfo::class.java.getMethod("getSelection") }.getOrNull()
+    }
+    @Volatile private var selGetStartMethod: Method? = null
+    @Volatile private var selGetEndMethod: Method? = null
+    @Volatile private var posGetNodeMethod: Method? = null
+    @Volatile private var posGetOffsetMethod: Method? = null
 
     val density: Float get() = service.resources.displayMetrics.density
     private fun dp(v: Int): Int = (v * density).toInt()
@@ -173,10 +184,15 @@ class SelectionResolver(
 
             // Pass 1: Floating PopupWindows first (highest layer first) — single fast BFS (~1ms)!
             floatingCandidates.sortByDescending { it.first.layer }
+            var nonSystemFloatingCount = 0
             for ((w, wr) in floatingCandidates) {
                 val root = runCatching { w.root }.getOrNull() ?: continue
                 val pkg = root.packageName?.toString().orEmpty()
-                if (pkg == service.packageName || SelectionFilter.isImePackage(pkg)) continue
+                if (pkg == service.packageName ||
+                    SelectionFilter.isImePackage(pkg) ||
+                    pkg.contains("systemui", ignoreCase = true)
+                ) continue
+                nonSystemFloatingCount++
                 scannedWindowIds.add(w.id)
 
                 val hit = detectToolbarInFloatingWindow(root, w.id, wr, realW, realH, topInset, visBottom)
@@ -192,7 +208,10 @@ class SelectionResolver(
                     if (!scannedWindowIds.add(w.id)) continue
                     val root = runCatching { w.root }.getOrNull() ?: continue
                     val pkg = root.packageName?.toString().orEmpty()
-                    if (pkg == service.packageName || SelectionFilter.isImePackage(pkg) || pkg == "com.android.systemui") continue
+                    if (pkg == service.packageName ||
+                        SelectionFilter.isImePackage(pkg) ||
+                        pkg.contains("systemui", ignoreCase = true)
+                    ) continue
 
                     val hit = detectToolbarByViewIdsOnly(root, w.id, realH, visBottom)
                     if (hit != null) {
@@ -209,9 +228,9 @@ class SelectionResolver(
 
             val effectiveToolbar = detectedToolbar
                 ?: if (allowStaleToolbar) lastToolbar?.takeIf { now - lastToolbarTimeMs < 4000L } else null
-            // A small non-toolbar floating window (e.g., Android Text Magnifier loupe) signals
-            // the user's finger is still held down selecting text — wait for finger-up!
-            val hasMagnifier = detectedToolbar == null && floatingCandidates.isNotEmpty()
+            // A small non-toolbar, non-SystemUI floating window (e.g., Android Text Magnifier loupe)
+            // signals the user's finger is still held down selecting text — wait for finger-up!
+            val hasMagnifier = detectedToolbar == null && nonSystemFloatingCount > 0
             return ScreenSnapshot(viewport, effectiveToolbar, hasMagnifier).also { cachedSnapshot = it }
         }
 
@@ -380,6 +399,7 @@ class SelectionResolver(
         if (source != null) {
             if (source.isPassword) return null
             extractFromNode(source, event.fromIndex, event.toIndex)?.let { return it }
+            extractExtendedSelection(source)?.let { return it }
         }
 
         val eventText = event.text.joinToString("")
@@ -551,6 +571,14 @@ class SelectionResolver(
 
             if (isBrowserSurfaceNode(node)) {
                 runCatching { node.refresh() }
+                extractExtendedSelection(node, resolveCharBounds = toolbarBounds == null)?.let { return it }
+            } else if (cur.depth <= 14 && getSelectionMethod != null) {
+                val hasSelExtra = runCatching {
+                    node.extras?.keySet()?.any { it.contains("SELECTION", ignoreCase = true) } == true
+                }.getOrDefault(false)
+                if (hasSelExtra) {
+                    extractExtendedSelection(node, resolveCharBounds = toolbarBounds == null)?.let { return it }
+                }
             }
 
             if (debugDump && debugLogged < 14) {
@@ -635,6 +663,158 @@ class SelectionResolver(
             cls.contains("GeckoView", ignoreCase = true) ||
             cls.contains("Chromium", ignoreCase = true) ||
             cls.contains("Compositor", ignoreCase = true)
+    }
+
+    /**
+     * Reads Android 16 (API 36+) `AccessibilityNodeInfo.getSelection()` (`Selection` +
+     * `SelectionPosition`), which Chromium (Chrome / Vivaldi / Brave / Edge / WebView) populates
+     * directly on the `WebView` node even for static non-editable HTML webpage selections!
+     *
+     * Handles both single-node selections and cross-element / multi-paragraph HTML selections
+     * with ZERO clipboard access!
+     */
+    fun extractExtendedSelection(
+        containerNode: AccessibilityNodeInfo,
+        resolveCharBounds: Boolean = true
+    ): ResolvedSelection? {
+        val getSel = getSelectionMethod ?: return null
+        val selObj = runCatching { getSel.invoke(containerNode) }.getOrNull() ?: return null
+
+        val getStart = selGetStartMethod ?: runCatching {
+            selObj.javaClass.getMethod("getStart").also { selGetStartMethod = it }
+        }.getOrNull() ?: return null
+        val getEnd = selGetEndMethod ?: runCatching {
+            selObj.javaClass.getMethod("getEnd").also { selGetEndMethod = it }
+        }.getOrNull() ?: return null
+
+        val startPos = runCatching { getStart.invoke(selObj) }.getOrNull() ?: return null
+        val endPos = runCatching { getEnd.invoke(selObj) }.getOrNull() ?: return null
+
+        val getNode = posGetNodeMethod ?: runCatching {
+            startPos.javaClass.getMethod("getNode").also { posGetNodeMethod = it }
+        }.getOrNull() ?: return null
+        val getOffset = posGetOffsetMethod ?: runCatching {
+            startPos.javaClass.getMethod("getOffset").also { posGetOffsetMethod = it }
+        }.getOrNull() ?: return null
+
+        val startNode = runCatching { getNode.invoke(startPos) as? AccessibilityNodeInfo }.getOrNull()
+        val endNode = runCatching { getNode.invoke(endPos) as? AccessibilityNodeInfo }.getOrNull()
+        val startOffset = runCatching { (getOffset.invoke(startPos) as? Int) ?: -1 }.getOrDefault(-1)
+        val endOffset = runCatching { (getOffset.invoke(endPos) as? Int) ?: -1 }.getOrDefault(-1)
+
+        if (isDebugBuild) {
+            Log.d(
+                "SelDiag",
+                "extSel start=${startNode?.className?.toString()?.substringAfterLast('.')}@$startOffset('${startNode?.text?.toString()?.take(24)}') end=${endNode?.className?.toString()?.substringAfterLast('.')}@$endOffset('${endNode?.text?.toString()?.take(24)}')"
+            )
+        }
+
+        if (startNode == null || endNode == null) return null
+        if (startNode.isPassword || endNode.isPassword) return null
+
+        // Case 1: Single-node selection (most common: word or phrase inside one paragraph/span)
+        if (startNode == endNode) {
+            val raw = startNode.text?.toString().orEmpty()
+            if (raw.isEmpty() || startOffset < 0 || endOffset < 0 || startOffset == endOffset) return null
+            val s = minOf(startOffset, endOffset).coerceIn(0, raw.length)
+            val e = maxOf(startOffset, endOffset).coerceIn(0, raw.length)
+            val sub = SelectionFilter.extractRange(raw, s, e, isPassword = false, hintText = startNode.hintText?.toString())
+                ?: return null
+            val bounds = if (resolveCharBounds) {
+                resolveExactBounds(startNode, raw, s, e)
+            } else {
+                Rect().also { startNode.getBoundsInScreen(it) }.toBox().takeIf { !it.isEmpty } ?: fallbackCenterBox()
+            }
+            return ResolvedSelection(sub, startNode, bounds)
+        }
+
+        // Case 2: Multi-node selection spanning multiple HTML elements (e.g., <a>, <b>, multiple <p>)
+        val collected = collectMultiNodeSelection(containerNode, startNode, startOffset, endNode, endOffset)
+            ?: return null
+        val clean = SelectionFilter.sanitizeCandidate(collected.first) ?: return null
+        return ResolvedSelection(clean, startNode, collected.second)
+    }
+
+    private fun collectMultiNodeSelection(
+        root: AccessibilityNodeInfo,
+        startNode: AccessibilityNodeInfo,
+        startOffset: Int,
+        endNode: AccessibilityNodeInfo,
+        endOffset: Int
+    ): Pair<String, Box>? {
+        val sb = StringBuilder()
+        var unionRect: Rect? = null
+        var inRange = false
+        var finished = false
+        var firstBoundaryIsStart = true
+        var visited = 0
+        val maxVisit = 700
+        val tmpRect = Rect()
+
+        fun expandBounds(node: AccessibilityNodeInfo) {
+            node.getBoundsInScreen(tmpRect)
+            if (tmpRect.width() > 0 && tmpRect.height() > 0) {
+                unionRect = unionRect?.apply { union(tmpRect) } ?: Rect(tmpRect)
+            }
+        }
+
+        fun appendChunk(chunk: String) {
+            val trimmed = chunk.trim()
+            if (trimmed.isEmpty()) return
+            if (sb.isNotEmpty() && !sb.last().isWhitespace()) sb.append(' ')
+            sb.append(trimmed)
+        }
+
+        fun dfs(node: AccessibilityNodeInfo) {
+            if (finished || visited >= maxVisit) return
+            visited++
+
+            val isStart = node == startNode
+            val isEnd = node == endNode
+            val raw = node.text?.toString().orEmpty()
+
+            if (!inRange) {
+                if (isStart || isEnd) {
+                    inRange = true
+                    firstBoundaryIsStart = isStart
+                    val off = if (isStart) startOffset else endOffset
+                    if (raw.isNotEmpty() && off >= 0) {
+                        val s = off.coerceIn(0, raw.length)
+                        appendChunk(raw.substring(s))
+                        expandBounds(node)
+                    }
+                    // Continue into children if boundary was a container node
+                }
+            } else {
+                val isClosingBoundary = if (firstBoundaryIsStart) isEnd else isStart
+                if (isClosingBoundary) {
+                    val off = if (isEnd) endOffset else startOffset
+                    if (raw.isNotEmpty() && off >= 0) {
+                        val e = off.coerceIn(0, raw.length)
+                        appendChunk(raw.substring(0, e))
+                        expandBounds(node)
+                    }
+                    finished = true
+                    return
+                } else if (raw.isNotEmpty() && node.childCount == 0 && !node.isPassword) {
+                    appendChunk(raw)
+                    expandBounds(node)
+                }
+            }
+
+            val c = minOf(node.childCount, 120)
+            for (i in 0 until c) {
+                if (finished || visited >= maxVisit) return
+                val ch = runCatching { node.getChild(i) }.getOrNull() ?: continue
+                dfs(ch)
+            }
+        }
+
+        dfs(root)
+        val result = sb.toString().trim()
+        if (result.isEmpty()) return null
+        val box = unionRect?.toBox() ?: fallbackCenterBox()
+        return result to box
     }
 
     private fun resolveExactBounds(node: AccessibilityNodeInfo, raw: String, start: Int, end: Int): Box {
