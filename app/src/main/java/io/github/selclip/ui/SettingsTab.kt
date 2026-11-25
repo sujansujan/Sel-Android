@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import io.github.selclip.SelAccessibilityService
+import io.github.selclip.data.BuiltInRegistry
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ThemeMode
 
@@ -80,6 +81,28 @@ class SettingsTab(
             })
             addView(themeRow)
 
+            // 2.5 Translate Target Language
+            addView(UiKit.sectionTitle(activity, "Translate Target Language"))
+            val currentLang = PrefsStore.getTranslateTargetLang(activity)
+            val langRow1 = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            val langRow2 = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            BuiltInRegistry.translateLanguages.forEachIndexed { idx, lang ->
+                val targetRow = if (idx < 5) langRow1 else langRow2
+                targetRow.addView(
+                    UiKit.equalPill(
+                        activity,
+                        lang.shortLabel,
+                        p.accentPrimaryInt,
+                        selected = currentLang.equals(lang.code, ignoreCase = true)
+                    ) {
+                        PrefsStore.setTranslateTargetLang(activity, lang.code)
+                        onRebuildUi()
+                    }
+                )
+            }
+            addView(langRow1)
+            addView(langRow2)
+
             // 3. Muted Apps
             addView(UiKit.sectionTitle(activity, "Muted Apps"))
             addView(UiKit.fullButton(activity, "Pick App to Mute", p.accentPrimaryInt) {
@@ -115,17 +138,38 @@ class SettingsTab(
             mutedAppsContainer.addView(UiKit.text(activity, "No muted apps.", 12.5f, p.fgMutedInt))
             return
         }
-        apps.forEach { pkg ->
+        val pm = activity.packageManager
+        apps.sorted().forEach { pkg ->
+            val appName = runCatching {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString().trim()
+            }.getOrNull()?.takeIf { it.isNotEmpty() }
+
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(40)
+                minimumHeight = dp(44)
+                setPadding(0, dp(3), 0, dp(3))
             }
-            row.addView(UiKit.text(activity, pkg, 13f, p.fgPrimaryInt).apply {
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
+            val labelCol = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            })
+            }
+            if (appName != null && !appName.equals(pkg, ignoreCase = true)) {
+                labelCol.addView(UiKit.text(activity, appName, 13.5f, p.fgPrimaryInt, bold = true).apply {
+                    isSingleLine = true
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                labelCol.addView(UiKit.text(activity, pkg, 11.2f, p.fgMutedInt).apply {
+                    isSingleLine = true
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+            } else {
+                labelCol.addView(UiKit.text(activity, pkg, 13f, p.fgPrimaryInt).apply {
+                    isSingleLine = true
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+            }
+            row.addView(labelCol)
             row.addView(UiKit.text(activity, "×", 17f, p.dangerInt, bold = true).apply {
                 minWidth = dp(38)
                 minimumHeight = dp(38)

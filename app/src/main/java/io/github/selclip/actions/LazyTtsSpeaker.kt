@@ -20,8 +20,13 @@ class LazyTtsSpeaker(private val context: Context) {
         if (snippet.isEmpty()) return
 
         if (ready && tts != null) {
+            if (runCatching { tts?.isSpeaking == true }.getOrDefault(false)) {
+                runCatching { tts?.stop() }
+                Toast.makeText(context, "Stopped speaking", Toast.LENGTH_SHORT).show()
+                return
+            }
             tts?.speak(snippet, TextToSpeech.QUEUE_FLUSH, null, "sel_tts")
-            Toast.makeText(context, "Speaking…", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Speaking… (tap again to stop)", Toast.LENGTH_SHORT).show()
             return
         }
 

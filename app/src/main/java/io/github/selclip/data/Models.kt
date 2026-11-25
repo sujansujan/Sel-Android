@@ -37,6 +37,12 @@ data class SearchPreset(
     val url: String
 )
 
+data class TranslateLanguage(
+    val code: String,
+    val shortLabel: String,
+    val displayName: String
+)
+
 enum class ThemeMode {
     AUTO,
     DARK,
@@ -260,5 +266,18 @@ object BuiltInRegistry {
         SearchPreset("+GitHub", "GH", "SEARCH/GITHUB", "https://github.com/search?q={text}"),
         SearchPreset("+Perplexity", "PPLX", "SEARCH/PERPLEXITY", "https://www.perplexity.ai/search?q={text}"),
         SearchPreset("+ChatGPT", "GPT", "SEARCH/CHATGPT", "https://chatgpt.com/?q={text}")
+    )
+
+    val translateLanguages = listOf(
+        TranslateLanguage("en", "EN", "English"),
+        TranslateLanguage("ne", "NE", "Nepali"),
+        TranslateLanguage("hi", "HI", "Hindi"),
+        TranslateLanguage("es", "ES", "Spanish"),
+        TranslateLanguage("fr", "FR", "French"),
+        TranslateLanguage("de", "DE", "German"),
+        TranslateLanguage("ja", "JA", "Japanese"),
+        TranslateLanguage("zh-CN", "ZH", "Chinese"),
+        TranslateLanguage("ko", "KO", "Korean"),
+        TranslateLanguage("ar", "AR", "Arabic")
     )
 }

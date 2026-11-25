@@ -131,6 +131,7 @@ class SelAccessibilityService : AccessibilityService() {
         if (warmUrls.isNotEmpty()) {
             FaviconRepository.warmMemoryCacheAsync(this, warmUrls)
         }
+        SelQuickTileService.requestSync(this)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -167,6 +168,19 @@ class SelAccessibilityService : AccessibilityService() {
         if (::actionExecutor.isInitialized) actionExecutor.shutdown()
         if (::overlayController.isInitialized) overlayController.hide()
         currentNode = null
+        SelQuickTileService.requestSync(this)
+    }
+
+    fun onPausedStateChanged(paused: Boolean) {
+        if (paused) {
+            handler.post {
+                cancelPendingDirectSelection()
+                cancelWindowsCheck()
+                cancelProbes()
+                dispatch(PopupEvent.Dismiss)
+            }
+        }
+        SelQuickTileService.requestSync(this)
     }
 
     fun refreshThemeIfVisible() {
@@ -227,6 +241,7 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private fun processAccessibilityEvent(event: AccessibilityEvent) {
+        if (PrefsStore.isServicePaused(this)) return
         val type = event.eventType
 
         // O(1) zero-allocation exit for scroll & click events whenever popup is NOT visible!

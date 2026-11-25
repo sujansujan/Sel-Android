@@ -26,6 +26,8 @@ object PrefsStore {
     private const val KEY_DEFAULT_SEARCH_ID = "default_search_engine_id"
     private const val KEY_PINNED_TOOLS = "pinned_bar_tool_ids"
     private const val KEY_BAR_ORDER = "popup_bar_slot_order"
+    private const val KEY_SERVICE_PAUSED = "service_paused"
+    private const val KEY_TRANSLATE_LANG = "translate_target_lang"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
 
@@ -53,6 +55,12 @@ object PrefsStore {
     @Volatile
     private var cachedHiddenIds: Set<String>? = null
 
+    @Volatile
+    private var cachedServicePaused: Boolean? = null
+
+    @Volatile
+    private var cachedTranslateLang: String? = null
+
     fun invalidatePaletteCache() {
         cachedPaletteKey = Long.MIN_VALUE
         cachedPalette = null
@@ -73,6 +81,8 @@ object PrefsStore {
         cachedPinnedIds = null
         cachedBarOrder = null
         cachedHiddenIds = null
+        cachedServicePaused = null
+        cachedTranslateLang = null
     }
 
     private fun prefs(context: Context): SharedPreferences =
@@ -129,6 +139,34 @@ object PrefsStore {
     fun setIconsOnlyMode(context: Context, enabled: Boolean) {
         cachedIconsOnly = enabled
         prefs(context).edit().putBoolean(KEY_ICONS_ONLY, enabled).apply()
+    }
+
+    // --- Quick Pause Toggle (O(1) cached check on accessibility hot path) ---
+
+    fun isServicePaused(context: Context): Boolean =
+        cachedServicePaused ?: prefs(context).getBoolean(KEY_SERVICE_PAUSED, false).also { cachedServicePaused = it }
+
+    fun setServicePaused(context: Context, paused: Boolean) {
+        cachedServicePaused = paused
+        prefs(context).edit().putBoolean(KEY_SERVICE_PAUSED, paused).apply()
+    }
+
+    // --- Translate Target Language ---
+
+    fun getTranslateTargetLang(context: Context): String =
+        cachedTranslateLang ?: (prefs(context).getString(KEY_TRANSLATE_LANG, "en")
+            ?.trim()?.takeIf { it.isNotEmpty() } ?: "en").also { cachedTranslateLang = it }
+
+    fun setTranslateTargetLang(context: Context, langCode: String) {
+        val clean = langCode.trim().ifEmpty { "en" }
+        cachedTranslateLang = clean
+        prefs(context).edit().putString(KEY_TRANSLATE_LANG, clean).apply()
+    }
+
+    fun resolveTranslateLanguage(context: Context): TranslateLanguage {
+        val code = getTranslateTargetLang(context)
+        return BuiltInRegistry.translateLanguages.firstOrNull { it.code.equals(code, ignoreCase = true) }
+            ?: TranslateLanguage(code, code.uppercase().take(4), code.uppercase())
     }
 
     // --- Default Search Engine ---
@@ -331,10 +369,11 @@ object PrefsStore {
     fun exportBackupJson(context: Context): String {
         val p = prefs(context)
         val root = JSONObject().apply {
-            put("version", 5)
+            put("version", 6)
             put("follow_system_theme", p.getBoolean(KEY_FOLLOW_SYSTEM_THEME, true))
             put("dark_theme_manual", p.getBoolean(KEY_DARK_THEME_MANUAL, true))
             put("icons_only_mode", isIconsOnlyMode(context))
+            put("translate_target_lang", getTranslateTargetLang(context))
             put("default_search_engine_id", getDefaultSearchEngineId(context))
             put("pinned_bar_tool_ids", getPinnedToolIds(context).joinToString(","))
             put("popup_bar_slot_order", getBarSlotOrder(context).joinToString(","))
@@ -359,6 +398,9 @@ object PrefsStore {
         }
         if (root.has("icons_only_mode")) {
             editor.putBoolean(KEY_ICONS_ONLY, root.optBoolean("icons_only_mode", false))
+        }
+        if (root.has("translate_target_lang")) {
+            editor.putString(KEY_TRANSLATE_LANG, root.optString("translate_target_lang", "en"))
         }
         if (root.has("default_search_engine_id")) {
             editor.putString(KEY_DEFAULT_SEARCH_ID, root.optString("default_search_engine_id", "web_google"))

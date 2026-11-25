@@ -2,5 +2,6 @@
 <resources>
     <string name="app_name">Sel</string>
     <string name="service_label">Sel Selection Bar</string>
+    <string name="qs_tile_label">Sel</string>
     <string name="accessibility_desc">Shows a fast, context-aware floating action bar whenever you select text in any app.</string>
 </resources>

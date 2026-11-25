@@ -11,8 +11,23 @@ android {
         applicationId = "io.github.selclip"
         minSdk = 26
         targetSdk = 34
-        versionCode = 34
-        versionName = "4.7.2"
+        versionCode = 35
+        versionName = "4.8.0"
+    }
+
+    signingConfigs {
+        val ksPath = System.getenv("RELEASE_KEYSTORE_PATH")
+        val ksPass = System.getenv("RELEASE_KEYSTORE_PASS")
+        val keyAliasEnv = System.getenv("RELEASE_KEY_ALIAS")
+        val keyPassEnv = System.getenv("RELEASE_KEY_PASS")
+        if (!ksPath.isNullOrBlank() && !ksPass.isNullOrBlank() && !keyAliasEnv.isNullOrBlank() && !keyPassEnv.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(ksPath)
+                storePassword = ksPass
+                keyAlias = keyAliasEnv
+                keyPassword = keyPassEnv
+            }
+        }
     }
 
     buildTypes {
@@ -23,8 +38,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Signed with debug key so release APK installs directly from GitHub Actions
-            signingConfig = signingConfigs.getByName("debug")
+            // Uses persistent GitHub Secrets release keystore in CI (enabling seamless in-place updates);
+            // falls back to debug key for local/fork builds without signing secrets.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

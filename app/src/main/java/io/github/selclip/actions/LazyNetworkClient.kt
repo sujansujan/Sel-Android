@@ -65,16 +65,18 @@ class LazyNetworkClient {
         }
     }
 
-    fun lookupTranslation(text: String, onResult: (String) -> Unit) {
+    fun lookupTranslation(text: String, targetLang: String = "en", onResult: (String) -> Unit) {
+        val cleanLang = targetLang.trim().ifEmpty { "en" }
         val key = text.trim().take(400)
-        translateCache.get(key)?.let {
+        val cacheKey = "$cleanLang|$key"
+        translateCache.get(cacheKey)?.let {
             onResult(it)
             return
         }
         val token = requestSeq.incrementAndGet()
         getOrCreateExecutor().execute {
-            val res = fetchTranslation(key)
-            if (res != null) translateCache.put(key, res)
+            val res = fetchTranslation(key, cleanLang)
+            if (res != null) translateCache.put(cacheKey, res)
             val out = res ?: "Translation unavailable."
             mainHandler.post {
                 if (requestSeq.get() == token) onResult(out)
@@ -145,9 +147,9 @@ class LazyNetworkClient {
         }.getOrNull()
     }
 
-    private fun fetchTranslation(text: String): String? = runCatching {
+    private fun fetchTranslation(text: String, targetLang: String): String? = runCatching {
         val url = URL(
-            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${Uri.encode(text)}"
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${Uri.encode(targetLang)}&dt=t&q=${Uri.encode(text)}"
         )
         val conn = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 4500

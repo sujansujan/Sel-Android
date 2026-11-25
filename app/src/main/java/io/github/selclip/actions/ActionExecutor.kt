@@ -89,8 +89,10 @@ class ActionExecutor(
             }
             "open_magnet" -> {
                 val mag = act.payload ?: trimmed
-                copyPlain(mag, "Opening magnet…")
-                openUrl(mag)
+                if (!launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(mag)))) {
+                    copyPlain(mag, "No torrent app — magnet copied")
+                }
+                onDismiss()
             }
             "apply_computed" -> act.payload?.let { applyResult(it, editableNode) }
             "pipe_json_pretty" -> applyResult(TextTransforms.applyPipeTool("pipe_json_pretty", selectedText), editableNode)
@@ -196,8 +198,6 @@ class ActionExecutor(
     }
 
     fun applyResult(newText: String, editableNode: AccessibilityNodeInfo?) {
-        clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", newText))
-
         var replaced = false
         if (editableNode != null && editableNode.isEditable) {
             runCatching { editableNode.refresh() }
@@ -217,11 +217,16 @@ class ActionExecutor(
                 replaced = runCatching {
                     editableNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                 }.getOrDefault(false)
-            } else {
+            }
+            if (!replaced) {
+                // Fallback to paste only when direct in-place ACTION_SET_TEXT is unsupported
+                clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", newText))
                 replaced = runCatching {
                     editableNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
                 }.getOrDefault(false)
             }
+        } else {
+            clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", newText))
         }
 
         if (!replaced) {

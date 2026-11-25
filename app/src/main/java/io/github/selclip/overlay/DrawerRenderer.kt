@@ -11,6 +11,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -19,6 +20,7 @@ import io.github.selclip.actions.ActionExecutor
 import io.github.selclip.actions.QrCodeGenerator
 import io.github.selclip.core.PopupMode
 import io.github.selclip.core.TextTransforms
+import io.github.selclip.data.BuiltInRegistry
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ThemePalette
 import io.github.selclip.data.ToolSpec
@@ -84,11 +86,18 @@ object DrawerRenderer {
         val iconPx = dp(context, 18)
 
         for (tool in tools) {
-            val icon = ActionIconFactory.createForTool(context, tool, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-            container.addView(makeCompactIconRow(context, tool.label, icon, pal) {
-                PrefsStore.recordUse(context, tool.id)
-                cb.onExecuteTool(tool)
-            })
+            container.addView(
+                makeCompactIconRowAsync(
+                    context = context,
+                    label = tool.label,
+                    pal = pal,
+                    loadIcon = { onLoaded -> ActionIconFactory.createForTool(context, tool, pal.fgPrimaryInt, iconPx, onLoaded) },
+                    onClick = {
+                        PrefsStore.recordUse(context, tool.id)
+                        cb.onExecuteTool(tool)
+                    }
+                )
+            )
         }
 
         if (activePackage.isNotBlank() && activePackage != context.packageName) {
@@ -108,24 +117,27 @@ object DrawerRenderer {
 
         for (engine in PrefsStore.loadWebSearchTools(context)) {
             val isDefault = engine.id == defaultId
-            val icon = ActionIconFactory.createFaviconOrBadge(
-                context = context,
-                urlTemplate = engine.customTarget,
-                fallbackText = engine.glyph,
-                tintColor = if (isDefault) pal.accentPrimaryInt else pal.fgMutedInt,
-                sizePx = iconPx,
-                onFaviconLoaded = { cb.onRerender() }
-            )
-            val row = makeCompactIconRow(
+            val iconTint = if (isDefault) pal.accentPrimaryInt else pal.fgMutedInt
+            val row = makeCompactIconRowAsync(
                 context = context,
                 label = if (isDefault) "${engine.label} ★" else engine.label,
-                icon = icon,
                 pal = pal,
-                colorInt = if (isDefault) pal.accentPrimaryInt else pal.fgPrimaryInt
-            ) {
-                PrefsStore.recordUse(context, "web_search_folder")
-                cb.onExecuteTool(engine)
-            }
+                colorInt = if (isDefault) pal.accentPrimaryInt else pal.fgPrimaryInt,
+                loadIcon = { onLoaded ->
+                    ActionIconFactory.createFaviconOrBadge(
+                        context = context,
+                        urlTemplate = engine.customTarget,
+                        fallbackText = engine.glyph,
+                        tintColor = iconTint,
+                        sizePx = iconPx,
+                        onFaviconLoaded = onLoaded
+                    )
+                },
+                onClick = {
+                    PrefsStore.recordUse(context, "web_search_folder")
+                    cb.onExecuteTool(engine)
+                }
+            )
             row.setOnLongClickListener {
                 runCatching { row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
                 PrefsStore.setDefaultSearchEngineId(context, engine.id)
@@ -141,11 +153,18 @@ object DrawerRenderer {
         container.addView(makeBackHeader(context, "YouTube", pal, cb))
         val iconPx = dp(context, 18)
         for (yt in PrefsStore.loadYouTubeTools(context)) {
-            val icon = ActionIconFactory.createForTool(context, yt, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-            container.addView(makeCompactIconRow(context, "${yt.glyph} · ${yt.label}", icon, pal) {
-                PrefsStore.recordUse(context, "youtube_folder")
-                cb.onExecuteTool(yt)
-            })
+            container.addView(
+                makeCompactIconRowAsync(
+                    context = context,
+                    label = "${yt.glyph} · ${yt.label}",
+                    pal = pal,
+                    loadIcon = { onLoaded -> ActionIconFactory.createForTool(context, yt, pal.fgPrimaryInt, iconPx, onLoaded) },
+                    onClick = {
+                        PrefsStore.recordUse(context, "youtube_folder")
+                        cb.onExecuteTool(yt)
+                    }
+                )
+            )
         }
     }
 
@@ -208,8 +227,15 @@ object DrawerRenderer {
         }
         val iconPx = dp(context, 18)
         items.forEach { item ->
-            val icon = ActionIconFactory.createForTool(context, item, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-            container.addView(makeCompactIconRow(context, item.label, icon, pal) { cb.onExecuteTool(item) })
+            container.addView(
+                makeCompactIconRowAsync(
+                    context = context,
+                    label = item.label,
+                    pal = pal,
+                    loadIcon = { onLoaded -> ActionIconFactory.createForTool(context, item, pal.fgPrimaryInt, iconPx, onLoaded) },
+                    onClick = { cb.onExecuteTool(item) }
+                )
+            )
         }
     }
 
@@ -259,29 +285,109 @@ object DrawerRenderer {
         executor: ActionExecutor,
         cb: Callbacks
     ) {
-        container.addView(makeBackHeader(context, "Translate → EN", pal, cb))
+        var activeLang = PrefsStore.resolveTranslateLanguage(context)
+        val titleView = makeTextRow(context, "←  Translate → ${activeLang.shortLabel}", pal, pal.accentPrimaryInt, bold = true) {
+            cb.onBackToBar()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val topRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(titleView)
+            addView(
+                TextView(context).apply {
+                    text = "×"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                    setTextColor(pal.fgMutedInt)
+                    gravity = Gravity.CENTER
+                    minWidth = dp(context, 36)
+                    minimumHeight = dp(context, 36)
+                    background = pressedBg(context, pal)
+                    setOnClickListener { cb.onDismiss() }
+                }
+            )
+        }
+        container.addView(topRow)
+        container.addView(makeDivider(context, pal))
+
         val trView = TextView(context).apply {
-            text = "Translating…"
+            text = "Translating to ${activeLang.displayName}…"
             typeface = Typeface.SANS_SERIF
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(pal.fgPrimaryInt)
-            setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 6))
+            setPadding(dp(context, 10), dp(context, 6), dp(context, 10), dp(context, 6))
             setLineSpacing(0f, 1.22f)
         }
         val applyBtn = makeTextRow(context, "Copy / Replace", pal, pal.accentPrimaryInt) {
             cb.onApplyResult(trView.text.toString())
         }.apply { visibility = View.GONE }
 
+        val chipViews = LinkedHashMap<String, TextView>()
+        val langRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(context, 8), dp(context, 4), dp(context, 8), dp(context, 2))
+        }
+
+        fun styleLangChips(selectedCode: String) {
+            chipViews.forEach { (code, chip) ->
+                val isSelected = code.equals(selectedCode, ignoreCase = true)
+                chip.setTextColor(if (isSelected) pal.onAccentInt else pal.fgMutedInt)
+                chip.background = GradientDrawable().apply {
+                    setColor(if (isSelected) pal.accentPrimaryInt else pal.bgSurfaceInt)
+                    setStroke(dp(context, 1), if (isSelected) pal.accentPrimaryInt else pal.dividerInt)
+                    cornerRadius = dpF(context, 12f)
+                }
+            }
+        }
+
+        fun runTranslate(langCode: String, displayName: String, shortLabel: String) {
+            titleView.text = "←  Translate → $shortLabel"
+            trView.text = "Translating to $displayName…"
+            applyBtn.visibility = View.GONE
+            styleLangChips(langCode)
+            executor.networkClient.lookupTranslation(selectedText.trim().take(400), langCode) { res ->
+                if (cb.isModeStillActive(PopupMode.Translate)) {
+                    trView.text = res
+                    applyBtn.visibility = View.VISIBLE
+                    cb.onRelayout()
+                }
+            }
+        }
+
+        BuiltInRegistry.translateLanguages.forEach { lang ->
+            val chip = TextView(context).apply {
+                text = lang.shortLabel
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+                gravity = Gravity.CENTER
+                setPadding(dp(context, 9), dp(context, 4), dp(context, 9), dp(context, 4))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dp(context, 5) }
+                setOnClickListener {
+                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                    activeLang = lang
+                    PrefsStore.setTranslateTargetLang(context, lang.code)
+                    runTranslate(lang.code, lang.displayName, lang.shortLabel)
+                }
+            }
+            chipViews[lang.code] = chip
+            langRow.addView(chip)
+        }
+
+        val langScroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(langRow)
+        }
+        container.addView(langScroll)
         container.addView(trView)
         container.addView(applyBtn)
 
-        executor.networkClient.lookupTranslation(selectedText.trim().take(400)) { res ->
-            if (cb.isModeStillActive(PopupMode.Translate)) {
-                trView.text = res
-                applyBtn.visibility = View.VISIBLE
-                cb.onRelayout()
-            }
-        }
+        runTranslate(activeLang.code, activeLang.displayName, activeLang.shortLabel)
     }
 
     private fun renderQr(
@@ -364,6 +470,53 @@ object DrawerRenderer {
                 cb.onApplyResult(entity.value)
             })
         }
+    }
+
+    /**
+     * Compact native Android menu row with IN-PLACE async favicon updates (zero drawer rebuilds!).
+     */
+    private fun makeCompactIconRowAsync(
+        context: Context,
+        label: String,
+        pal: ThemePalette,
+        colorInt: Int = pal.fgPrimaryInt,
+        loadIcon: (onLoaded: () -> Unit) -> Drawable,
+        onClick: () -> Unit
+    ): LinearLayout = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(context, 40)
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        setPadding(dp(context, 10), dp(context, 7), dp(context, 12), dp(context, 7))
+        background = pressedBg(context, pal)
+        setOnClickListener {
+            runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+            onClick()
+        }
+        val iconPx = dp(context, 18)
+        val iconView = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(context, 10) }
+        }
+        iconView.setImageDrawable(
+            loadIcon {
+                if (iconView.isAttachedToWindow) {
+                    iconView.setImageDrawable(loadIcon {})
+                }
+            }
+        )
+        addView(iconView)
+        addView(TextView(context).apply {
+            text = label
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+            setTextColor(colorInt)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+        })
     }
 
     /**

@@ -1,8 +1,12 @@
 package io.github.selclip.ui
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -10,13 +14,18 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
 import io.github.selclip.SelAccessibilityService
+import io.github.selclip.data.PrefsStore
 
 /**
- * Tab 1 (Home): Service status card, interactive context-bar sandbox, and quick tips.
+ * Tab 1 (Home): Service status & battery health card, interactive context-bar sandbox, and tips.
  */
-class HomeTab(private val activity: Activity) {
+class HomeTab(
+    private val activity: Activity,
+    private val onStatusChanged: () -> Unit = {}
+) {
 
     private lateinit var statusCard: LinearLayout
+    private lateinit var batteryCard: LinearLayout
     private lateinit var sandboxInput: EditText
 
     fun buildView(): View {
@@ -31,9 +40,19 @@ class HomeTab(private val activity: Activity) {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = dp(4) }
+                ).apply { bottomMargin = dp(6) }
             }
             addView(statusCard)
+
+            batteryCard = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(6) }
+            }
+            addView(batteryCard)
 
             addView(UiKit.sectionTitle(activity, "Try Context Bar"))
             addView(
@@ -89,11 +108,29 @@ class HomeTab(private val activity: Activity) {
                 addView(UiKit.text(activity, "• Tap Search or YT for instant lookup; long-press either for all engines or time filters.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
-                addView(UiKit.text(activity, "• Switch to Icons Only in Settings to use crisp icons and auto-fetched site favicons.", 12.5f, p.fgPrimaryInt).apply {
+                addView(UiKit.text(activity, "• Add the Sel Quick Settings tile in your notification shade to pause or resume in 1 tap.", 12.5f, p.fgPrimaryInt).apply {
+                    setPadding(0, dp(6), 0, 0)
+                })
+                addView(UiKit.text(activity, "• Switch to Icons Only in Settings for crisp icons and auto-fetched site favicons.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
             }
             addView(tipsCard)
+
+            addView(UiKit.sectionTitle(activity, "Browser Auto-Popup Tips"))
+            val browserCard = UiKit.card(activity).apply {
+                addView(UiKit.text(activity, "• Firefox: Works automatically on the first selection.", 12.5f, p.fgPrimaryInt))
+                addView(UiKit.text(activity, "• Vivaldi (Android 16.0): Disable vivaldi://flags/#enable-accessibility-extended-selection for automatic popups.", 12.5f, p.fgPrimaryInt).apply {
+                    setPadding(0, dp(6), 0, 0)
+                })
+                addView(UiKit.text(activity, "• WebLibre: Set accessibility.force_disabled to 0 in about:config.", 12.5f, p.fgPrimaryInt).apply {
+                    setPadding(0, dp(6), 0, 0)
+                })
+                addView(UiKit.text(activity, "• Chrome: Tap \"Sel\" in Android's selection menu for the instant floating bar.", 12.5f, p.fgPrimaryInt).apply {
+                    setPadding(0, dp(6), 0, 0)
+                })
+            }
+            addView(browserCard)
         }
     }
 
@@ -102,30 +139,91 @@ class HomeTab(private val activity: Activity) {
         val p = UiKit.pal(activity)
         val dp = { v: Int -> UiKit.dp(activity, v) }
         val active = SelAccessibilityService.instance != null
-        statusCard.removeAllViews()
+        val paused = PrefsStore.isServicePaused(activity)
+        val warnColor = if (p.isDark) Color.parseColor("#F5B041") else Color.parseColor("#C47F00")
 
+        statusCard.removeAllViews()
+        val borderStroke = when {
+            !active -> p.dangerInt
+            paused -> warnColor
+            else -> p.accentSuccessInt
+        }
         statusCard.background = GradientDrawable().apply {
             setColor(p.bgSurfaceInt)
-            setStroke(dp(1), if (active) p.accentSuccessInt else p.dangerInt)
+            setStroke(dp(1), borderStroke)
             cornerRadius = UiKit.dpF(activity, 12f)
         }
         statusCard.setPadding(dp(14), dp(12), dp(14), dp(12))
 
-        if (active) {
-            statusCard.addView(UiKit.text(activity, "●  Service Active", 14f, p.accentSuccessInt, bold = true))
-            statusCard.addView(
-                UiKit.text(activity, "Select text in any app to open the floating action bar.", 12.5f, p.fgMutedInt)
-                    .apply { setPadding(0, dp(3), 0, 0) }
+        when {
+            active && !paused -> {
+                statusCard.addView(UiKit.text(activity, "●  Service Active", 14f, p.accentSuccessInt, bold = true))
+                statusCard.addView(
+                    UiKit.text(activity, "Select text in any app to open the floating action bar.", 12.5f, p.fgMutedInt)
+                        .apply { setPadding(0, dp(3), 0, 0) }
+                )
+            }
+            active && paused -> {
+                statusCard.addView(UiKit.text(activity, "⏸  Paused via Quick Settings", 14f, warnColor, bold = true))
+                statusCard.addView(
+                    UiKit.text(activity, "Auto-popup is temporarily paused (tapping \"Sel\" in the selection menu still works).", 12.5f, p.fgPrimaryInt)
+                        .apply { setPadding(0, dp(4), 0, dp(6)) }
+                )
+                statusCard.addView(UiKit.fullButton(activity, "Resume Sel", p.accentSuccessInt, filled = true) {
+                    PrefsStore.setServicePaused(activity, false)
+                    SelAccessibilityService.instance?.onPausedStateChanged(false)
+                    onStatusChanged()
+                    refresh()
+                })
+            }
+            else -> {
+                statusCard.addView(UiKit.text(activity, "Accessibility Service Off", 14f, p.dangerInt, bold = true))
+                statusCard.addView(
+                    UiKit.text(activity, "Enable Sel in Android Accessibility Settings to activate floating selection actions.", 12.5f, p.fgPrimaryInt)
+                        .apply { setPadding(0, dp(4), 0, dp(6)) }
+                )
+                statusCard.addView(UiKit.fullButton(activity, "Open Accessibility Settings", p.accentSuccessInt, filled = true) {
+                    activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                })
+            }
+        }
+
+        // OEM Battery Optimization health check (catches HyperOS / OneUI PowerKeeper freezes)
+        val pm = activity.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val batteryUnrestricted = runCatching {
+            pm?.isIgnoringBatteryOptimizations(activity.packageName) == true
+        }.getOrDefault(true)
+
+        batteryCard.removeAllViews()
+        if (!batteryUnrestricted) {
+            batteryCard.visibility = View.VISIBLE
+            batteryCard.background = GradientDrawable().apply {
+                setColor(p.bgSurfaceInt)
+                setStroke(dp(1), warnColor)
+                cornerRadius = UiKit.dpF(activity, 12f)
+            }
+            batteryCard.setPadding(dp(14), dp(12), dp(14), dp(12))
+            batteryCard.addView(UiKit.text(activity, "⚠  Battery Optimization Enabled", 13.5f, warnColor, bold = true))
+            batteryCard.addView(
+                UiKit.text(
+                    activity,
+                    "HyperOS / OEM battery savers may freeze Sel in the background. Set Battery to \"No restrictions\" / \"Unrestricted\".",
+                    12.2f,
+                    p.fgMutedInt
+                ).apply { setPadding(0, dp(4), 0, dp(6)) }
             )
-        } else {
-            statusCard.addView(UiKit.text(activity, "Accessibility Service Off", 14f, p.dangerInt, bold = true))
-            statusCard.addView(
-                UiKit.text(activity, "Enable Sel in Android Accessibility Settings to activate floating selection actions.", 12.5f, p.fgPrimaryInt)
-                    .apply { setPadding(0, dp(4), 0, dp(6)) }
-            )
-            statusCard.addView(UiKit.fullButton(activity, "Open Accessibility Settings", p.accentSuccessInt, filled = true) {
-                activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            batteryCard.addView(UiKit.fullButton(activity, "Open App Battery Settings", warnColor, filled = false) {
+                val appInfoIntent = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", activity.packageName, null)
+                )
+                runCatching { activity.startActivity(appInfoIntent) }
+                    .onFailure {
+                        runCatching { activity.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                    }
             })
+        } else {
+            batteryCard.visibility = View.GONE
         }
     }
 

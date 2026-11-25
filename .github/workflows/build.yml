@@ -27,7 +27,20 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Decode Release Keystore (if configured)
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/sel-release.p12"
+            echo "RELEASE_KEYSTORE_PATH=$RUNNER_TEMP/sel-release.p12" >> "$GITHUB_ENV"
+          fi
+
       - name: Run Unit Tests & Build Debug/Release APKs
+        env:
+          RELEASE_KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          RELEASE_KEY_PASS: ${{ secrets.KEY_PASS }}
         run: gradle testDebugUnitTest assembleDebug assembleRelease --no-daemon
 
       - name: Upload APK Artifacts

@@ -84,7 +84,7 @@ class MainActivity : Activity() {
         tabButtons.clear()
         tabPanels.clear()
 
-        homeTab = HomeTab(this)
+        homeTab = HomeTab(this) { refreshAllTabs() }
         actionsTab = ActionsTab(this)
         settingsTab = SettingsTab(
             activity = this,
@@ -106,7 +106,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(10))
         }
         topHeader.addView(UiKit.text(this, "Sel", 20f, p.fgPrimaryInt, bold = true))
-        topHeader.addView(UiKit.text(this, "  v4.7.2", 12.5f, p.fgMutedInt).apply {
+        topHeader.addView(UiKit.text(this, "  v4.8.0", 12.5f, p.fgMutedInt).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
 
@@ -117,7 +117,16 @@ class MainActivity : Activity() {
                 setStroke(dp(1), p.borderInt)
                 cornerRadius = UiKit.dpF(this@MainActivity, 16f)
             }
-            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            setOnClickListener {
+                val svc = SelAccessibilityService.instance
+                if (svc != null && PrefsStore.isServicePaused(this@MainActivity)) {
+                    PrefsStore.setServicePaused(this@MainActivity, false)
+                    svc.onPausedStateChanged(false)
+                    refreshAllTabs()
+                } else {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+            }
         }
         topHeader.addView(serviceBadge)
         root.addView(topHeader)
@@ -207,8 +216,21 @@ class MainActivity : Activity() {
     private fun refreshAllTabs() {
         val p = UiKit.pal(this)
         val active = SelAccessibilityService.instance != null
-        serviceBadge.text = if (active) "● Active" else "Enable ↗"
-        serviceBadge.setTextColor(if (active) p.accentSuccessInt else p.dangerInt)
+        val paused = PrefsStore.isServicePaused(this)
+        when {
+            !active -> {
+                serviceBadge.text = "Enable ↗"
+                serviceBadge.setTextColor(p.dangerInt)
+            }
+            paused -> {
+                serviceBadge.text = "⏸ Paused"
+                serviceBadge.setTextColor(p.accentInfoInt)
+            }
+            else -> {
+                serviceBadge.text = "● Active"
+                serviceBadge.setTextColor(p.accentSuccessInt)
+            }
+        }
 
         homeTab.refresh()
         actionsTab.refresh()
