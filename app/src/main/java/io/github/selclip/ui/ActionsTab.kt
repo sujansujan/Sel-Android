@@ -193,7 +193,7 @@ class ActionsTab(private val activity: Activity) {
                 val row = LinearLayout(activity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    minHeight = dp(44)
+                    minimumHeight = dp(44)
                     setPadding(dp(2), dp(4), dp(2), dp(4))
                 }
                 row.addView(UiKit.text(activity, entry.rawLabel, 13f, p.fgPrimaryInt).apply {
@@ -242,7 +242,7 @@ class ActionsTab(private val activity: Activity) {
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minHeight = dp(46)
+                minimumHeight = dp(46)
                 setPadding(dp(2), dp(4), dp(2), dp(4))
                 tag = tool.id
             }

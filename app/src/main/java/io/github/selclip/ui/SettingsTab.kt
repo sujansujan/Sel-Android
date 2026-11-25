@@ -156,7 +156,7 @@ class SettingsTab(
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minHeight = dp(40)
+                minimumHeight = dp(40)
             }
             row.addView(UiKit.text(activity, pkg, 13f, p.fgPrimaryInt).apply {
                 isSingleLine = true
@@ -193,11 +193,11 @@ class SettingsTab(
             val row = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minHeight = dp(42)
+                minimumHeight = dp(42)
             }
             row.addView(UiKit.text(activity, if (entry.pinned) "★" else "☆", 15f, if (entry.pinned) p.accentSuccessInt else p.fgMutedInt, bold = true).apply {
                 minWidth = dp(38)
-                minHeight = dp(40)
+                minimumHeight = dp(40)
                 gravity = Gravity.CENTER
                 setOnClickListener {
                     PrefsStore.togglePinClip(activity, entry.text)
@@ -212,7 +212,7 @@ class SettingsTab(
             })
             row.addView(UiKit.text(activity, "×", 17f, p.dangerInt, bold = true).apply {
                 minWidth = dp(38)
-                minHeight = dp(40)
+                minimumHeight = dp(40)
                 gravity = Gravity.CENTER
                 setOnClickListener {
                     PrefsStore.deleteClip(activity, entry.text)

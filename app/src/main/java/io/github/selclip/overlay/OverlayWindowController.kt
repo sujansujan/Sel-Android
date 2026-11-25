@@ -220,7 +220,7 @@ class OverlayWindowController(
             addOnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
                 val actualW = right - left
                 val actualH = bottom - top
-                val p = layoutParams ?: return@addOnLayoutChangeListener
+                val p = this@OverlayWindowController.layoutParams ?: return@addOnLayoutChangeListener
                 if (actualW > 0 && actualH > 0 && !manuallyDragged && !lastAnchorZone.isEmpty) {
                     val refined = PopupPositioner.place(
                         anchorZone = lastAnchorZone,
