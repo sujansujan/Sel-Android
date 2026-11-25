@@ -85,7 +85,23 @@ class SelectionResolver(
     // Cached reflection handles for Android 16 (API 36+) AccessibilityNodeInfo.getSelection()
     // which Chromium (Chrome/Vivaldi/Brave/Edge) populates on WebView for static webpage selections!
     private val getSelectionMethod: Method? by lazy {
-        runCatching { AccessibilityNodeInfo::class.java.getMethod("getSelection") }.getOrNull()
+        val m = runCatching { AccessibilityNodeInfo::class.java.getMethod("getSelection") }.getOrNull()
+            ?: runCatching {
+                AccessibilityNodeInfo::class.java.methods.firstOrNull {
+                    it.parameterCount == 0 &&
+                        it.name.contains("Selection", ignoreCase = true) &&
+                        it.returnType != Int::class.javaPrimitiveType &&
+                        it.returnType != Boolean::class.javaPrimitiveType &&
+                        it.returnType != Void.TYPE
+                }
+            }.getOrNull()
+        if (isDebugBuild) {
+            val allSel = AccessibilityNodeInfo::class.java.methods
+                .filter { it.name.contains("Selection", ignoreCase = true) }
+                .joinToString(",") { "${it.name}(${it.parameterCount})->${it.returnType.simpleName}" }
+            Log.d("SelDiag", "a11ySelMethods=[$allSel] chosen=${m?.name}")
+        }
+        m
     }
     @Volatile private var selGetStartMethod: Method? = null
     @Volatile private var selGetEndMethod: Method? = null
@@ -666,6 +682,34 @@ class SelectionResolver(
     }
 
     /**
+     * Lightweight one-shot wake-up for GeckoView (Firefox / WebLibre / Fennec) when the user enters
+     * the browser, so GeckoView initializes its virtual accessibility tree BEFORE selection #1!
+     */
+    fun warmGeckoAccessibilityTree() {
+        val root = runCatching { service.rootInActiveWindow }.getOrNull() ?: return
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        queue.add(root to 0)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 48) {
+            val (node, depth) = queue.removeFirst()
+            visited++
+            if (isBrowserSurfaceNode(node)) {
+                runCatching {
+                    node.refresh()
+                    if (node.childCount > 0) node.getChild(0)
+                }
+                return
+            }
+            if (depth < 16) {
+                val c = minOf(node.childCount, 8)
+                for (i in 0 until c) {
+                    runCatching { node.getChild(i) }.getOrNull()?.let { queue.add(it to depth + 1) }
+                }
+            }
+        }
+    }
+
+    /**
      * Reads Android 16 (API 36+) `AccessibilityNodeInfo.getSelection()` (`Selection` +
      * `SelectionPosition`), which Chromium (Chrome / Vivaldi / Brave / Edge / WebView) populates
      * directly on the `WebView` node even for static non-editable HTML webpage selections!
@@ -677,25 +721,68 @@ class SelectionResolver(
         containerNode: AccessibilityNodeInfo,
         resolveCharBounds: Boolean = true
     ): ResolvedSelection? {
-        val getSel = getSelectionMethod ?: return null
-        val selObj = runCatching { getSel.invoke(containerNode) }.getOrNull() ?: return null
+        val getSel = getSelectionMethod
+        val selObj = if (getSel != null) runCatching { getSel.invoke(containerNode) }.getOrNull() else null
+
+        if (isDebugBuild) {
+            val selExtras = runCatching {
+                containerNode.extras?.keySet()
+                    ?.filter { it.contains("SELECTION", ignoreCase = true) }
+                    ?.joinToString(",") { k -> "$k=${containerNode.extras?.get(k)}" }
+            }.getOrNull().orEmpty()
+            Log.d(
+                "SelDiag",
+                "extSelProbe cls=${containerNode.className?.toString()?.substringAfterLast('.')} getSel=${getSel?.name} selObj=$selObj extras=[$selExtras]"
+            )
+        }
+
+        if (selObj == null) return null
 
         val getStart = selGetStartMethod ?: runCatching {
-            selObj.javaClass.getMethod("getStart").also { selGetStartMethod = it }
-        }.getOrNull() ?: return null
+            selObj.javaClass.methods.firstOrNull {
+                it.parameterCount == 0 && it.name.contains("Start", ignoreCase = true) && it.returnType != Int::class.javaPrimitiveType
+            }
+        }.getOrNull()?.also { selGetStartMethod = it }
+
         val getEnd = selGetEndMethod ?: runCatching {
-            selObj.javaClass.getMethod("getEnd").also { selGetEndMethod = it }
-        }.getOrNull() ?: return null
+            selObj.javaClass.methods.firstOrNull {
+                it.parameterCount == 0 && it.name.contains("End", ignoreCase = true) && it.returnType != Int::class.javaPrimitiveType
+            }
+        }.getOrNull()?.also { selGetEndMethod = it }
+
+        if (getStart == null || getEnd == null) {
+            if (isDebugBuild) {
+                val ms = selObj.javaClass.methods.joinToString(",") { "${it.name}(${it.parameterCount})->${it.returnType.simpleName}" }
+                Log.d("SelDiag", "extSelMethods=[$ms]")
+            }
+            return null
+        }
 
         val startPos = runCatching { getStart.invoke(selObj) }.getOrNull() ?: return null
         val endPos = runCatching { getEnd.invoke(selObj) }.getOrNull() ?: return null
 
         val getNode = posGetNodeMethod ?: runCatching {
-            startPos.javaClass.getMethod("getNode").also { posGetNodeMethod = it }
-        }.getOrNull() ?: return null
+            startPos.javaClass.methods.firstOrNull {
+                it.parameterCount == 0 && AccessibilityNodeInfo::class.java.isAssignableFrom(it.returnType)
+            }
+        }.getOrNull()?.also { posGetNodeMethod = it }
+
         val getOffset = posGetOffsetMethod ?: runCatching {
-            startPos.javaClass.getMethod("getOffset").also { posGetOffsetMethod = it }
-        }.getOrNull() ?: return null
+            startPos.javaClass.methods.firstOrNull {
+                it.parameterCount == 0 &&
+                    (it.returnType == Int::class.javaPrimitiveType || it.returnType == Integer::class.java) &&
+                    it.name.contains("Offset", ignoreCase = true) &&
+                    !it.name.contains("Type", ignoreCase = true)
+            }
+        }.getOrNull()?.also { posGetOffsetMethod = it }
+
+        if (getNode == null || getOffset == null) {
+            if (isDebugBuild) {
+                val ms = startPos.javaClass.methods.joinToString(",") { "${it.name}(${it.parameterCount})->${it.returnType.simpleName}" }
+                Log.d("SelDiag", "extPosMethods=[$ms] startPos=$startPos endPos=$endPos")
+            }
+            return null
+        }
 
         val startNode = runCatching { getNode.invoke(startPos) as? AccessibilityNodeInfo }.getOrNull()
         val endNode = runCatching { getNode.invoke(endPos) as? AccessibilityNodeInfo }.getOrNull()

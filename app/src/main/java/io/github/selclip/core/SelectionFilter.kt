@@ -36,13 +36,24 @@ object SelectionFilter {
         return launcherTokens.any { it in p }
     }
 
+    private val geckoBrowserTokens = listOf(
+        "firefox", "mozilla", "weblibre", "gecko", "fennec", "mull", "waterfox", "ironfox", "iceraven"
+    )
+
+    fun isGeckoBrowserPackage(pkg: String): Boolean {
+        if (pkg.isEmpty()) return false
+        val p = pkg.lowercase()
+        return geckoBrowserTokens.any { it in p }
+    }
+
     fun isSystemUiOrFramework(pkg: String): Boolean {
-        return pkg == "com.android.systemui" || pkg == "android"
+        return pkg == "com.android.systemui" || pkg == "android" || pkg.contains("systemui", ignoreCase = true)
     }
 
     /**
      * Validates and normalizes candidate selected text from a node or event.
      * Rejects password fields, empty/whitespace text, hint-only text, and absurdly huge dumps.
+     * Strips GeckoView's inline object-replacement characters (\uFFFC).
      */
     fun sanitizeCandidate(
         rawSelection: String?,
@@ -51,7 +62,8 @@ object SelectionFilter {
         maxLength: Int = 8000
     ): String? {
         if (isPassword) return null
-        val text = rawSelection ?: return null
+        val raw = rawSelection ?: return null
+        val text = if (raw.indexOf('\uFFFC') >= 0) raw.replace("\uFFFC", "").trim() else raw
         if (text.isBlank()) return null
         if (!hintText.isNullOrEmpty() && text == hintText) return null
         return if (text.length > maxLength) text.substring(0, maxLength) else text

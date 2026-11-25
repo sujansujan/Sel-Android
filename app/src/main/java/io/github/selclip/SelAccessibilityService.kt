@@ -284,6 +284,16 @@ class SelAccessibilityService : AccessibilityService() {
                         cancelPendingDirectSelection()
                         dispatch(PopupEvent.AppSwitched(pkg, now()))
                     }
+                    // Pre-wake GeckoView's lazy accessibility tree on browser entry so selection #1 works!
+                    if (prev != pkg && SelectionFilter.isGeckoBrowserPackage(pkg)) {
+                        handler.postDelayed({
+                            if (activePackage == pkg) {
+                                getOrCreateScanExecutor().execute {
+                                    runCatching { selectionResolver.warmGeckoAccessibilityTree() }
+                                }
+                            }
+                        }, 320L)
+                    }
                 }
             }
         } else if (activePackage.isEmpty() && pkg.isNotEmpty() && pkg != packageName &&
