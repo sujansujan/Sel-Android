@@ -58,7 +58,9 @@ class SelectionResolver(
     private var lastToolbar: ToolbarHit? = null
     private var lastToolbarTimeMs: Long = 0L
 
-    private val toolbarKeywordsLower = setOf("copy", "cut", "select all", "share", "web search", "translate")
+    private val toolbarKeywordsLower = setOf(
+        "copy", "cut", "select all", "share", "web search", "translate", "paste", "sel", "define"
+    )
     private val toolbarIdHints = listOf(
         "android:id/copy",
         "android:id/cut",
@@ -201,7 +203,7 @@ class SelectionResolver(
             }
 
             val effectiveToolbar = detectedToolbar
-                ?: if (allowStaleToolbar) lastToolbar?.takeIf { now - lastToolbarTimeMs < 350L } else null
+                ?: if (allowStaleToolbar) lastToolbar?.takeIf { now - lastToolbarTimeMs < 4000L } else null
             // A small non-toolbar floating window (e.g., Android Text Magnifier loupe) signals
             // the user's finger is still held down selecting text — wait for finger-up!
             val hasMagnifier = detectedToolbar == null && floatingCandidates.isNotEmpty()
@@ -233,11 +235,10 @@ class SelectionResolver(
         windowRect: Rect,
         realW: Int,
         realH: Int,
-        topInset: Int,
+        @Suppress("UNUSED_PARAMETER") topInset: Int,
         visBottom: Int
     ): ToolbarHit? {
         val matchedButtons = mutableListOf<Rect>()
-        var clickableCount = 0
         var copyBtn: AccessibilityNodeInfo? = null
 
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
@@ -269,10 +270,6 @@ class SelectionResolver(
                         }
                     }
                 }
-                if (node.isClickable) {
-                    clickableCount++
-                    if (copyBtn == null && labelLower == "copy") copyBtn = node
-                }
             }
 
             if (depth < 6) {
@@ -283,23 +280,17 @@ class SelectionResolver(
             }
         }
 
-        val isPlausibleFloatingPill = windowRect.height() in dp(28)..dp(132) &&
-            windowRect.width() in dp(80)..(realW * 0.96f).toInt() &&
-            windowRect.top >= (topInset - dp(16)).coerceAtLeast(dp(16)) &&
-            windowRect.bottom <= visBottom + dp(12)
-
-        if (matchedButtons.isEmpty() && !(isPlausibleFloatingPill && clickableCount in 2..8)) {
-            return null
-        }
+        // STRICT verification: require at least ONE genuine selection toolbar button ID or keyword
+        // (Copy/Cut/Select all/Share/Web search/Translate/Sel) so unrelated floating tooltips or
+        // browser popups NEVER false-trigger Sel!
+        if (matchedButtons.isEmpty()) return null
 
         val finalBounds = if (windowRect.height() in dp(28)..dp(120) &&
             windowRect.width() in dp(80)..(realW * 0.96f).toInt()
         ) {
             windowRect
-        } else if (matchedButtons.isNotEmpty()) {
-            unionToolbarRow(matchedButtons) ?: return null
         } else {
-            return null
+            unionToolbarRow(matchedButtons) ?: return null
         }
 
         val q = dp(18).coerceAtLeast(24)
@@ -464,6 +455,11 @@ class SelectionResolver(
         toolbarBounds: Box?,
         toolbarWindowId: Int = -1
     ): ResolvedSelection? {
+        // Fast O(1) check on focused input first (browser address bar, <input>, <textarea>)
+        findFocusedNode()?.let { focused ->
+            extractFromNode(focused, resolveCharBounds = toolbarBounds == null)?.let { return it }
+        }
+
         val (_, realH) = readRealScreenSize()
         val roots = mutableListOf<AccessibilityNodeInfo>()
 
@@ -546,7 +542,8 @@ class SelectionResolver(
                 runCatching { node.refresh() }
             }
 
-            if (node.isVisibleToUser) {
+            // Check virtual nodes even if isVisibleToUser is false when explicit selection indices exist
+            if (node.isVisibleToUser || (node.textSelectionStart >= 0 && node.textSelectionStart != node.textSelectionEnd)) {
                 // Skip expensive refreshWithExtraData char-bounds IPC when we're already docking to toolbarBounds!
                 val hit = extractFromNode(node, resolveCharBounds = toolbarBounds == null)
                 if (hit != null) {
@@ -601,83 +598,12 @@ class SelectionResolver(
         return null
     }
 
-    /**
-     * Last-resort copy trigger used ONLY when spatial accessibility traversal finds no selection
-     * indices (e.g., Firefox GeckoView or non-accessible canvases).
-     */
-    fun performBestCopyAction(
-        sourceNode: AccessibilityNodeInfo?,
-        toolbarHit: ToolbarHit?
-    ): Boolean {
-        if (sourceNode != null && (supportsAction(sourceNode, AccessibilityNodeInfo.ACTION_COPY) || isBrowserSurfaceNode(sourceNode))) {
-            if (runCatching { sourceNode.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) return true
-        }
-
-        val root = runCatching { service.rootInActiveWindow }.getOrNull()
-        val focused = runCatching { root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
-            ?: runCatching { root?.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY) }.getOrNull()
-        if (focused != null && (supportsAction(focused, AccessibilityNodeInfo.ACTION_COPY) || isBrowserSurfaceNode(focused))) {
-            if (runCatching { focused.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) return true
-        }
-
-        val roots = mutableListOf<AccessibilityNodeInfo>()
-        runCatching { service.windows }.getOrNull()?.forEach { w ->
-            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.id != toolbarHit?.windowId) {
-                runCatching { w.root }.getOrNull()?.let { wr ->
-                    if (wr.packageName?.toString() != service.packageName && roots.none { it == wr }) roots.add(wr)
-                }
-            }
-        }
-        if (root != null && roots.none { it == root }) roots.add(root)
-
-        val webViewFallbacks = mutableListOf<AccessibilityNodeInfo>()
-        for (scanRoot in roots) {
-            val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
-            queue.add(scanRoot to 0)
-            var visited = 0
-            while (queue.isNotEmpty() && visited < 260) {
-                val (node, depth) = queue.removeFirst()
-                visited++
-                if (node.isVisibleToUser) {
-                    if (supportsAction(node, AccessibilityNodeInfo.ACTION_COPY)) {
-                        if (runCatching { node.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) {
-                            return true
-                        }
-                    } else if (isBrowserSurfaceNode(node)) {
-                        webViewFallbacks.add(node)
-                    }
-                }
-                if (depth < 24) {
-                    val count = minOf(node.childCount, 28)
-                    for (i in 0 until count) {
-                        runCatching { node.getChild(i) }.getOrNull()?.let { queue.add(it to depth + 1) }
-                    }
-                }
-            }
-        }
-
-        for (wv in webViewFallbacks) {
-            if (runCatching { wv.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) return true
-        }
-
-        val copyBtn = toolbarHit?.copyButtonNode
-        if (copyBtn != null) {
-            if (runCatching { copyBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) return true
-        }
-        return false
-    }
-
     private fun isBrowserSurfaceNode(node: AccessibilityNodeInfo): Boolean {
         val cls = node.className?.toString().orEmpty()
         return cls.contains("WebView", ignoreCase = true) ||
             cls.contains("GeckoView", ignoreCase = true) ||
             cls.contains("Chromium", ignoreCase = true) ||
             cls.contains("Compositor", ignoreCase = true)
-    }
-
-    private fun supportsAction(node: AccessibilityNodeInfo, actionId: Int): Boolean {
-        val actions = runCatching { node.actionList }.getOrNull() ?: return false
-        return actions.any { it.id == actionId }
     }
 
     private fun resolveExactBounds(node: AccessibilityNodeInfo, raw: String, start: Int, end: Int): Box {

@@ -4,22 +4,27 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 
 /**
- * Translucent universal fallback hooked into Android's native Copy/Share selection menu
- * via ACTION_PROCESS_TEXT.
+ * Translucent zero-flash universal entry point hooked into Android's native selection menu
+ * via ACTION_PROCESS_TEXT (e.g. Chrome/Firefox static webpages with ZERO clipboard pollution).
  */
 class ProcessTextActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 34) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+            overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        }
         val raw = intent?.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
         if (!raw.isNullOrBlank()) {
             val service = SelAccessibilityService.instance
             if (service != null) {
-                service.showFromExternalText(raw)
+                service.showFromExternalText(raw, isStandalone = true)
             } else {
                 val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("sel", raw))
@@ -31,6 +36,9 @@ class ProcessTextActivity : Activity() {
             }
         }
         finish()
-        overridePendingTransition(0, 0)
+        @Suppress("DEPRECATION")
+        if (Build.VERSION.SDK_INT < 34) {
+            overridePendingTransition(0, 0)
+        }
     }
 }

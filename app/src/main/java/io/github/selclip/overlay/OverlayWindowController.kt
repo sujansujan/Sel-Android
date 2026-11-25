@@ -3,6 +3,7 @@ package io.github.selclip.overlay
 import android.content.Context
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -12,6 +13,7 @@ import android.view.View
 import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import io.github.selclip.core.AnchorTarget
@@ -26,15 +28,15 @@ import kotlin.math.abs
 /**
  * Owns the single lightweight, GPU-accelerated TYPE_ACCESSIBILITY_OVERLAY window.
  *
- * Zero-stutter guarantees:
- * - Explicitly sets `FLAG_HARDWARE_ACCELERATED` so ViewRootImpl uses GPU ThreadedRenderer
- *   instead of slow CPU software Canvas rendering (critical for Service overlays!).
- * - Explicitly sets `params.windowAnimations = 0` to eliminate conflicting OEM window transitions.
- * - Starts the 115ms alpha fade-in strictly inside a one-shot `OnPreDrawListener` AFTER the
- *   SurfaceFlinger surface is created & laid out (60/120fps from 0.0 -> 1.0, ZERO skipped frames!).
- * - No redundant `.withLayer()` offscreen FBO allocation on an already-composited overlay window.
- * - Tracks self window mutations (`addView`/`updateViewLayout`/`removeView`) so the service
- *   ignores its own `TYPE_WINDOWS_CHANGED` echoes during Frame 1.
+ * Bulletproof outside-touch dismissal + zero-stutter guarantees:
+ * - Docked Bar mode: `WRAP_CONTENT` with `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL |
+ *   FLAG_WATCH_OUTSIDE_TOUCH | FLAG_HARDWARE_ACCELERATED` + `dispatchTouchEvent` catching
+ *   `MotionEvent.ACTION_OUTSIDE` so native toolbar buttons & handles remain touchable while
+ *   outside touches dismiss Sel immediately.
+ * - Standalone (ProcessText in browsers) & Expanded Drawer mode: full-screen transparent
+ *   dismiss backdrop catching ANY `ACTION_DOWN` outside the card bounds on every Android OEM
+ *   (HyperOS, OneUI, Pixel) with 100% reliability!
+ * - `windowAnimations = 0` + one-shot `OnPreDrawListener` hardware fade-in (zero skipped frames).
  */
 class OverlayWindowController(
     private val context: Context,
@@ -49,26 +51,30 @@ class OverlayWindowController(
 
     private val handler = Handler(Looper.getMainLooper())
 
-    private var rootView: LinearLayout? = null
+    private var windowRootView: View? = null
+    private var cardView: LinearLayout? = null
     private var cardBgDrawable: GradientDrawable? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var barContainer: LinearLayout? = null
     private var drawerScroll: ScrollView? = null
     private var drawerContainer: LinearLayout? = null
     private var pendingPreDrawListener: ViewTreeObserver.OnPreDrawListener? = null
+    private var useBackdropMode: Boolean = false
 
     private var lastAnchorTarget: AnchorTarget = AnchorTarget(Box(0, 0, 0, 0), false)
     private var lastViewport: Viewport = Viewport(1080, 2200, 96, 120)
     private var maxDrawerHeightPx: Int = 480
     private var activeMaxWidthPx: Int = 640
     private var currentMode: PopupMode = PopupMode.Bar
+    private var currentCardX: Int = 0
+    private var currentCardY: Int = 0
 
     private var lastSelfMutationUptimeMs: Long = 0L
     private var attachedAtUptimeMs: Long = 0L
 
     private val safetyTimeoutRunnable = Runnable { onSafetyTimeout() }
 
-    val isAttached: Boolean get() = rootView?.isAttachedToWindow == true
+    val isAttached: Boolean get() = windowRootView?.isAttachedToWindow == true
 
     fun markSelfWindowMutation() {
         lastSelfMutationUptimeMs = SystemClock.uptimeMillis()
@@ -93,6 +99,7 @@ class OverlayWindowController(
         viewport: Viewport,
         mode: PopupMode,
         isNewSession: Boolean,
+        isStandalone: Boolean,
         iconsOnly: Boolean,
         actions: List<PopAction>,
         onActionClick: (PopAction) -> Unit,
@@ -101,19 +108,25 @@ class OverlayWindowController(
         renderDrawer: (LinearLayout) -> Unit
     ) {
         val isDrawerOpen = mode != PopupMode.Bar
+        val wantBackdrop = isDrawerOpen || isStandalone
+
         lastAnchorTarget = anchorTarget
         lastViewport = viewport
         currentMode = mode
         activeMaxWidthPx = maxWidthForMode(mode, viewport.screenWidth)
 
-        if (rootView != null && !isAttached) hide()
+        // Cleanly rebuild window if detached or transitioning between docked WRAP_CONTENT and backdrop mode
+        if (windowRootView != null && (!isAttached || useBackdropMode != wantBackdrop)) {
+            hide()
+        }
 
         val pal = PrefsStore.resolvePalette(context)
-        val createdNow = rootView == null
+        val createdNow = windowRootView == null
 
-        if (createdNow) createWindowViews(viewport, mode)
+        if (createdNow) createWindowViews(viewport, mode, wantBackdrop)
 
-        val root = rootView ?: return
+        val winRoot = windowRootView ?: return
+        val card = cardView ?: return
         val params = windowParams ?: return
         val bar = barContainer ?: return
         val scroll = drawerScroll ?: return
@@ -127,7 +140,6 @@ class OverlayWindowController(
         }
         bar.setBackgroundColor(pal.popupSurfaceInt)
 
-        // Compute drawer height budget first so ScrollView measures cleanly before addView
         val preliminaryPlacement = PopupPositioner.place(
             target = anchorTarget,
             viewport = viewport,
@@ -160,13 +172,13 @@ class OverlayWindowController(
             renderDrawer(drawer)
         }
 
-        // Pre-measure exact pixel dimensions BEFORE addView / updateViewLayout -> ZERO jump/stutter!
-        root.measure(
+        // Pre-measure exact card pixel dimensions BEFORE addView / updateViewLayout -> ZERO jump/stutter!
+        card.measure(
             View.MeasureSpec.makeMeasureSpec(activeMaxWidthPx, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(viewport.screenHeight, View.MeasureSpec.AT_MOST)
         )
-        val exactW = root.measuredWidth
-        val exactH = root.measuredHeight
+        val exactW = card.measuredWidth
+        val exactH = card.measuredHeight
 
         val placement = PopupPositioner.place(
             target = anchorTarget,
@@ -181,11 +193,10 @@ class OverlayWindowController(
         resetSafetyTimer(isDrawerOpen)
 
         if (createdNow) {
-            params.x = placement.x
-            params.y = placement.y
-            root.alpha = 0f
+            applyCardPosition(card, params, placement.x, placement.y, viewport)
+            card.alpha = 0f
             markSelfWindowMutation()
-            val added = runCatching { windowManager.addView(root, params) }.isSuccess
+            val added = runCatching { windowManager.addView(winRoot, params) }.isSuccess
             if (!added) {
                 hide()
                 return
@@ -193,32 +204,36 @@ class OverlayWindowController(
             attachedAtUptimeMs = SystemClock.uptimeMillis()
 
             // Start hardware fade-in strictly on the first real VSync frame after surface attach!
-            val listener = object : ViewTreeObserver.OnPreDrawListener {
-                override fun onPreDraw(): Boolean {
-                    if (root.viewTreeObserver.isAlive) {
-                        root.viewTreeObserver.removeOnPreDrawListener(this)
+            val animateNow = isNewSession || !isDrawerOpen
+            if (!animateNow) {
+                card.alpha = 1f
+            } else {
+                val listener = object : ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        if (winRoot.viewTreeObserver.isAlive) {
+                            winRoot.viewTreeObserver.removeOnPreDrawListener(this)
+                        }
+                        if (pendingPreDrawListener === this) pendingPreDrawListener = null
+                        if (windowRootView === winRoot && winRoot.isAttachedToWindow) {
+                            card.animate()
+                                .alpha(1f)
+                                .setDuration(115L)
+                                .setInterpolator(enterInterpolator)
+                                .start()
+                        }
+                        return true
                     }
-                    if (pendingPreDrawListener === this) pendingPreDrawListener = null
-                    if (rootView === root && root.isAttachedToWindow) {
-                        root.animate()
-                            .alpha(1f)
-                            .setDuration(115L)
-                            .setInterpolator(enterInterpolator)
-                            .start()
-                    }
-                    return true
                 }
+                pendingPreDrawListener = listener
+                winRoot.viewTreeObserver.addOnPreDrawListener(listener)
             }
-            pendingPreDrawListener = listener
-            root.viewTreeObserver.addOnPreDrawListener(listener)
         } else {
-            val posChanged = params.x != placement.x || params.y != placement.y
-            params.x = placement.x
-            params.y = placement.y
-            root.requestLayout()
-            if (posChanged || isDrawerOpen) {
+            val posChanged = currentCardX != placement.x || currentCardY != placement.y
+            applyCardPosition(card, params, placement.x, placement.y, viewport)
+            card.requestLayout()
+            if (!useBackdropMode && (posChanged || isDrawerOpen)) {
                 markSelfWindowMutation()
-                runCatching { windowManager.updateViewLayout(root, params) }
+                runCatching { windowManager.updateViewLayout(winRoot, params) }
             }
         }
     }
@@ -228,14 +243,15 @@ class OverlayWindowController(
      * (e.g., user drags a selection handle) without rebuilding any views.
      */
     fun syncPositionToAnchor(anchorTarget: AnchorTarget, viewport: Viewport) {
-        val root = rootView ?: return
+        val winRoot = windowRootView ?: return
+        val card = cardView ?: return
         val params = windowParams ?: return
-        if (!root.isAttachedToWindow) return
+        if (!winRoot.isAttachedToWindow || useBackdropMode) return
 
         lastAnchorTarget = anchorTarget
         lastViewport = viewport
-        val w = root.width.takeIf { it > 0 } ?: root.measuredWidth
-        val h = root.height.takeIf { it > 0 } ?: root.measuredHeight
+        val w = card.width.takeIf { it > 0 } ?: card.measuredWidth
+        val h = card.height.takeIf { it > 0 } ?: card.measuredHeight
         val placement = PopupPositioner.place(
             target = anchorTarget,
             viewport = viewport,
@@ -245,60 +261,92 @@ class OverlayWindowController(
             isDrawerOpen = currentMode != PopupMode.Bar
         )
 
-        // Ignore small native-toolbar settle wobble during our 160ms enter fade-in!
         val inEnterFade = (SystemClock.uptimeMillis() - attachedAtUptimeMs) < 160L
         val deadzone = if (inEnterFade) dp(24) else dp(8)
-        if (abs(placement.x - params.x) > deadzone || abs(placement.y - params.y) > deadzone) {
-            params.x = placement.x
-            params.y = placement.y
+        if (abs(placement.x - currentCardX) > deadzone || abs(placement.y - currentCardY) > deadzone) {
+            applyCardPosition(card, params, placement.x, placement.y, viewport)
             markSelfWindowMutation()
-            runCatching { windowManager.updateViewLayout(root, params) }
+            runCatching { windowManager.updateViewLayout(winRoot, params) }
         }
     }
 
     fun relayout() {
-        val v = rootView ?: return
+        val winRoot = windowRootView ?: return
+        val card = cardView ?: return
         val p = windowParams ?: return
-        if (v.isAttachedToWindow) {
-            v.measure(
+        if (winRoot.isAttachedToWindow) {
+            card.measure(
                 View.MeasureSpec.makeMeasureSpec(activeMaxWidthPx, View.MeasureSpec.AT_MOST),
                 View.MeasureSpec.makeMeasureSpec(lastViewport.screenHeight, View.MeasureSpec.AT_MOST)
             )
             val placement = PopupPositioner.place(
                 target = lastAnchorTarget,
                 viewport = lastViewport,
-                popupWidth = v.measuredWidth,
-                popupHeight = v.measuredHeight,
+                popupWidth = card.measuredWidth,
+                popupHeight = card.measuredHeight,
                 density = density,
                 isDrawerOpen = currentMode != PopupMode.Bar
             )
-            p.x = placement.x
-            p.y = placement.y
-            v.requestLayout()
-            markSelfWindowMutation()
-            runCatching { windowManager.updateViewLayout(v, p) }
+            applyCardPosition(card, p, placement.x, placement.y, lastViewport)
+            card.requestLayout()
+            if (!useBackdropMode) {
+                markSelfWindowMutation()
+                runCatching { windowManager.updateViewLayout(winRoot, p) }
+            }
         }
     }
 
     fun hide() {
         handler.removeCallbacks(safetyTimeoutRunnable)
-        rootView?.let { v ->
+        windowRootView?.let { v ->
             pendingPreDrawListener?.let { l ->
                 if (v.viewTreeObserver.isAlive) v.viewTreeObserver.removeOnPreDrawListener(l)
             }
             pendingPreDrawListener = null
+            cardView?.animate()?.cancel()
             v.animate().cancel()
             v.visibility = View.GONE
             runCatching { windowManager.removeView(v) }
                 .onFailure { runCatching { windowManager.removeViewImmediate(v) } }
         }
-        rootView = null
+        windowRootView = null
+        cardView = null
         cardBgDrawable = null
         windowParams = null
         barContainer = null
         drawerScroll = null
         drawerContainer = null
+        useBackdropMode = false
         currentMode = PopupMode.Bar
+    }
+
+    private fun applyCardPosition(
+        card: LinearLayout,
+        params: WindowManager.LayoutParams,
+        x: Int,
+        y: Int,
+        viewport: Viewport
+    ) {
+        currentCardX = x
+        currentCardY = y
+        if (useBackdropMode) {
+            params.x = 0
+            params.y = 0
+            params.width = viewport.screenWidth
+            params.height = viewport.screenHeight
+            val lp = (card.layoutParams as? FrameLayout.LayoutParams)
+                ?: FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.START
+                )
+            lp.leftMargin = x
+            lp.topMargin = y
+            card.layoutParams = lp
+        } else {
+            params.x = x
+            params.y = y
+        }
     }
 
     private fun resetSafetyTimer(isDrawerOpen: Boolean) {
@@ -307,23 +355,44 @@ class OverlayWindowController(
         handler.postDelayed(safetyTimeoutRunnable, timeoutMs)
     }
 
-    private fun createWindowViews(viewport: Viewport, mode: PopupMode) {
+    private fun createWindowViews(viewport: Viewport, mode: PopupMode, backdrop: Boolean) {
         val isDrawerOpen = mode != PopupMode.Bar
         val pal = PrefsStore.resolvePalette(context)
         activeMaxWidthPx = maxWidthForMode(mode, viewport.screenWidth)
+        useBackdropMode = backdrop
 
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            windowAnimations = 0
+        val params = if (backdrop) {
+            WindowManager.LayoutParams(
+                viewport.screenWidth,
+                viewport.screenHeight,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                windowAnimations = 0
+                if (Build.VERSION.SDK_INT >= 28) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+        } else {
+            WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                windowAnimations = 0
+            }
         }
 
         val bg = GradientDrawable().apply {
@@ -336,19 +405,19 @@ class OverlayWindowController(
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 super.onMeasure(MeasureSpec.makeMeasureSpec(activeMaxWidthPx, MeasureSpec.AT_MOST), heightMeasureSpec)
             }
+
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                if (ev.action == MotionEvent.ACTION_OUTSIDE || ev.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                    onOutsideTouch()
+                    return true
+                }
+                return super.dispatchTouchEvent(ev)
+            }
         }.apply {
             orientation = LinearLayout.VERTICAL
             elevation = dpF(6f)
             clipToOutline = true
             background = bg
-            setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_OUTSIDE || event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
-                    onOutsideTouch()
-                    true
-                } else {
-                    false
-                }
-            }
         }
 
         val bar = LinearLayout(context).apply {
@@ -372,7 +441,38 @@ class OverlayWindowController(
         scroll.addView(drawer)
         card.addView(scroll)
 
-        rootView = card
+        val rootForWindow: View = if (backdrop) {
+            object : FrameLayout(context) {
+                override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                    if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                        val x = ev.x
+                        val y = ev.y
+                        if (x < card.left || x > card.right || y < card.top || y > card.bottom) {
+                            onOutsideTouch()
+                            return true
+                        }
+                    } else if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                        onOutsideTouch()
+                        return true
+                    }
+                    return super.dispatchTouchEvent(ev)
+                }
+            }.apply {
+                addView(
+                    card,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP or Gravity.START
+                    )
+                )
+            }
+        } else {
+            card
+        }
+
+        windowRootView = rootForWindow
+        cardView = card
         cardBgDrawable = bg
         windowParams = params
         barContainer = bar

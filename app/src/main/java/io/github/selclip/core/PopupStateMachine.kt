@@ -40,7 +40,8 @@ sealed class PopupState {
         val shownAtMs: Long,
         val lastUpdateAtMs: Long,
         val toolbarSig: String,
-        val manuallyDragged: Boolean
+        val manuallyDragged: Boolean,
+        val isStandalone: Boolean = false
     ) : PopupState()
 }
 
@@ -54,6 +55,7 @@ sealed class PopupEvent {
         val isEditable: Boolean,
         val toolbarSig: String = "",
         val openExpanded: Boolean = false,
+        val isStandalone: Boolean = false,
         val nowMs: Long
     ) : PopupEvent()
 
@@ -100,15 +102,15 @@ data class TransitionResult(
 class PopupStateMachine {
 
     companion object {
-        const val OUTSIDE_TOUCH_GRACE_MS = 180L
-        const val EXTERNAL_CLICK_GRACE_MS = 220L
+        const val OUTSIDE_TOUCH_GRACE_MS = 90L
+        const val EXTERNAL_CLICK_GRACE_MS = 100L
         const val TOOLBAR_GONE_GRACE_MS = 220L
         const val SCROLL_DISMISS_GRACE_MS = 220L
         const val APP_SWITCH_GRACE_MS = 320L
         const val SELECTION_CLEAR_GRACE_MS = 260L
         const val DUPLICATE_SUPPRESS_MS = 220L
-        const val PROBE_FIRST_DELAY_MS = 30L
-        const val PROBE_SECOND_DELAY_MS = 110L
+        const val PROBE_FIRST_DELAY_MS = 55L
+        const val PROBE_SECOND_DELAY_MS = 160L
     }
 
     var state: PopupState = PopupState.Hidden
@@ -181,7 +183,8 @@ class PopupStateMachine {
                 isEditable = ev.isEditable,
                 mode = nextMode,
                 lastUpdateAtMs = ev.nowMs,
-                toolbarSig = ev.toolbarSig.ifEmpty { cur.toolbarSig }
+                toolbarSig = ev.toolbarSig.ifEmpty { cur.toolbarSig },
+                isStandalone = ev.isStandalone
             )
             val effects = buildList {
                 add(PopupEffect.CancelProbes)
@@ -200,7 +203,8 @@ class PopupStateMachine {
             shownAtMs = ev.nowMs,
             lastUpdateAtMs = ev.nowMs,
             toolbarSig = ev.toolbarSig,
-            manuallyDragged = false
+            manuallyDragged = false,
+            isStandalone = ev.isStandalone
         )
         if (ev.toolbarSig.isNotEmpty()) {
             lastProbeToolbarSig = ev.toolbarSig
@@ -251,15 +255,15 @@ class PopupStateMachine {
 
     /**
      * Lockstep dismissal with Android's native toolbar:
-     * When the native toolbar disappears while Sel is showing in Bar mode (after the brief grace
-     * window), Sel dismisses immediately so both popups disappear together and Sel never gets stuck!
+     * When the native toolbar disappears while Sel is showing in docked Bar mode (not standalone
+     * ProcessText mode), Sel dismisses immediately so both popups disappear together.
      */
     private fun handleToolbarGone(cur: PopupState, ev: PopupEvent.ToolbarGone): TransitionResult {
         resetToolbarMemory()
         return when (cur) {
             is PopupState.PendingProbe -> TransitionResult(PopupState.Hidden, listOf(PopupEffect.CancelProbes))
             is PopupState.Visible -> {
-                if (cur.mode == PopupMode.Bar && (ev.nowMs - cur.shownAtMs) >= TOOLBAR_GONE_GRACE_MS) {
+                if (!cur.isStandalone && cur.mode == PopupMode.Bar && (ev.nowMs - cur.shownAtMs) >= TOOLBAR_GONE_GRACE_MS) {
                     dismissIfActive(cur)
                 } else {
                     TransitionResult(cur, emptyList())
@@ -274,7 +278,7 @@ class PopupStateMachine {
         ev: PopupEvent.SelectionCleared
     ): TransitionResult {
         if (cur !is PopupState.Visible) return TransitionResult(cur, emptyList())
-        if (cur.mode != PopupMode.Bar) return TransitionResult(cur, emptyList())
+        if (cur.isStandalone || cur.mode != PopupMode.Bar) return TransitionResult(cur, emptyList())
         if (ev.nowMs - cur.shownAtMs < SELECTION_CLEAR_GRACE_MS) {
             return TransitionResult(cur, emptyList())
         }

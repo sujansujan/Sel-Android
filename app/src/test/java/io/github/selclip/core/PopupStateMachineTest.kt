@@ -30,11 +30,11 @@ class PopupStateMachineTest {
         val sm = PopupStateMachine()
         sm.onEvent(PopupEvent.SelectionDetected("hello", "com.app", false, nowMs = 1000L))
 
-        val early = sm.onEvent(PopupEvent.OutsideTouch(nowMs = 1120L))
+        val early = sm.onEvent(PopupEvent.OutsideTouch(nowMs = 1050L))
         assertTrue(early.state is PopupState.Visible)
         assertTrue(early.effects.isEmpty())
 
-        val late = sm.onEvent(PopupEvent.OutsideTouch(nowMs = 1300L))
+        val late = sm.onEvent(PopupEvent.OutsideTouch(nowMs = 1150L))
         assertEquals(PopupState.Hidden, late.state)
         assertTrue(late.effects.contains(PopupEffect.HideOverlay))
         assertEquals("", sm.lastProbeToolbarSig)
@@ -119,5 +119,28 @@ class PopupStateMachineTest {
         val clicked = sm.onEvent(PopupEvent.ExternalViewClicked(nowMs = 2300L))
         assertEquals(PopupState.Hidden, clicked.state)
         assertTrue(clicked.effects.contains(PopupEffect.HideOverlay))
+    }
+
+    @Test
+    fun standaloneProcessTextPopup_ignoresToolbarGoneButDismissesImmediatelyOnOutsideTouch() {
+        val sm = PopupStateMachine()
+        sm.onEvent(
+            PopupEvent.SelectionDetected(
+                text = "browser quote",
+                sourcePackage = "com.android.chrome",
+                isEditable = false,
+                isStandalone = true,
+                nowMs = 1000L
+            )
+        )
+
+        // Chrome closing its native menu after launching ProcessText must NOT blink/kill Sel
+        val afterToolbarGone = sm.onEvent(PopupEvent.ToolbarGone(nowMs = 1400L))
+        assertTrue(afterToolbarGone.state is PopupState.Visible)
+
+        // Touching anywhere outside dismisses immediately
+        val dismissed = sm.onEvent(PopupEvent.OutsideTouch(nowMs = 1500L))
+        assertEquals(PopupState.Hidden, dismissed.state)
+        assertTrue(dismissed.effects.contains(PopupEffect.HideOverlay))
     }
 }

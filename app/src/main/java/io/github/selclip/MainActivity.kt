@@ -106,7 +106,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(10))
         }
         topHeader.addView(UiKit.text(this, "Sel", 20f, p.fgPrimaryInt, bold = true))
-        topHeader.addView(UiKit.text(this, "  v4.5.1", 12.5f, p.fgMutedInt).apply {
+        topHeader.addView(UiKit.text(this, "  v4.6", 12.5f, p.fgMutedInt).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
 

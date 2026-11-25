@@ -21,7 +21,6 @@ import io.github.selclip.data.ToolSpec
 class ActionExecutor(
     private val context: Context,
     private val clipboardManager: ClipboardManager,
-    private val onMarkInternalCopy: () -> Unit,
     private val onSwitchMode: (PopupMode) -> Unit,
     private val onDismiss: () -> Unit
 ) {
@@ -191,14 +190,12 @@ class ActionExecutor(
     }
 
     fun copyPlain(text: String, toastMsg: String? = null) {
-        onMarkInternalCopy()
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", text))
         val preview = text.replace("\n", " ").let { if (it.length > 28) it.take(27) + "…" else it }
         Toast.makeText(context, toastMsg ?: "Copied: $preview", Toast.LENGTH_SHORT).show()
     }
 
     fun applyResult(newText: String, editableNode: AccessibilityNodeInfo?) {
-        onMarkInternalCopy()
         clipboardManager.setPrimaryClip(ClipData.newPlainText("sel", newText))
 
         var replaced = false

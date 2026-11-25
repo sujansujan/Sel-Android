@@ -27,7 +27,6 @@ import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ToolSpec
 import io.github.selclip.overlay.DrawerRenderer
 import io.github.selclip.overlay.OverlayWindowController
-import io.github.selclip.service.ClipboardBridge
 import io.github.selclip.service.ScreenSnapshot
 import io.github.selclip.service.SelectionResolver
 import java.util.concurrent.ExecutorService
@@ -35,16 +34,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Lean, strictly event-driven AccessibilityService bound in lockstep to Android's native popup:
+ * Lean, strictly event-driven AccessibilityService with ZERO background clipboard access:
  *
- * - Zero mid-fade teleport: when a direct text-selection event arrives ~20-40ms before Android's
- *   native FloatingToolbarPopup, briefly buffers it (max 55ms) and spawns ONCE in the exact frame
- *   Android's toolbar appears at the exact final docked position.
- * - Zero Frame-1 main-thread freeze: suppresses self-echo `TYPE_WINDOWS_CHANGED` events, passes
- *   pre-captured `ScreenSnapshot` straight into rendering (1× IPC instead of 3-4×), and runs
- *   multi-window browser spatial scans off the main UI thread on a lazy daemon worker.
- * - Multi-layer anti-stuck guarantees: live ToolbarGone lockstep, O(1) ExternalViewClicked,
- *   OutsideTouch, Scrolled, AppSwitched, Back/Home/SystemUI, drawer × button, and safety timeout.
+ * - NEVER reads or writes the system clipboard during selection detection -> 0% clipboard
+ *   pollution, 0% "Sel pasted from clipboard" toasts, 0% Chrome toolbar blinking!
+ * - Lockstep native-toolbar binding: buffers direct selections while the finger/Magnifier is
+ *   down and spawns ONCE in 0ms the instant Android's native toolbar opens.
+ * - Rock-solid standalone mode for `ACTION_PROCESS_TEXT` (e.g. static webpages in Chrome/Firefox):
+ *   immune to `ToolbarGone` blinking and dismissed instantaneously by touching anywhere outside.
  */
 class SelAccessibilityService : AccessibilityService() {
 
@@ -52,8 +49,6 @@ class SelAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: SelAccessibilityService? = null
 
-        // Wait long enough for a real human long-press + Magnifier to finish before ever
-        // falling back to non-toolbar bounds; spawns in 0ms the instant Android's toolbar appears!
         private const val DIRECT_TOOLBAR_WAIT_MS = 420L
         private const val DIRECT_MAGNIFIER_RECHECK_MS = 260L
     }
@@ -78,7 +73,6 @@ class SelAccessibilityService : AccessibilityService() {
     private lateinit var windowManager: WindowManager
     private lateinit var clipboardManager: ClipboardManager
     private lateinit var selectionResolver: SelectionResolver
-    private lateinit var clipboardBridge: ClipboardBridge
     private lateinit var overlayController: OverlayWindowController
     private lateinit var actionExecutor: ActionExecutor
 
@@ -96,9 +90,6 @@ class SelAccessibilityService : AccessibilityService() {
     private var pendingProbeSource: AccessibilityNodeInfo? = null
     private var pendingProbePkg: String = ""
     private var pendingProbeSig: String = ""
-
-    private var lastFallbackCopyMs: Long = 0L
-    private var lastFallbackCopySig: String = ""
 
     private fun getOrCreateScanExecutor(): ExecutorService {
         scanExecutor?.let { if (!it.isShutdown) return it }
@@ -126,21 +117,13 @@ class SelAccessibilityService : AccessibilityService() {
             onSafetyTimeout = { dispatch(PopupEvent.Dismiss) }
         )
 
-        clipboardBridge = ClipboardBridge(
-            context = this,
-            clipboardManager = clipboardManager,
-            windowManager = windowManager
-        )
-
         actionExecutor = ActionExecutor(
             context = this,
             clipboardManager = clipboardManager,
-            onMarkInternalCopy = { clipboardBridge.markInternalCopy() },
             onSwitchMode = { mode -> dispatch(PopupEvent.SwitchMode(mode, now())) },
             onDismiss = { dispatch(PopupEvent.Dismiss) }
         )
 
-        // Pre-warm RAM favicon cache off the main thread for bar portals (0ms UI cost!)
         val warmUrls = buildList {
             PrefsStore.resolveDefaultSearchEngine(this@SelAccessibilityService).customTarget?.let { add(it) }
             PrefsStore.getPinnedToolSpecs(this@SelAccessibilityService).mapNotNullTo(this) { it.customTarget }
@@ -181,7 +164,6 @@ class SelAccessibilityService : AccessibilityService() {
         cancelProbes()
         scanExecutor?.shutdownNow()
         scanExecutor = null
-        if (::clipboardBridge.isInitialized) clipboardBridge.stop()
         if (::actionExecutor.isInitialized) actionExecutor.shutdown()
         if (::overlayController.isInitialized) overlayController.hide()
         currentNode = null
@@ -195,10 +177,23 @@ class SelAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun showFromExternalText(text: String, openExpanded: Boolean = false) {
-        handler.post {
+    /**
+     * Entry point from `ACTION_PROCESS_TEXT` ("Sel" in Chrome/Firefox/OS selection menu).
+     * Uses a 30ms settle so `ProcessTextActivity.finish()` completes first, spawns in standalone
+     * mode (immune to `ToolbarGone` blinking) at the cached toolbar location, and attaches a
+     * full-screen transparent touch-dismiss layer so tapping anywhere outside dismisses it.
+     */
+    fun showFromExternalText(
+        text: String,
+        openExpanded: Boolean = false,
+        isStandalone: Boolean = true
+    ) {
+        val delayMs = if (isStandalone) 30L else 0L
+        handler.postDelayed({
             cancelPendingDirectSelection()
-            val clean = SelectionFilter.sanitizeCandidate(text) ?: return@post
+            cancelWindowsCheck()
+            cancelProbes()
+            val clean = SelectionFilter.sanitizeCandidate(text) ?: return@postDelayed
             currentNode = selectionResolver.findFocusedNode()
             val candidateBounds = currentNode?.let { n ->
                 val r = Rect()
@@ -209,19 +204,21 @@ class SelAccessibilityService : AccessibilityService() {
                 lastSelectionBounds = candidateBounds
                 lastSelectionBoundsMs = now()
             }
+            // Reuse recently cached native toolbar coordinates so Sel spawns right where Chrome's popup was!
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = true)
             dispatch(
                 event = PopupEvent.SelectionDetected(
                     text = clean,
                     sourcePackage = activePackage,
                     isEditable = currentNode?.isEditable == true,
-                    toolbarSig = pendingProbeSig.ifEmpty { snap.toolbar?.signature.orEmpty() },
+                    toolbarSig = snap.toolbar?.signature.orEmpty(),
                     openExpanded = openExpanded,
+                    isStandalone = isStandalone,
                     nowMs = now()
                 ),
                 preCapturedSnap = snap
             )
-        }
+        }, delayMs)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -255,7 +252,7 @@ class SelAccessibilityService : AccessibilityService() {
         val cls = event.className?.toString().orEmpty()
 
         // Immediate dismissal on Home/Launcher switch, SystemUI (Recents/Shade/Lockscreen), or App Switch.
-        // IMPORTANT: Never treat a transient PopupWindow (Cut/Copy/Share) inside a launcher search bar as Home!
+        // Never treat a transient PopupWindow (Cut/Copy/Share) inside a launcher search bar as Home!
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
                 val isTransient = SelectionFilter.isTransientPopupClass(cls)
@@ -291,12 +288,11 @@ class SelAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SELECTED -> handleDirectSelectionEvent(event, pkg)
 
-            // Long-press fires WHILE the user's finger is still down (Magnifier active).
+            // Long-press fires while user's finger is still down (Magnifier active).
             // Reset memory and remember source node ONLY — never spawn blindly before finger-up!
             AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
                 if (pkg != packageName && !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)) {
                     stateMachine.resetToolbarMemory()
-                    lastFallbackCopySig = ""
                     pendingProbeSource = event.source
                     pendingProbePkg = activePackage.ifEmpty { pkg }
                     pendingProbeSig = ""
@@ -305,14 +301,12 @@ class SelAccessibilityService : AccessibilityService() {
 
             // Ignore self-triggered window add/update echoes (~16-50ms) so Frame 1 NEVER stalls!
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                if (clipboardBridge.isProbeOrSettling) return
                 if (overlayController.isRecentSelfWindowMutation(90L)) return
                 if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return
                 syncWithNativeToolbarNow(scheduleFollowUpIfMissing = true)
             }
 
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                if (clipboardBridge.isProbeOrSettling) return
                 if (overlayController.isRecentSelfWindowMutation(90L)) return
                 if (pkg != packageName &&
                     !SelectionFilter.isImePackage(pkg) &&
@@ -323,10 +317,9 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (clipboardBridge.isProbeOrSettling) return
                 if (overlayController.isRecentSelfWindowMutation(180L)) return
                 val cur = stateMachine.state
-                if (cur is PopupState.Visible && cur.mode != PopupMode.Bar) return
+                if (cur is PopupState.Visible && (cur.isStandalone || cur.mode != PopupMode.Bar)) return
                 if (pkg.isNotEmpty() &&
                     pkg != packageName &&
                     !SelectionFilter.isSystemUiOrFramework(pkg) &&
@@ -342,18 +335,19 @@ class SelAccessibilityService : AccessibilityService() {
     /**
      * Binds Sel directly to Android's native FloatingToolbarPopup in real time:
      * - Native toolbar appeared + buffered direct selection ready -> 0ms instant lockstep spawn!
-     * - Native toolbar appeared (browser/WebView) -> async off-main-thread spatial tree scan!
+     * - Native toolbar appeared (e.g. WebView/browser input) -> async off-main-thread tree scan!
      * - Native toolbar moved -> smoothly slides Sel underneath it (ignoring micro-wobble)!
-     * - Native toolbar vanished -> instant lockstep dismissal!
+     * - Native toolbar vanished -> instant lockstep dismissal (never kills standalone ProcessText)!
      */
     private fun syncWithNativeToolbarNow(scheduleFollowUpIfMissing: Boolean) {
+        val cur = stateMachine.state
+        if (cur is PopupState.Visible && cur.isStandalone) return
+
         val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
         val toolbar = snap.toolbar
 
         if (toolbar == null) {
-            selectionResolver.clearCachedToolbar()
-            lastFallbackCopySig = ""
-            if (stateMachine.state is PopupState.Visible || stateMachine.state is PopupState.PendingProbe) {
+            if (cur is PopupState.Visible || cur is PopupState.PendingProbe) {
                 scanGeneration.incrementAndGet()
                 dispatch(PopupEvent.ToolbarGone(now()))
             }
@@ -365,8 +359,7 @@ class SelAccessibilityService : AccessibilityService() {
 
         cancelWindowsCheck()
 
-        // Lockstep Fast-Path: if a direct text selection arrived earlier while the user was holding
-        // their finger down (Magnifier open), consume it in 0ms the instant Android's toolbar opens!
+        // Lockstep Fast-Path: consume buffered direct selection in 0ms on the exact frame toolbar opens!
         val buffered = pendingDirectSelection
         if (buffered != null && (now() - buffered.capturedAtMs) < 2500L) {
             cancelPendingDirectSelection()
@@ -379,6 +372,7 @@ class SelAccessibilityService : AccessibilityService() {
                     sourcePackage = buffered.sourcePackage,
                     isEditable = buffered.isEditable,
                     toolbarSig = toolbar.signature,
+                    isStandalone = false,
                     nowMs = now()
                 ),
                 preCapturedSnap = snap
@@ -386,7 +380,6 @@ class SelAccessibilityService : AccessibilityService() {
             return
         }
 
-        val cur = stateMachine.state
         if (cur is PopupState.Visible) {
             if (cur.mode == PopupMode.Bar) {
                 val anchor = PopupPositioner.computeAnchorTarget(
@@ -400,20 +393,17 @@ class SelAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (toolbar.signature == lastFallbackCopySig) return
-
-        // Browser / WebView Fast-Path: launch async spatial tree scan off the main UI thread!
+        // Pure accessibility-only spatial scan off the main thread (ZERO clipboard reads/writes!)
         pendingProbeSource = null
         pendingProbePkg = activePackage
         pendingProbeSig = toolbar.signature
-        launchAsyncSpatialProbe(snap = snap, allowFallbackScheduleOnMiss = true)
+        launchAsyncSpatialProbe(snap = snap, allowRetryScheduleOnMiss = true)
     }
 
     private fun scheduleShortTrailingCheck() {
         cancelWindowsCheck()
         val r = Runnable {
             pendingWindowsCheck = null
-            if (clipboardBridge.isProbeOrSettling) return@Runnable
             if (overlayController.isRecentSelfWindowMutation(90L)) return@Runnable
             if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return@Runnable
             syncWithNativeToolbarNow(scheduleFollowUpIfMissing = false)
@@ -443,7 +433,6 @@ class SelAccessibilityService : AccessibilityService() {
                 return@Runnable
             }
             val freshSnap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-            // If Android's Text Magnifier loupe is still open, user's finger is still pressed down!
             if (freshSnap.toolbar == null &&
                 freshSnap.hasMagnifierOrTransientFloating &&
                 (now() - curPending.capturedAtMs) < 2200L
@@ -458,6 +447,7 @@ class SelAccessibilityService : AccessibilityService() {
                     sourcePackage = curPending.sourcePackage,
                     isEditable = curPending.isEditable,
                     toolbarSig = freshSnap.toolbar?.signature.orEmpty(),
+                    isStandalone = false,
                     nowMs = now()
                 ),
                 preCapturedSnap = freshSnap
@@ -481,8 +471,6 @@ class SelAccessibilityService : AccessibilityService() {
             val isEditable = resolved.node?.isEditable == true
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
 
-            // If toolbar is ALREADY present OR popup is already visible (user dragging handles),
-            // render IMMEDIATELY on this exact frame using the already-captured snapshot!
             if (snap.toolbar != null || stateMachine.state is PopupState.Visible) {
                 cancelPendingDirectSelection()
                 dispatch(
@@ -491,6 +479,7 @@ class SelAccessibilityService : AccessibilityService() {
                         sourcePackage = effPkg,
                         isEditable = isEditable,
                         toolbarSig = snap.toolbar?.signature.orEmpty(),
+                        isStandalone = false,
                         nowMs = now()
                     ),
                     preCapturedSnap = snap
@@ -498,12 +487,8 @@ class SelAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // Otherwise, the user is almost certainly still holding their finger down (Magnifier
-            // open) and Android's native FloatingToolbarPopup will open the instant they lift!
-            // Buffer cleanly so Sel NEVER flashes prematurely over the toolbar zone, spawning in
-            // 0ms lockstep when the native toolbar appears (or after 420ms if an app has none).
             cancelPendingDirectSelection()
-            val pending = PendingDirectSelection(
+            pendingDirectSelection = PendingDirectSelection(
                 text = resolved.text,
                 sourcePackage = effPkg,
                 isEditable = isEditable,
@@ -511,7 +496,6 @@ class SelAccessibilityService : AccessibilityService() {
                 bounds = resolved.bounds,
                 capturedAtMs = now()
             )
-            pendingDirectSelection = pending
             scheduleDirectFallbackFlush(DIRECT_TOOLBAR_WAIT_MS)
             return
         }
@@ -548,7 +532,6 @@ class SelAccessibilityService : AccessibilityService() {
 
     private fun requestProbe(source: AccessibilityNodeInfo?, pkg: String, toolbarSig: String) {
         if (stateMachine.state is PopupState.Visible) return
-        if (clipboardBridge.isProbeOrSettling) return
         pendingProbeSource = source
         pendingProbePkg = pkg
         pendingProbeSig = toolbarSig
@@ -556,16 +539,14 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Runs the potentially heavy multi-window spatial DOM scan on a single lazy background
-     * daemon thread so the main UI thread & GPU animation loop NEVER stall for even 1 frame!
+     * Pure accessibility spatial DOM scan on a single lazy daemon thread.
+     * NEVER touches the clipboard and NEVER clicks any button in the target app!
      */
     private fun launchAsyncSpatialProbe(
         snap: ScreenSnapshot,
-        allowFallbackScheduleOnMiss: Boolean,
-        allowClipboardFallbackOnMiss: Boolean = false
+        allowRetryScheduleOnMiss: Boolean
     ) {
         if (stateMachine.state is PopupState.Visible) return
-        if (clipboardBridge.isProbeOrSettling) return
 
         val gen = scanGeneration.incrementAndGet()
         val preferredRoot = pendingProbeSource
@@ -585,7 +566,6 @@ class SelAccessibilityService : AccessibilityService() {
             handler.post {
                 if (gen != scanGeneration.get()) return@post
                 if (stateMachine.state is PopupState.Visible) return@post
-                if (clipboardBridge.isProbeOrSettling) return@post
                 if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return@post
 
                 if (treeHit != null) {
@@ -598,6 +578,7 @@ class SelAccessibilityService : AccessibilityService() {
                             sourcePackage = activePackage.ifEmpty { pkgSnapshot },
                             isEditable = treeHit.node?.isEditable == true,
                             toolbarSig = sigSnapshot,
+                            isStandalone = false,
                             nowMs = now()
                         ),
                         preCapturedSnap = snap
@@ -605,33 +586,11 @@ class SelAccessibilityService : AccessibilityService() {
                     return@post
                 }
 
-                if (allowClipboardFallbackOnMiss && toolbar != null) {
-                    executeClipboardFallback(toolbar)
-                } else if (allowFallbackScheduleOnMiss) {
+                if (allowRetryScheduleOnMiss) {
                     requestProbe(preferredRoot, pkgSnapshot, sigSnapshot)
                 }
             }
         }
-    }
-
-    private fun executeClipboardFallback(activeToolbar: io.github.selclip.service.ToolbarHit): Boolean {
-        val tNow = now()
-        if (tNow - lastFallbackCopyMs < 1800L) return false
-
-        val effSig = pendingProbeSig.ifEmpty { activeToolbar.signature }
-        if (effSig.isNotEmpty() && effSig == lastFallbackCopySig) return true
-
-        lastFallbackCopyMs = tNow
-        lastFallbackCopySig = effSig
-        pendingProbeSig = effSig
-        captureCandidateNodeBounds(pendingProbeSource)
-        overlayController.markSelfWindowMutation()
-
-        // Tier 2 (Last Resort): Single-shot copy with immediate previous-clipboard restoration
-        return clipboardBridge.captureFallbackSelection(
-            performCopy = { selectionResolver.performBestCopyAction(pendingProbeSource, activeToolbar) },
-            onCaptured = { text -> showFromExternalText(text) }
-        )
     }
 
     private fun dispatch(event: PopupEvent, preCapturedSnap: ScreenSnapshot? = null) {
@@ -643,9 +602,7 @@ class SelAccessibilityService : AccessibilityService() {
                     scanGeneration.incrementAndGet()
                     cancelPendingDirectSelection()
                     cancelWindowsCheck()
-                    lastFallbackCopySig = ""
                     overlayController.hide()
-                    selectionResolver.clearCachedToolbar()
                 }
                 is PopupEffect.ScheduleProbe -> scheduleProbeRunnables(effect.firstDelayMs, effect.secondDelayMs)
                 PopupEffect.CancelProbes -> cancelProbes()
@@ -657,18 +614,18 @@ class SelAccessibilityService : AccessibilityService() {
     private fun scheduleProbeRunnables(firstDelayMs: Long, secondDelayMs: Long) {
         cancelProbes()
         val first = Runnable {
-            if (stateMachine.state is PopupState.Visible || clipboardBridge.isProbeOrSettling) return@Runnable
+            if (stateMachine.state is PopupState.Visible) return@Runnable
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-            // Never spawn blindly from a delayed probe while no native toolbar exists yet (finger still down!)
             if (snap.toolbar != null) {
-                launchAsyncSpatialProbe(snap = snap, allowFallbackScheduleOnMiss = false, allowClipboardFallbackOnMiss = false)
+                launchAsyncSpatialProbe(snap = snap, allowRetryScheduleOnMiss = false)
             }
 
+            // One delayed retry for lazy WebView accessibility trees waking up (~160ms) — still ZERO clipboard!
             val second = Runnable {
-                if (stateMachine.state is PopupState.Visible || clipboardBridge.isProbeOrSettling) return@Runnable
+                if (stateMachine.state is PopupState.Visible) return@Runnable
                 val snap2 = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
                 if (snap2.toolbar != null) {
-                    launchAsyncSpatialProbe(snap = snap2, allowFallbackScheduleOnMiss = false, allowClipboardFallbackOnMiss = true)
+                    launchAsyncSpatialProbe(snap = snap2, allowRetryScheduleOnMiss = false)
                 }
             }
             pendingProbe2 = second
@@ -692,7 +649,7 @@ class SelAccessibilityService : AccessibilityService() {
     ) {
         val snap = preCapturedSnap ?: selectionResolver.captureScreenSnapshot(
             force = isNewSession,
-            allowStaleToolbar = !isNewSession
+            allowStaleToolbar = visible.isStandalone || !isNewSession
         )
         val freshBounds = lastSelectionBounds?.takeIf { now() - lastSelectionBoundsMs < 2600L }
         val anchorTarget = PopupPositioner.computeAnchorTarget(
@@ -730,6 +687,7 @@ class SelAccessibilityService : AccessibilityService() {
             viewport = snap.viewport,
             mode = visible.mode,
             isNewSession = isNewSession,
+            isStandalone = visible.isStandalone,
             iconsOnly = iconsOnly,
             actions = barActions,
             onActionClick = { act -> actionExecutor.executePopAction(act, visible.text, currentNode) },
