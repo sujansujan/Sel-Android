@@ -15,6 +15,7 @@ import io.github.selclip.core.Box
 import io.github.selclip.core.SelectionFilter
 import io.github.selclip.core.Viewport
 import java.util.ArrayDeque
+import java.util.PriorityQueue
 import kotlin.math.abs
 
 data class ResolvedSelection(
@@ -36,14 +37,15 @@ data class ScreenSnapshot(
 )
 
 /**
- * Cross-app selection, native floating toolbar, and browser WebView/GeckoView resolver.
+ * Cross-app selection, native floating toolbar, and spatially-pruned browser WebView resolver.
  *
- * Key stability guarantees:
- * - Toolbar signature is based ONLY on quantized screen coordinates (never windowId!), so Chrome
- *   recreating its FloatingToolbarPopup after a brief focus change never causes a re-trigger loop.
- * - Inspects ALL floating windows (including TYPE_SYSTEM and pkg="android", excluding status/nav
- *   bars by geometry) so Chrome, Brave, Edge, Firefox, and OEM toolbars are always detected on
- *   the very first selection.
+ * Key upgrades:
+ * - Scans ALL visible TYPE_APPLICATION windows (never tricked when rootInActiveWindow points to
+ *   Android's FloatingToolbarPopup window instead of Chrome's webpage window!).
+ * - Spatially prioritizes DOM subtrees closest to the floating toolbar's Y position and skips
+ *   off-screen header/nav/footer subtrees so large Chrome pages resolve directly from the
+ *   accessibility tree with ZERO clipboard pollution.
+ * - Wakes Chromium's lazy web accessibility tree on the very first selection.
  */
 class SelectionResolver(
     private val service: AccessibilityService,
@@ -109,7 +111,6 @@ class SelectionResolver(
 
         val windows = runCatching { service.windows }.getOrNull()
         if (!windows.isNullOrEmpty()) {
-            // Pass 1: Detect live IME top
             for (w in windows) {
                 if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                     val r = Rect()
@@ -123,7 +124,6 @@ class SelectionResolver(
             val viewport = Viewport(realW, realH, topInset, bottomInset, imeTop)
             val visBottom = viewport.visibleBottom
 
-            // Pass 2: Prioritize small floating windows (Android FloatingToolbarPopup)
             val ordered = windows.sortedWith(
                 compareByDescending<AccessibilityWindowInfo> {
                     val r = Rect()
@@ -205,7 +205,6 @@ class SelectionResolver(
         val buttons = mutableListOf<Rect>()
         var copyBtn: AccessibilityNodeInfo? = null
 
-        // Check 1: Standard Android FloatingToolbar view IDs
         for (idName in toolbarIdHints) {
             val nodes = runCatching { root.findAccessibilityNodeInfosByViewId(idName) }.getOrNull() ?: continue
             for (n in nodes) {
@@ -221,7 +220,6 @@ class SelectionResolver(
             }
         }
 
-        // Check 2: Keyword match for Copy / Cut / Select all / Share / Web search / Translate
         if (buttons.isEmpty()) {
             for (kw in toolbarKeywords) {
                 val matches = runCatching { root.findAccessibilityNodeInfosByText(kw) }.getOrNull() ?: continue
@@ -244,7 +242,6 @@ class SelectionResolver(
             }
         }
 
-        // Check 3: Small floating popup window heuristic
         if (buttons.isEmpty() && isFloatingWindow) {
             val wr = Rect()
             root.getBoundsInScreen(wr)
@@ -275,7 +272,6 @@ class SelectionResolver(
             unionToolbarRow(buttons) ?: return null
         }
 
-        // Position-only signature (NO windowId!) so recreating the native popup in the same spot never loops!
         val q = dp(18).coerceAtLeast(24)
         val sig = "${finalBounds.left / q}_${finalBounds.top / q}_${finalBounds.right / q}_${finalBounds.bottom / q}"
         return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn)
@@ -376,7 +372,7 @@ class SelectionResolver(
         }
 
         if (source != null) {
-            findSelectionInTreeBfs(source, maxNodes = 100, maxDepth = 16)?.let { return it }
+            findSelectionSpatial(source, toolbarBounds = null, maxNodes = 140, maxDepth = 18)?.let { return it }
         }
         return null
     }
@@ -407,30 +403,138 @@ class SelectionResolver(
         return null
     }
 
-    fun findSelectionInTreeBfs(
-        root: AccessibilityNodeInfo?,
-        maxNodes: Int = 260,
-        maxDepth: Int = 24
+    /**
+     * Scans ALL full-size visible TYPE_APPLICATION windows (never tricked when rootInActiveWindow
+     * is the FloatingToolbar window!) using spatial priority around [toolbarBounds].
+     *
+     * Also wakes up Chromium's lazy WebView accessibility tree by probing its children.
+     */
+    fun findSelectionAcrossAppWindows(
+        preferredRoot: AccessibilityNodeInfo?,
+        toolbarBounds: Box?,
+        toolbarWindowId: Int = -1
     ): ResolvedSelection? {
-        if (root == null) return null
-        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
-        queue.add(root to 0)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < maxNodes) {
-            val (node, depth) = queue.removeFirst()
-            visited++
-            if (node.isVisibleToUser) {
-                extractFromNode(node)?.let { return it }
+        val (_, realH) = readRealScreenSize()
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+
+        if (preferredRoot != null && preferredRoot.packageName?.toString() != service.packageName) {
+            roots.add(preferredRoot)
+        }
+
+        // Collect ALL visible application windows (largest first — Chrome webpage window is full screen!)
+        val appWindows = runCatching { service.windows }.getOrNull().orEmpty()
+            .filter { w ->
+                w.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                    w.id != toolbarWindowId
             }
-            if (depth < maxDepth) {
-                val count = minOf(node.childCount, 28)
-                for (i in 0 until count) {
+            .sortedByDescending { w ->
+                val r = Rect()
+                w.getBoundsInScreen(r)
+                r.width() * r.height()
+            }
+
+        for (w in appWindows) {
+            val wr = Rect()
+            w.getBoundsInScreen(wr)
+            // Skip tiny floating popup windows (toolbar itself)
+            if (wr.height() < dp(190) && wr.height() < realH / 4) continue
+            val rNode = runCatching { w.root }.getOrNull() ?: continue
+            val pkg = rNode.packageName?.toString().orEmpty()
+            if (pkg == service.packageName || SelectionFilter.isImePackage(pkg) || pkg == "com.android.systemui") continue
+            if (roots.none { it == rNode }) roots.add(rNode)
+        }
+
+        val activeRoot = runCatching { service.rootInActiveWindow }.getOrNull()
+        if (activeRoot != null &&
+            activeRoot.packageName?.toString() != service.packageName &&
+            roots.none { it == activeRoot }
+        ) {
+            roots.add(activeRoot)
+        }
+
+        for (scanRoot in roots) {
+            findSelectionSpatial(scanRoot, toolbarBounds, maxNodes = 550, maxDepth = 28)?.let { return it }
+        }
+        return null
+    }
+
+    private data class QueuedNode(
+        val node: AccessibilityNodeInfo,
+        val depth: Int,
+        val distToToolbar: Int
+    )
+
+    /**
+     * Spatially-prioritized traversal:
+     * - Skips completely off-screen DOM subtrees (`bottom <= 0` or `top >= screenH`).
+     * - Visits subtrees closest to `toolbarBounds` first so 3,000-node Chrome pages hit the
+     *   selected article paragraph in ~20 nodes instead of burning budget in `<nav>` / `<header>`.
+     * - Handles selections spanning multiple sibling leaf nodes.
+     */
+    private fun findSelectionSpatial(
+        root: AccessibilityNodeInfo,
+        toolbarBounds: Box?,
+        maxNodes: Int,
+        maxDepth: Int
+    ): ResolvedSelection? {
+        val (_, realH) = readRealScreenSize()
+        val targetY = toolbarBounds?.bottom?.plus(dp(36)) ?: (realH / 2)
+
+        val pq = PriorityQueue<QueuedNode>(compareBy<QueuedNode> { it.distToToolbar }.thenBy { it.depth })
+        pq.add(QueuedNode(root, 0, 0))
+
+        val hits = mutableListOf<ResolvedSelection>()
+        var visited = 0
+        val tmpRect = Rect()
+
+        while (pq.isNotEmpty() && visited < maxNodes) {
+            val cur = pq.poll() ?: break
+            val node = cur.node
+            visited++
+
+            if (isBrowserSurfaceNode(node)) {
+                runCatching { node.refresh() }
+            }
+
+            if (node.isVisibleToUser) {
+                val hit = extractFromNode(node)
+                if (hit != null) {
+                    hits.add(hit)
+                    // Single non-browser selection returns immediately; browser might span 2-3 inline spans
+                    if (hits.size >= 4) break
+                }
+            }
+
+            if (cur.depth < maxDepth) {
+                val childCount = minOf(node.childCount, 120)
+                for (i in 0 until childCount) {
                     val ch = runCatching { node.getChild(i) }.getOrNull() ?: continue
-                    if (ch.isVisibleToUser || ch.childCount > 0) queue.add(ch to depth + 1)
+                    ch.getBoundsInScreen(tmpRect)
+                    val hasBounds = tmpRect.width() > 0 && tmpRect.height() > 0
+                    // Prune strictly off-screen DOM subtrees (huge speedup on Chrome/news sites!)
+                    if (hasBounds && (tmpRect.bottom <= 0 || tmpRect.top >= realH)) continue
+                    if (!ch.isVisibleToUser && ch.childCount == 0) continue
+
+                    val dist = when {
+                        !hasBounds -> dp(120)
+                        targetY in tmpRect.top..tmpRect.bottom -> 0
+                        else -> minOf(abs(tmpRect.top - targetY), abs(tmpRect.bottom - targetY))
+                    }
+                    // Boost WebView containers so Chromium's virtual tree is always explored early!
+                    val priority = if (isBrowserSurfaceNode(ch)) 0 else dist
+                    pq.add(QueuedNode(ch, cur.depth + 1, priority))
                 }
             }
         }
-        return null
+
+        if (hits.isEmpty()) return null
+        if (hits.size == 1) return hits.first()
+
+        val sorted = hits.sortedWith(compareBy<ResolvedSelection> { it.bounds.top / dp(16).coerceAtLeast(1) }.thenBy { it.bounds.left })
+        val combinedText = sorted.map { it.text }.distinct().joinToString(" ").trim()
+        val union = Rect(sorted.first().bounds.left, sorted.first().bounds.top, sorted.first().bounds.right, sorted.first().bounds.bottom)
+        sorted.drop(1).forEach { union.union(it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom) }
+        return ResolvedSelection(combinedText, sorted.first().node, union.toBox())
     }
 
     fun findFocusedNode(): AccessibilityNodeInfo? {
@@ -447,10 +551,8 @@ class SelectionResolver(
     }
 
     /**
-     * Multi-tier copy extraction for browsers & WebViews:
-     * 1. ACTION_COPY on source / focused node / WebView (keeps native toolbar open!).
-     * 2. Deep BFS for ACTION_COPY or WebView/GeckoView/Chromium containers.
-     * 3. Single-shot fallback click on detected Copy toolbar button if ACTION_COPY fails.
+     * Last-resort copy trigger used ONLY when spatial accessibility traversal finds no selection
+     * indices (e.g., Firefox GeckoView or non-accessible canvases).
      */
     fun performBestCopyAction(
         sourceNode: AccessibilityNodeInfo?,
@@ -468,21 +570,21 @@ class SelectionResolver(
         }
 
         val roots = mutableListOf<AccessibilityNodeInfo>()
-        if (root != null) roots.add(root)
         runCatching { service.windows }.getOrNull()?.forEach { w ->
-            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && (w.isActive || w.isFocused)) {
+            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.id != toolbarHit?.windowId) {
                 runCatching { w.root }.getOrNull()?.let { wr ->
-                    if (wr != root && wr.packageName?.toString() != service.packageName) roots.add(wr)
+                    if (wr.packageName?.toString() != service.packageName && roots.none { it == wr }) roots.add(wr)
                 }
             }
         }
+        if (root != null && roots.none { it == root }) roots.add(root)
 
         val webViewFallbacks = mutableListOf<AccessibilityNodeInfo>()
         for (scanRoot in roots) {
             val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
             queue.add(scanRoot to 0)
             var visited = 0
-            while (queue.isNotEmpty() && visited < 240) {
+            while (queue.isNotEmpty() && visited < 260) {
                 val (node, depth) = queue.removeFirst()
                 visited++
                 if (node.isVisibleToUser) {
@@ -495,7 +597,7 @@ class SelectionResolver(
                     }
                 }
                 if (depth < 24) {
-                    val count = minOf(node.childCount, 24)
+                    val count = minOf(node.childCount, 28)
                     for (i in 0 until count) {
                         runCatching { node.getChild(i) }.getOrNull()?.let { queue.add(it to depth + 1) }
                     }
@@ -504,16 +606,12 @@ class SelectionResolver(
         }
 
         for (wv in webViewFallbacks) {
-            if (runCatching { wv.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) {
-                return true
-            }
+            if (runCatching { wv.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) return true
         }
 
         val copyBtn = toolbarHit?.copyButtonNode
         if (copyBtn != null) {
-            if (runCatching { copyBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) {
-                return true
-            }
+            if (runCatching { copyBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) return true
         }
         return false
     }

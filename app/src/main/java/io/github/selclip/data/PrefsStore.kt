@@ -25,6 +25,7 @@ object PrefsStore {
     private const val KEY_ICONS_ONLY = "icons_only_mode"
     private const val KEY_DEFAULT_SEARCH_ID = "default_search_engine_id"
     private const val KEY_PINNED_TOOLS = "pinned_bar_tool_ids"
+    private const val KEY_BAR_ORDER = "popup_bar_slot_order"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
 
@@ -155,6 +156,47 @@ object PrefsStore {
         }
     }
 
+    // --- Customizable Left-to-Right Popup Bar Slot Order ---
+
+    fun getBarSlotOrder(context: Context): List<String> {
+        val pinnedIds = getPinnedToolSpecs(context).map { it.id }.toSet()
+        val validCore = setOf(
+            io.github.selclip.core.ContextActionResolver.SLOT_CONTEXT,
+            io.github.selclip.core.ContextActionResolver.SLOT_DEFAULT_SEARCH,
+            io.github.selclip.core.ContextActionResolver.SLOT_YOUTUBE
+        )
+        val saved = prefs(context).getString(KEY_BAR_ORDER, "")
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() && (it in validCore || it in pinnedIds) }
+            ?: emptyList()
+
+        val result = LinkedHashSet<String>()
+        result.addAll(saved)
+        result.add(io.github.selclip.core.ContextActionResolver.SLOT_CONTEXT)
+        result.add(io.github.selclip.core.ContextActionResolver.SLOT_DEFAULT_SEARCH)
+        result.add(io.github.selclip.core.ContextActionResolver.SLOT_YOUTUBE)
+        result.addAll(pinnedIds)
+        return result.toList()
+    }
+
+    fun saveBarSlotOrder(context: Context, orderedSlotIds: List<String>) {
+        prefs(context).edit().putString(KEY_BAR_ORDER, orderedSlotIds.distinct().joinToString(",")).apply()
+    }
+
+    fun moveBarSlot(context: Context, slotId: String, delta: Int): List<String> {
+        val list = getBarSlotOrder(context).toMutableList()
+        val idx = list.indexOf(slotId)
+        if (idx < 0) return list
+        val target = (idx + delta).coerceIn(0, list.lastIndex)
+        if (target != idx) {
+            val item = list.removeAt(idx)
+            list.add(target, item)
+            saveBarSlotOrder(context, list)
+        }
+        return list
+    }
+
     // --- Tool Visibility & Ordering ---
 
     fun isToolHidden(context: Context, id: String): Boolean =
@@ -228,6 +270,7 @@ object PrefsStore {
             put("icons_only_mode", isIconsOnlyMode(context))
             put("default_search_engine_id", getDefaultSearchEngineId(context))
             put("pinned_bar_tool_ids", getPinnedToolIds(context).joinToString(","))
+            put("popup_bar_slot_order", getBarSlotOrder(context).joinToString(","))
             put("manual_order", p.getString(KEY_ORDER, ""))
             put("blacklisted_pkgs", p.getString(KEY_BLACKLIST, ""))
             put("rules_txt", RulesRepository.ensureRulesFile(context).readText())
@@ -255,6 +298,9 @@ object PrefsStore {
         }
         if (root.has("pinned_bar_tool_ids")) {
             editor.putString(KEY_PINNED_TOOLS, root.optString("pinned_bar_tool_ids", ""))
+        }
+        if (root.has("popup_bar_slot_order")) {
+            editor.putString(KEY_BAR_ORDER, root.optString("popup_bar_slot_order", ""))
         }
         if (root.has("manual_order")) {
             editor.putString(KEY_ORDER, root.optString("manual_order", ""))

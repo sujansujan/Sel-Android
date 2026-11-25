@@ -24,8 +24,8 @@ import io.github.selclip.data.ThemePalette
 import io.github.selclip.data.ToolSpec
 
 /**
- * Renders all expandable drawers inside the native Material dropdown card,
- * displaying dedicated crisp icons / favicons for every single tool and portal.
+ * Renders compact, tight-fitting native Android overflow menus (WRAP_CONTENT width, zero full-screen
+ * stretching!) — using only as much screen area as the items actually need.
  */
 object DrawerRenderer {
 
@@ -78,30 +78,23 @@ object DrawerRenderer {
         pal: ThemePalette,
         cb: Callbacks
     ) {
+        container.addView(makeBackHeader(context, "More", pal, cb))
         val tools = PrefsStore.getVisibleToolsForDrawer(context)
         val iconPx = dp(context, 18)
-        var i = 0
-        while (i < tools.size) {
-            val t1 = tools[i]
-            val t2 = tools.getOrNull(i + 1)
-            if (t2 != null) {
-                container.addView(makeTwoColRow(context, t1, t2, pal, iconPx, cb))
-                i += 2
-            } else {
-                val icon = ActionIconFactory.createForTool(context, t1, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-                container.addView(makeIconRow(context, t1.label, icon, pal) {
-                    PrefsStore.recordUse(context, t1.id)
-                    cb.onExecuteTool(t1)
-                })
-                i += 1
-            }
+
+        for (tool in tools) {
+            val icon = ActionIconFactory.createForTool(context, tool, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
+            container.addView(makeCompactIconRow(context, tool.label, icon, pal) {
+                PrefsStore.recordUse(context, tool.id)
+                cb.onExecuteTool(tool)
+            })
         }
 
         if (activePackage.isNotBlank() && activePackage != context.packageName) {
             container.addView(makeDivider(context, pal))
             val shortPkg = activePackage.substringAfterLast('.')
             val muteIcon = ActionIconFactory.createMuteIcon(pal.fgMutedInt, iconPx)
-            container.addView(makeIconRow(context, "Mute popup in $shortPkg", muteIcon, pal, pal.fgMutedInt) {
+            container.addView(makeCompactIconRow(context, "Mute in $shortPkg", muteIcon, pal, pal.fgMutedInt) {
                 cb.onMutePackage(activePackage)
             })
         }
@@ -109,7 +102,7 @@ object DrawerRenderer {
 
     private fun renderWebSearch(context: Context, container: LinearLayout, pal: ThemePalette, cb: Callbacks) {
         val defaultId = PrefsStore.getDefaultSearchEngineId(context)
-        container.addView(makeBackHeader(context, "Search Engines (hold to set default)", pal, cb))
+        container.addView(makeBackHeader(context, "Search (hold = default)", pal, cb))
         val iconPx = dp(context, 18)
 
         for (engine in PrefsStore.loadWebSearchTools(context)) {
@@ -122,9 +115,9 @@ object DrawerRenderer {
                 sizePx = iconPx,
                 onFaviconLoaded = { cb.onRerender() }
             )
-            val row = makeIconRow(
+            val row = makeCompactIconRow(
                 context = context,
-                label = if (isDefault) "${engine.label}  ★" else engine.label,
+                label = if (isDefault) "${engine.label} ★" else engine.label,
                 icon = icon,
                 pal = pal,
                 colorInt = if (isDefault) pal.accentPrimaryInt else pal.fgPrimaryInt
@@ -144,11 +137,11 @@ object DrawerRenderer {
     }
 
     private fun renderYouTube(context: Context, container: LinearLayout, pal: ThemePalette, cb: Callbacks) {
-        container.addView(makeBackHeader(context, "YouTube Filters", pal, cb))
+        container.addView(makeBackHeader(context, "YouTube", pal, cb))
         val iconPx = dp(context, 18)
         for (yt in PrefsStore.loadYouTubeTools(context)) {
             val icon = ActionIconFactory.createForTool(context, yt, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-            container.addView(makeIconRow(context, "${yt.glyph}  ·  ${yt.label}", icon, pal) {
+            container.addView(makeCompactIconRow(context, "${yt.glyph} · ${yt.label}", icon, pal) {
                 PrefsStore.recordUse(context, "youtube_folder")
                 cb.onExecuteTool(yt)
             })
@@ -166,7 +159,7 @@ object DrawerRenderer {
         val iconPx = dp(context, 18)
         for (md in PrefsStore.loadMarkdownTools(context)) {
             val icon = ActionIconFactory.createForTool(context, md, pal.fgPrimaryInt, iconPx)
-            container.addView(makeIconRow(context, md.label, icon, pal) {
+            container.addView(makeCompactIconRow(context, md.label, icon, pal) {
                 val out = if (md.customTarget != null) {
                     TextTransforms.executeCustomTargetTransform(md.customTarget, selectedText)
                 } else {
@@ -188,7 +181,7 @@ object DrawerRenderer {
         val iconPx = dp(context, 18)
         for (pt in PrefsStore.loadPipeTools(context)) {
             val icon = ActionIconFactory.createForTool(context, pt, pal.fgPrimaryInt, iconPx)
-            container.addView(makeIconRow(context, pt.label, icon, pal) {
+            container.addView(makeCompactIconRow(context, pt.label, icon, pal) {
                 val out = if (pt.customTarget != null) {
                     TextTransforms.executeCustomTargetTransform(pt.customTarget, selectedText)
                 } else {
@@ -215,7 +208,7 @@ object DrawerRenderer {
         val iconPx = dp(context, 18)
         items.forEach { item ->
             val icon = ActionIconFactory.createForTool(context, item, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-            container.addView(makeIconRow(context, item.label, icon, pal) { cb.onExecuteTool(item) })
+            container.addView(makeCompactIconRow(context, item.label, icon, pal) { cb.onExecuteTool(item) })
         }
     }
 
@@ -227,7 +220,7 @@ object DrawerRenderer {
         executor: ActionExecutor,
         cb: Callbacks
     ) {
-        container.addView(makeBackHeader(context, "Definition", pal, cb))
+        container.addView(makeBackHeader(context, "Define", pal, cb))
         val raw = selectedText.trim()
         val firstWord = raw.split(TextTransforms.whitespaceRegex).firstOrNull()
             ?.trim { !it.isLetterOrDigit() && it != '-' }
@@ -238,10 +231,10 @@ object DrawerRenderer {
             typeface = Typeface.SANS_SERIF
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(pal.fgPrimaryInt)
-            setPadding(dp(context, 10), dp(context, 6), dp(context, 10), dp(context, 8))
-            setLineSpacing(0f, 1.25f)
+            setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 6))
+            setLineSpacing(0f, 1.22f)
         }
-        val copyBtn = makeRow(context, "Copy definition", pal, pal.accentPrimaryInt) {
+        val copyBtn = makeTextRow(context, "Copy definition", pal, pal.accentPrimaryInt) {
             cb.onCopyPlain(defView.text.toString(), "Definition copied")
         }.apply { visibility = View.GONE }
 
@@ -265,16 +258,16 @@ object DrawerRenderer {
         executor: ActionExecutor,
         cb: Callbacks
     ) {
-        container.addView(makeBackHeader(context, "Translate → English", pal, cb))
+        container.addView(makeBackHeader(context, "Translate → EN", pal, cb))
         val trView = TextView(context).apply {
             text = "Translating…"
             typeface = Typeface.SANS_SERIF
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(pal.fgPrimaryInt)
-            setPadding(dp(context, 10), dp(context, 6), dp(context, 10), dp(context, 8))
-            setLineSpacing(0f, 1.25f)
+            setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 6))
+            setLineSpacing(0f, 1.22f)
         }
-        val applyBtn = makeRow(context, "Copy / Replace text", pal, pal.accentPrimaryInt) {
+        val applyBtn = makeTextRow(context, "Copy / Replace", pal, pal.accentPrimaryInt) {
             cb.onApplyResult(trView.text.toString())
         }.apply { visibility = View.GONE }
 
@@ -298,14 +291,16 @@ object DrawerRenderer {
         cb: Callbacks
     ) {
         container.addView(makeBackHeader(context, "QR Code", pal, cb))
-        val bmp = QrCodeGenerator.generate(selectedText.trim().take(1200), dp(context, 176))
+        val bmp = QrCodeGenerator.generate(selectedText.trim().take(1200), dp(context, 164))
         if (bmp != null) {
             container.addView(ImageView(context).apply {
                 setImageBitmap(bmp)
-                layoutParams = LinearLayout.LayoutParams(dp(context, 176), dp(context, 176)).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(context, 164), dp(context, 164)).apply {
                     gravity = Gravity.CENTER_HORIZONTAL
-                    topMargin = dp(context, 8)
-                    bottomMargin = dp(context, 8)
+                    topMargin = dp(context, 6)
+                    bottomMargin = dp(context, 6)
+                    marginStart = dp(context, 8)
+                    marginEnd = dp(context, 8)
                 }
             })
         } else {
@@ -320,7 +315,7 @@ object DrawerRenderer {
         pal: ThemePalette,
         cb: Callbacks
     ) {
-        container.addView(makeBackHeader(context, "Magnet Link", pal, cb))
+        container.addView(makeBackHeader(context, "Magnet", pal, cb))
         val hash = TextTransforms.extractTorrentHash(selectedText)
         val magnetUri = when {
             hash != null -> TextTransforms.buildMagnetUri(hash)
@@ -330,21 +325,21 @@ object DrawerRenderer {
         container.addView(TextView(context).apply {
             text = magnetUri
             typeface = Typeface.MONOSPACE
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.8f)
             setTextColor(pal.fgPrimaryInt)
             background = GradientDrawable().apply {
                 setColor(pal.bgSurfaceInt)
                 cornerRadius = dpF(context, 8f)
             }
-            setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
-            maxLines = 4
+            setPadding(dp(context, 8), dp(context, 6), dp(context, 8), dp(context, 6))
+            maxLines = 3
             ellipsize = TextUtils.TruncateAt.END
         })
-        container.addView(makeRow(context, "Copy magnet URI", pal, pal.accentPrimaryInt) {
+        container.addView(makeTextRow(context, "Copy magnet URI", pal, pal.accentPrimaryInt) {
             cb.onCopyPlain(magnetUri, "Magnet copied")
             cb.onBackToBar()
         })
-        container.addView(makeRow(context, "Open in torrent app", pal, pal.accentSuccessInt) {
+        container.addView(makeTextRow(context, "Open in torrent app", pal, pal.accentSuccessInt) {
             cb.onCopyPlain(magnetUri, "Opening magnet…")
             cb.onOpenUrl(magnetUri)
         })
@@ -357,50 +352,23 @@ object DrawerRenderer {
         pal: ThemePalette,
         cb: Callbacks
     ) {
-        container.addView(makeBackHeader(context, "Extracted Entities", pal, cb))
+        container.addView(makeBackHeader(context, "Entities", pal, cb))
         val items = TextTransforms.extractEntities(selectedText, limit = 12)
         if (items.isEmpty()) {
-            container.addView(makeNote(context, "No URLs, emails, phones, or tags found.", pal))
+            container.addView(makeNote(context, "No links or contacts found.", pal))
             return
         }
         items.forEach { entity ->
-            container.addView(makeRow(context, "${entity.type}  ·  ${entity.value.take(32)}", pal) {
+            container.addView(makeTextRow(context, "${entity.type} · ${entity.value.take(26)}", pal) {
                 cb.onApplyResult(entity.value)
             })
         }
     }
 
-    private fun makeTwoColRow(
-        context: Context,
-        t1: ToolSpec,
-        t2: ToolSpec,
-        pal: ThemePalette,
-        iconPx: Int,
-        cb: Callbacks
-    ): View {
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        fun cell(tool: ToolSpec): View {
-            val icon = ActionIconFactory.createForTool(context, tool, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
-            return makeIconRow(context, tool.label, icon, pal) {
-                PrefsStore.recordUse(context, tool.id)
-                cb.onExecuteTool(tool)
-            }.apply {
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-        }
-        row.addView(cell(t1))
-        row.addView(View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(context, 1), dp(context, 22))
-            setBackgroundColor(pal.dividerInt)
-        })
-        row.addView(cell(t2))
-        return row
-    }
-
-    private fun makeIconRow(
+    /**
+     * Compact native Android menu row (WRAP_CONTENT width — NEVER stretches full-screen!).
+     */
+    private fun makeCompactIconRow(
         context: Context,
         label: String,
         icon: Drawable,
@@ -410,8 +378,12 @@ object DrawerRenderer {
     ): LinearLayout = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(context, 44)
-        setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
+        minimumHeight = dp(context, 40)
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        setPadding(dp(context, 10), dp(context, 7), dp(context, 12), dp(context, 7))
         background = pressedBg(context, pal)
         setOnClickListener {
             runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
@@ -421,25 +393,30 @@ object DrawerRenderer {
         addView(ImageView(context).apply {
             setImageDrawable(icon)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(context, 9) }
+            layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(context, 10) }
         })
         addView(TextView(context).apply {
             text = label
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
             setTextColor(colorInt)
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
     }
 
-    private fun makeBackHeader(context: Context, title: String, pal: ThemePalette, cb: Callbacks): View =
-        makeRow(context, "←  $title", pal, pal.accentPrimaryInt, bold = true) {
+    private fun makeBackHeader(context: Context, title: String, pal: ThemePalette, cb: Callbacks): View {
+        val header = makeTextRow(context, "←  $title", pal, pal.accentPrimaryInt, bold = true) {
             cb.onBackToBar()
         }
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(header)
+            addView(makeDivider(context, pal))
+        }
+    }
 
-    private fun makeRow(
+    private fun makeTextRow(
         context: Context,
         label: String,
         pal: ThemePalette,
@@ -449,13 +426,13 @@ object DrawerRenderer {
     ): TextView = TextView(context).apply {
         text = label
         typeface = Typeface.create(if (bold) "sans-serif-medium" else "sans-serif", if (bold) Typeface.BOLD else Typeface.NORMAL)
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
         setTextColor(colorInt)
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
-        minimumHeight = dp(context, 44)
+        minimumHeight = dp(context, 38)
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
+        setPadding(dp(context, 10), dp(context, 6), dp(context, 12), dp(context, 6))
         background = pressedBg(context, pal)
         setOnClickListener {
             runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
@@ -469,14 +446,14 @@ object DrawerRenderer {
             typeface = Typeface.SANS_SERIF
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             setTextColor(pal.fgMutedInt)
-            setPadding(dp(context, 10), dp(context, 10), dp(context, 10), dp(context, 10))
+            setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
         }
 
     private fun makeDivider(context: Context, pal: ThemePalette): View =
         View(context).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(context, 1)).apply {
-                topMargin = dp(context, 4)
-                bottomMargin = dp(context, 4)
+                topMargin = dp(context, 2)
+                bottomMargin = dp(context, 2)
             }
             setBackgroundColor(pal.dividerInt)
         }

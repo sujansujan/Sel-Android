@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import io.github.selclip.core.AnchorTarget
 import io.github.selclip.core.Box
+import io.github.selclip.core.PopupMode
 import io.github.selclip.core.PopupPositioner
 import io.github.selclip.core.Viewport
 import io.github.selclip.data.PopAction
@@ -21,8 +22,13 @@ import io.github.selclip.data.PrefsStore
 import kotlin.math.abs
 
 /**
- * Owns the single lightweight TYPE_ACCESSIBILITY_OVERLAY window styled to match Android's native
- * FloatingToolbarPopup surface, elevation, and rounded pill geometry.
+ * Owns the single lightweight TYPE_ACCESSIBILITY_OVERLAY window.
+ *
+ * Mirrors Android's native FloatingToolbarPopup morphing behavior:
+ * - In [PopupMode.Bar]: sleek 48dp native pill (`24dp` corners, WRAP_CONTENT width).
+ * - When expanded (overflow / sub-drawer): hides the horizontal bar and morphs into a compact,
+ *   tight-fitting Material 3 menu card (`16dp` corners) sized strictly to its content (216–224dp
+ *   max for action lists, 204dp for QR, 284dp for Define/Translate) — zero wasted screen area!
  */
 class OverlayWindowController(
     private val context: Context,
@@ -36,15 +42,15 @@ class OverlayWindowController(
     private var rootView: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var barContainer: LinearLayout? = null
-    private var drawerDivider: View? = null
     private var drawerScroll: ScrollView? = null
     private var drawerContainer: LinearLayout? = null
 
     private var lastAnchorTarget: AnchorTarget = AnchorTarget(Box(0, 0, 0, 0), false)
     private var lastViewport: Viewport = Viewport(1080, 2200, 96, 120)
-    private var maxDrawerHeightPx: Int = 540
+    private var maxDrawerHeightPx: Int = 480
+    private var activeMaxWidthPx: Int = 640
     private var manuallyDragged: Boolean = false
-    private var currentIsDrawerOpen: Boolean = false
+    private var currentMode: PopupMode = PopupMode.Bar
 
     val isAttached: Boolean get() = rootView?.isAttachedToWindow == true
 
@@ -52,10 +58,17 @@ class OverlayWindowController(
     private fun dp(v: Int): Int = (v * density).toInt()
     private fun dpF(v: Float): Float = v * density
 
+    private fun maxWidthForMode(mode: PopupMode, screenWidth: Int): Int = when (mode) {
+        PopupMode.Bar -> (screenWidth - dp(20)).coerceAtLeast(dp(240))
+        PopupMode.QrCode -> minOf(dp(208), screenWidth - dp(24))
+        PopupMode.Define, PopupMode.Translate, PopupMode.Magnet -> minOf(dp(284), screenWidth - dp(28))
+        else -> minOf(dp(224), screenWidth - dp(28))
+    }
+
     fun showOrUpdate(
         anchorTarget: AnchorTarget,
         viewport: Viewport,
-        isDrawerOpen: Boolean,
+        mode: PopupMode,
         isNewSession: Boolean,
         iconsOnly: Boolean,
         actions: List<PopAction>,
@@ -65,9 +78,11 @@ class OverlayWindowController(
         onFaviconReady: () -> Unit,
         renderDrawer: (LinearLayout) -> Unit
     ) {
+        val isDrawerOpen = mode != PopupMode.Bar
         lastAnchorTarget = anchorTarget
         lastViewport = viewport
-        currentIsDrawerOpen = isDrawerOpen
+        currentMode = mode
+        activeMaxWidthPx = maxWidthForMode(mode, viewport.screenWidth)
         if (isNewSession) manuallyDragged = false
 
         if (rootView != null && !isAttached) hide()
@@ -75,12 +90,11 @@ class OverlayWindowController(
         val pal = PrefsStore.resolvePalette(context)
         val createdNow = rootView == null
 
-        if (createdNow) createWindow(anchorTarget, viewport, isDrawerOpen)
+        if (createdNow) createWindow(anchorTarget, viewport, mode)
 
         val root = rootView ?: return
         val params = windowParams ?: return
         val bar = barContainer ?: return
-        val div = drawerDivider ?: return
         val scroll = drawerScroll ?: return
         val drawer = drawerContainer ?: return
 
@@ -91,27 +105,26 @@ class OverlayWindowController(
             cornerRadius = dpF(cornerDp)
         }
         bar.setBackgroundColor(pal.popupSurfaceInt)
-        div.setBackgroundColor(pal.dividerInt)
-
-        PopupBarRenderer.render(
-            context = context,
-            container = bar,
-            actions = actions,
-            pal = pal,
-            iconsOnly = iconsOnly,
-            isDrawerOpen = isDrawerOpen,
-            onActionClick = onActionClick,
-            onActionLongClick = onActionLongClick,
-            onToggleMore = onToggleMore,
-            onFaviconLoaded = onFaviconReady
-        )
 
         drawer.removeAllViews()
         if (!isDrawerOpen) {
-            div.visibility = View.GONE
+            bar.visibility = View.VISIBLE
             scroll.visibility = View.GONE
+            PopupBarRenderer.render(
+                context = context,
+                container = bar,
+                actions = actions,
+                pal = pal,
+                iconsOnly = iconsOnly,
+                isDrawerOpen = false,
+                onActionClick = onActionClick,
+                onActionLongClick = onActionLongClick,
+                onToggleMore = onToggleMore,
+                onFaviconLoaded = onFaviconReady
+            )
         } else {
-            div.visibility = View.VISIBLE
+            // Morph seamlessly from pill into compact native overflow menu (no redundant bar on top!)
+            bar.visibility = View.GONE
             scroll.visibility = View.VISIBLE
             renderDrawer(drawer)
         }
@@ -120,12 +133,12 @@ class OverlayWindowController(
             val placement = PopupPositioner.place(
                 target = anchorTarget,
                 viewport = viewport,
-                popupWidth = root.width,
-                popupHeight = root.height,
+                popupWidth = if (createdNow) 0 else root.width.coerceAtMost(activeMaxWidthPx),
+                popupHeight = if (createdNow) 0 else root.height,
                 density = density,
                 isDrawerOpen = isDrawerOpen
             )
-            maxDrawerHeightPx = placement.maxDrawerHeight
+            maxDrawerHeightPx = minOf(placement.maxDrawerHeight, dp(260))
             params.x = placement.x
             params.y = placement.y
         }
@@ -168,14 +181,14 @@ class OverlayWindowController(
         rootView = null
         windowParams = null
         barContainer = null
-        drawerDivider = null
         drawerScroll = null
         drawerContainer = null
         manuallyDragged = false
-        currentIsDrawerOpen = false
+        currentMode = PopupMode.Bar
     }
 
-    private fun createWindow(anchorTarget: AnchorTarget, viewport: Viewport, isDrawerOpen: Boolean) {
+    private fun createWindow(anchorTarget: AnchorTarget, viewport: Viewport, mode: PopupMode) {
+        val isDrawerOpen = mode != PopupMode.Bar
         val pal = PrefsStore.resolvePalette(context)
         val placement = PopupPositioner.place(
             target = anchorTarget,
@@ -185,7 +198,8 @@ class OverlayWindowController(
             density = density,
             isDrawerOpen = isDrawerOpen
         )
-        maxDrawerHeightPx = placement.maxDrawerHeight
+        maxDrawerHeightPx = minOf(placement.maxDrawerHeight, dp(260))
+        activeMaxWidthPx = maxWidthForMode(mode, viewport.screenWidth)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -201,11 +215,9 @@ class OverlayWindowController(
             y = placement.y
         }
 
-        val maxBarW = (viewport.screenWidth - dp(20)).coerceAtLeast(dp(240))
-
         val card = object : LinearLayout(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                super.onMeasure(MeasureSpec.makeMeasureSpec(maxBarW, MeasureSpec.AT_MOST), heightMeasureSpec)
+                super.onMeasure(MeasureSpec.makeMeasureSpec(activeMaxWidthPx, MeasureSpec.AT_MOST), heightMeasureSpec)
             }
         }.apply {
             orientation = LinearLayout.VERTICAL
@@ -227,9 +239,9 @@ class OverlayWindowController(
                         popupWidth = actualW,
                         popupHeight = actualH,
                         density = density,
-                        isDrawerOpen = currentIsDrawerOpen
+                        isDrawerOpen = currentMode != PopupMode.Bar
                     )
-                    maxDrawerHeightPx = refined.maxDrawerHeight
+                    maxDrawerHeightPx = minOf(refined.maxDrawerHeight, dp(260))
                     if (abs(refined.x - p.x) > dp(2) || abs(refined.y - p.y) > dp(2)) {
                         p.x = refined.x
                         p.y = refined.y
@@ -257,13 +269,6 @@ class OverlayWindowController(
         }
         card.addView(bar)
 
-        val div = View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
-            setBackgroundColor(pal.dividerInt)
-            visibility = View.GONE
-        }
-        card.addView(div)
-
         val scroll = object : ScrollView(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(maxDrawerHeightPx, MeasureSpec.AT_MOST))
@@ -274,7 +279,7 @@ class OverlayWindowController(
         }
         val drawer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(6), dp(8), dp(8))
+            setPadding(dp(6), dp(4), dp(6), dp(6))
         }
         scroll.addView(drawer)
         card.addView(scroll)
@@ -282,7 +287,6 @@ class OverlayWindowController(
         rootView = card
         windowParams = params
         barContainer = bar
-        drawerDivider = div
         drawerScroll = scroll
         drawerContainer = drawer
     }

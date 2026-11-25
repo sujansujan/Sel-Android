@@ -1,5 +1,6 @@
 package io.github.selclip.service
 
+import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
@@ -12,71 +13,86 @@ import android.view.View
 import android.view.WindowManager
 
 /**
- * Single-flight internal clipboard bridge for reading browser/WebView selections on Android 10+.
+ * Clipboard-preserving, on-demand single-shot bridge used ONLY as a last resort when an app
+ * (e.g., Firefox GeckoView) refuses to expose selected text via Accessibility nodes.
  *
- * Includes a post-probe focus-settle cooldown (`950ms`) so Chrome restoring focus after the 1x1
- * probe finishes NEVER triggers a second selection probe or causes Chrome's toolbar to blink.
+ * Guarantees:
+ * - Zero unsolicited clipboard monitoring (never pops up when user copies normally).
+ * - Snapshots the user's previous ClipData before fallback copy and immediately restores it
+ *   after reading, so the user's clipboard is NOT polluted.
  */
 class ClipboardBridge(
     private val context: Context,
     private val clipboardManager: ClipboardManager,
-    private val windowManager: WindowManager,
-    private val shouldAcceptExternalClip: () -> Boolean,
-    private val onClipCaptured: (String) -> Unit
+    private val windowManager: WindowManager
 ) {
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastInternalCopyMs: Long = 0L
     private var lastProbeFinishedMs: Long = 0L
-    private var lastReadAttemptMs: Long = 0L
     private var activeProbe: View? = null
-    private var probeCleanupRunnable: Runnable? = null
-    private var probeRetry1: Runnable? = null
-    private var probeRetry2: Runnable? = null
+    private var pendingCleanup: Runnable? = null
+    private var pendingRetry1: Runnable? = null
+    private var pendingRetry2: Runnable? = null
 
-    /**
-     * True while the 1x1 focus probe is attached OR within 950ms after it detaches, so the
-     * host browser's focus-restore window events are cleanly ignored (zero blinking loop!).
-     */
     val isProbeOrSettling: Boolean
         get() = activeProbe != null || (System.currentTimeMillis() - lastProbeFinishedMs) < 950L
-
-    private val listener = ClipboardManager.OnPrimaryClipChangedListener {
-        val now = System.currentTimeMillis()
-        if (now - lastInternalCopyMs < 650L) return@OnPrimaryClipChangedListener
-        if (!shouldAcceptExternalClip()) return@OnPrimaryClipChangedListener
-        readNowOrProbe()
-    }
-
-    fun start() {
-        runCatching {
-            clipboardManager.removePrimaryClipChangedListener(listener)
-            clipboardManager.addPrimaryClipChangedListener(listener)
-        }
-    }
-
-    fun stop() {
-        runCatching { clipboardManager.removePrimaryClipChangedListener(listener) }
-        cancelProbe()
-    }
 
     fun markInternalCopy() {
         lastInternalCopyMs = System.currentTimeMillis()
     }
 
-    fun readNowOrProbe() {
-        if (isPrimaryClipSensitive()) return
-        val now = System.currentTimeMillis()
-        // Prevent double-launching probe within 350ms
-        if (activeProbe != null || (now - lastReadAttemptMs) < 350L) return
-        lastReadAttemptMs = now
+    fun stop() {
+        cancelProbe()
+    }
 
+    /**
+     * Snapshots current clipboard (if readable without stealing focus), executes [performCopy],
+     * reads the copied text once, and immediately restores the user's previous clipboard!
+     */
+    fun captureFallbackSelection(
+        performCopy: () -> Boolean,
+        onCaptured: (String) -> Unit
+    ): Boolean {
+        if (isPrimaryClipSensitive()) return false
+        val savedClip: ClipData? = runCatching {
+            clipboardManager.primaryClip?.let { clip ->
+                if (clip.itemCount > 0) ClipData(clip) else null
+            }
+        }.getOrNull()
+
+        if (!performCopy()) return false
+
+        // Wait briefly for browser IPC to write the selection, then read & immediately restore!
+        handler.postDelayed({
+            readOnceAndRestore(savedClip, onCaptured)
+        }, 75L)
+        return true
+    }
+
+    private fun readOnceAndRestore(
+        savedClip: ClipData?,
+        onCaptured: (String) -> Unit
+    ) {
+        if (isPrimaryClipSensitive()) return
         val direct = readPrimaryClipText()
         if (!direct.isNullOrBlank()) {
-            onClipCaptured(direct)
+            restoreClipboard(savedClip)
+            onCaptured(direct)
             return
         }
-        launchFocusProbe()
+        launchSingleFocusProbe(savedClip, onCaptured)
+    }
+
+    private fun restoreClipboard(savedClip: ClipData?) {
+        markInternalCopy()
+        runCatching {
+            if (savedClip != null && savedClip.itemCount > 0) {
+                clipboardManager.setPrimaryClip(savedClip)
+            } else if (Build.VERSION.SDK_INT >= 28) {
+                clipboardManager.clearPrimaryClip()
+            }
+        }
     }
 
     private fun isPrimaryClipSensitive(): Boolean {
@@ -92,12 +108,12 @@ class ClipboardBridge(
     }.getOrNull()
 
     private fun cancelProbe() {
-        probeRetry1?.let { handler.removeCallbacks(it) }
-        probeRetry2?.let { handler.removeCallbacks(it) }
-        probeCleanupRunnable?.let { handler.removeCallbacks(it) }
-        probeRetry1 = null
-        probeRetry2 = null
-        probeCleanupRunnable = null
+        pendingRetry1?.let { handler.removeCallbacks(it) }
+        pendingRetry2?.let { handler.removeCallbacks(it) }
+        pendingCleanup?.let { handler.removeCallbacks(it) }
+        pendingRetry1 = null
+        pendingRetry2 = null
+        pendingCleanup = null
         activeProbe?.let { v ->
             runCatching { windowManager.removeView(v) }
             lastProbeFinishedMs = System.currentTimeMillis()
@@ -105,9 +121,15 @@ class ClipboardBridge(
         activeProbe = null
     }
 
-    private fun launchFocusProbe() {
+    private fun launchSingleFocusProbe(
+        savedClip: ClipData?,
+        onCaptured: (String) -> Unit
+    ) {
         cancelProbe()
-        val probe = View(context)
+        val probe = View(context).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
         val params = WindowManager.LayoutParams(
             1, 1,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -138,8 +160,9 @@ class ClipboardBridge(
             }
             val clip = readPrimaryClipText()
             if (!clip.isNullOrBlank()) {
+                restoreClipboard(savedClip)
                 finishProbe()
-                onClipCaptured(clip)
+                onCaptured(clip)
             }
         }
 
@@ -160,11 +183,11 @@ class ClipboardBridge(
         val r1 = Runnable { tryRead() }
         val r2 = Runnable { tryRead() }
         val clean = Runnable { finishProbe() }
-        probeRetry1 = r1
-        probeRetry2 = r2
-        probeCleanupRunnable = clean
+        pendingRetry1 = r1
+        pendingRetry2 = r2
+        pendingCleanup = clean
         handler.postDelayed(r1, 45L)
-        handler.postDelayed(r2, 150L)
-        handler.postDelayed(clean, 380L)
+        handler.postDelayed(r2, 160L)
+        handler.postDelayed(clean, 360L)
     }
 }

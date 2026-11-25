@@ -95,4 +95,26 @@ class ContextActionResolverTest {
         assertTrue("extract" in paraIds)
         assertFalse("define" in paraIds)
     }
+
+    @Test
+    fun customBarOrder_controlsExactPlacementOfSearchYoutubePinnedAndContextSlots() {
+        val pinned = listOf(ToolSpec("qr", "QR", "QR Code"))
+        val ctx = ContextActionResolver.analyze("serendipity")
+        val customOrder = listOf(
+            ContextActionResolver.SLOT_YOUTUBE,
+            "qr",
+            ContextActionResolver.SLOT_DEFAULT_SEARCH,
+            ContextActionResolver.SLOT_CONTEXT
+        )
+        val ids = ContextActionResolver.resolveBarActions(
+            ctx = ctx,
+            pinnedTools = pinned,
+            barOrder = customOrder
+        ).map { it.id }
+
+        assertEquals(
+            listOf("youtube_direct", "qr", "default_search", "define", "translate"),
+            ids
+        )
+    }
 }
