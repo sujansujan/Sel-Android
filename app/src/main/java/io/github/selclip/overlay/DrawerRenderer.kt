@@ -454,7 +454,7 @@ object DrawerRenderer {
 
     private fun makeDivider(context: Context, pal: ThemePalette): View =
         View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(context, 1)).apply {
                 topMargin = dp(context, 4)
                 bottomMargin = dp(context, 4)
             }
