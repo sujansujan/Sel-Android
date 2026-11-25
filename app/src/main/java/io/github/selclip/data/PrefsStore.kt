@@ -32,6 +32,49 @@ object PrefsStore {
     @Volatile
     private var cachedBlacklist: Set<String>? = null
 
+    @Volatile
+    private var cachedPaletteKey: Long = Long.MIN_VALUE
+
+    @Volatile
+    private var cachedPalette: ThemePalette? = null
+
+    @Volatile
+    private var cachedIconsOnly: Boolean? = null
+
+    @Volatile
+    private var cachedDefaultSearchId: String? = null
+
+    @Volatile
+    private var cachedPinnedIds: List<String>? = null
+
+    @Volatile
+    private var cachedBarOrder: List<String>? = null
+
+    @Volatile
+    private var cachedHiddenIds: Set<String>? = null
+
+    fun invalidatePaletteCache() {
+        cachedPaletteKey = Long.MIN_VALUE
+        cachedPalette = null
+    }
+
+    fun invalidateToolCaches() {
+        cachedPinnedIds = null
+        cachedBarOrder = null
+        cachedHiddenIds = null
+    }
+
+    private fun invalidateAllCaches() {
+        cachedBlacklist = null
+        cachedPaletteKey = Long.MIN_VALUE
+        cachedPalette = null
+        cachedIconsOnly = null
+        cachedDefaultSearchId = null
+        cachedPinnedIds = null
+        cachedBarOrder = null
+        cachedHiddenIds = null
+    }
+
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -51,6 +94,7 @@ object PrefsStore {
             ThemeMode.LIGHT -> editor.putBoolean(KEY_FOLLOW_SYSTEM_THEME, false).putBoolean(KEY_DARK_THEME_MANUAL, false)
         }
         editor.apply()
+        invalidatePaletteCache()
     }
 
     fun isSystemInDarkMode(context: Context): Boolean {
@@ -65,28 +109,38 @@ object PrefsStore {
             ThemeMode.DARK -> true
             ThemeMode.LIGHT -> false
         }
-        return if (mode == ThemeMode.AUTO) {
+        val key = (mode.ordinal.toLong() shl 2) or (if (dark) 1L else 0L)
+        if (cachedPaletteKey == key) {
+            cachedPalette?.let { return it }
+        }
+        val resolved = if (mode == ThemeMode.AUTO) {
             AppPalettes.resolveDynamic(context, dark)
         } else {
             if (dark) AppPalettes.DARK else AppPalettes.LIGHT
         }
+        cachedPalette = resolved
+        cachedPaletteKey = key
+        return resolved
     }
 
     fun isIconsOnlyMode(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_ICONS_ONLY, false)
+        cachedIconsOnly ?: prefs(context).getBoolean(KEY_ICONS_ONLY, false).also { cachedIconsOnly = it }
 
     fun setIconsOnlyMode(context: Context, enabled: Boolean) {
+        cachedIconsOnly = enabled
         prefs(context).edit().putBoolean(KEY_ICONS_ONLY, enabled).apply()
     }
 
     // --- Default Search Engine ---
 
     fun getDefaultSearchEngineId(context: Context): String =
-        prefs(context).getString(KEY_DEFAULT_SEARCH_ID, "web_google")
-            ?.takeIf { it.isNotBlank() } ?: "web_google"
+        cachedDefaultSearchId ?: (prefs(context).getString(KEY_DEFAULT_SEARCH_ID, "web_google")
+            ?.takeIf { it.isNotBlank() } ?: "web_google").also { cachedDefaultSearchId = it }
 
     fun setDefaultSearchEngineId(context: Context, engineId: String) {
-        prefs(context).edit().putString(KEY_DEFAULT_SEARCH_ID, engineId.trim()).apply()
+        val clean = engineId.trim()
+        cachedDefaultSearchId = clean.ifEmpty { "web_google" }
+        prefs(context).edit().putString(KEY_DEFAULT_SEARCH_ID, clean).apply()
     }
 
     fun loadWebSearchTools(context: Context): List<ToolSpec> =
@@ -123,11 +177,13 @@ object PrefsStore {
     private val excludedPinIds = setOf("copy", "screen_grab", "clip_history", "log", "web_search_folder", "youtube_folder")
 
     fun getPinnedToolIds(context: Context): List<String> {
+        cachedPinnedIds?.let { return it }
         val raw = prefs(context).getString(KEY_PINNED_TOOLS, "") ?: ""
         return raw.split(",")
             .map { it.trim() }
             .filter { it.isNotEmpty() && it !in excludedPinIds }
             .distinct()
+            .also { cachedPinnedIds = it }
     }
 
     fun isToolPinned(context: Context, toolId: String): Boolean =
@@ -143,6 +199,8 @@ object PrefsStore {
             current.add(toolId)
             true
         }
+        cachedPinnedIds = current.toList()
+        cachedBarOrder = null
         prefs(context).edit().putString(KEY_PINNED_TOOLS, current.joinToString(",")).apply()
         return nowPinned
     }
@@ -150,15 +208,17 @@ object PrefsStore {
     fun getPinnedToolSpecs(context: Context): List<ToolSpec> {
         val ids = getPinnedToolIds(context)
         if (ids.isEmpty()) return emptyList()
+        val hidden = getHiddenToolIds(context)
         val allMap = (loadAllTools(context) + loadWebSearchTools(context)).associateBy { it.id }
         return ids.mapNotNull { id ->
-            allMap[id]?.takeIf { !isToolHidden(context, id) }
+            allMap[id]?.takeIf { id !in hidden }
         }
     }
 
     // --- Customizable Left-to-Right Popup Bar Slot Order ---
 
     fun getBarSlotOrder(context: Context): List<String> {
+        cachedBarOrder?.let { return it }
         val pinnedIds = getPinnedToolSpecs(context).map { it.id }.toSet()
         val validCore = setOf(
             io.github.selclip.core.ContextActionResolver.SLOT_CONTEXT,
@@ -177,11 +237,13 @@ object PrefsStore {
         result.add(io.github.selclip.core.ContextActionResolver.SLOT_DEFAULT_SEARCH)
         result.add(io.github.selclip.core.ContextActionResolver.SLOT_YOUTUBE)
         result.addAll(pinnedIds)
-        return result.toList()
+        return result.toList().also { cachedBarOrder = it }
     }
 
     fun saveBarSlotOrder(context: Context, orderedSlotIds: List<String>) {
-        prefs(context).edit().putString(KEY_BAR_ORDER, orderedSlotIds.distinct().joinToString(",")).apply()
+        val dedup = orderedSlotIds.distinct()
+        cachedBarOrder = null
+        prefs(context).edit().putString(KEY_BAR_ORDER, dedup.joinToString(",")).apply()
     }
 
     fun moveBarSlot(context: Context, slotId: String, delta: Int): List<String> {
@@ -200,15 +262,20 @@ object PrefsStore {
     // --- Tool Visibility & Ordering ---
 
     fun isToolHidden(context: Context, id: String): Boolean =
-        prefs(context).getBoolean(PREFIX_HIDDEN + id, false)
+        id in getHiddenToolIds(context)
 
     fun setToolHidden(context: Context, id: String, hidden: Boolean) {
         prefs(context).edit().putBoolean(PREFIX_HIDDEN + id, hidden).apply()
+        cachedHiddenIds = null
+        cachedBarOrder = null
     }
 
     fun getHiddenToolIds(context: Context): Set<String> {
+        cachedHiddenIds?.let { return it }
         val p = prefs(context)
-        return loadAllTools(context).map { it.id }.filter { p.getBoolean(PREFIX_HIDDEN + it, false) }.toSet()
+        return loadAllTools(context).map { it.id }.filter { p.getBoolean(PREFIX_HIDDEN + it, false) }.toHashSet().also {
+            cachedHiddenIds = it
+        }
     }
 
     fun recordUse(context: Context, id: String) {
@@ -325,6 +392,7 @@ object PrefsStore {
                 RulesRepository.writeRawRules(context, rulesTxt)
             }
         }
+        invalidateAllCaches()
         true
     }.getOrDefault(false)
 

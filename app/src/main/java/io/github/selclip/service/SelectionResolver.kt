@@ -57,7 +57,7 @@ class SelectionResolver(
     private var lastToolbar: ToolbarHit? = null
     private var lastToolbarTimeMs: Long = 0L
 
-    private val toolbarKeywords = listOf("Copy", "Cut", "Select all", "Share", "Web search", "Translate")
+    private val toolbarKeywordsLower = setOf("copy", "cut", "select all", "share", "web search", "translate")
     private val toolbarIdHints = listOf(
         "android:id/copy",
         "android:id/cut",
@@ -65,6 +65,12 @@ class SelectionResolver(
         "android:id/shareText",
         "floating_toolbar_menu_item",
         "android:id/floating_toolbar_menu_item_text"
+    )
+    private val fullScreenToolbarIdHints = listOf(
+        "android:id/copy",
+        "android:id/cut",
+        "android:id/floating_toolbar_menu_item_text",
+        "android:id/action_mode_close_button"
     )
 
     val density: Float get() = service.resources.displayMetrics.density
@@ -86,10 +92,21 @@ class SelectionResolver(
         dm.widthPixels.coerceAtLeast(320) to dm.heightPixels.coerceAtLeast(480)
     }
 
-    fun captureScreenSnapshot(force: Boolean = false): ScreenSnapshot {
+    /**
+     * Ultra-lean live window snapshot:
+     * - Scans small floating popup windows FIRST via a single-pass ~8-node BFS (~1ms) instead of
+     *   12-24 cross-process full-DOM text searches that freeze both Sel and Chrome!
+     * - Never scans the same root window twice.
+     * - Returns exact live toolbar presence when [allowStaleToolbar] is false so Sel dismisses
+     *   in instant lockstep with Android's native toolbar.
+     */
+    fun captureScreenSnapshot(
+        force: Boolean = false,
+        allowStaleToolbar: Boolean = false
+    ): ScreenSnapshot {
         val now = System.currentTimeMillis()
         cachedSnapshot?.let { snap ->
-            if (!force && (now - lastSnapshotTimeMs) < 220L) return snap
+            if (!force && (now - lastSnapshotTimeMs) < 120L) return snap
         }
         lastSnapshotTimeMs = now
 
@@ -111,61 +128,68 @@ class SelectionResolver(
 
         val windows = runCatching { service.windows }.getOrNull()
         if (!windows.isNullOrEmpty()) {
+            val floatingCandidates = mutableListOf<Pair<AccessibilityWindowInfo, Rect>>()
+            val activeFullCandidates = mutableListOf<AccessibilityWindowInfo>()
+
             for (w in windows) {
-                if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
-                    val r = Rect()
-                    w.getBoundsInScreen(r)
-                    if (r.height() > dp(80) && r.top in (realH / 5)..(realH - dp(60))) {
-                        imeTop = imeTop?.let { minOf(it, r.top - dp(6)) } ?: (r.top - dp(6))
+                when (w.type) {
+                    AccessibilityWindowInfo.TYPE_INPUT_METHOD -> {
+                        val r = Rect()
+                        w.getBoundsInScreen(r)
+                        if (r.height() > dp(80) && r.top in (realH / 5)..(realH - dp(60))) {
+                            imeTop = imeTop?.let { minOf(it, r.top - dp(6)) } ?: (r.top - dp(6))
+                        }
+                    }
+                    AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> Unit
+                    else -> {
+                        val wr = Rect()
+                        w.getBoundsInScreen(wr)
+                        val isFullWidth = wr.width() >= (realW * 0.96f).toInt()
+                        val isStatusBar = isFullWidth && wr.top <= dp(8) && wr.height() <= dp(72)
+                        val isNavBar = isFullWidth && wr.bottom >= realH - dp(8) && wr.height() <= dp(96)
+                        if (isStatusBar || isNavBar) continue
+
+                        val isFloating = wr.height() in dp(24)..dp(180) && wr.width() < (realW * 0.97f).toInt()
+                        if (isFloating) {
+                            floatingCandidates.add(w to wr)
+                        } else if (w.isActive || w.isFocused) {
+                            activeFullCandidates.add(w)
+                        }
                     }
                 }
             }
 
             val viewport = Viewport(realW, realH, topInset, bottomInset, imeTop)
             val visBottom = viewport.visibleBottom
+            val scannedWindowIds = HashSet<Int>(4)
 
-            val ordered = windows.sortedWith(
-                compareByDescending<AccessibilityWindowInfo> {
-                    val r = Rect()
-                    it.getBoundsInScreen(r)
-                    r.height() in dp(24)..dp(160) && r.width() < (realW * 0.97f).toInt()
-                }.thenByDescending { it.layer }
-            )
-
-            for (w in ordered) {
-                if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD ||
-                    w.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY
-                ) continue
-
-                val wr = Rect()
-                w.getBoundsInScreen(wr)
-
-                val isFullWidth = wr.width() >= (realW * 0.96f).toInt()
-                val isStatusBar = isFullWidth && wr.top <= dp(8) && wr.height() <= dp(72)
-                val isNavBar = isFullWidth && wr.bottom >= realH - dp(8) && wr.height() <= dp(96)
-                if (isStatusBar || isNavBar) continue
-
+            // Pass 1: Floating PopupWindows first (highest layer first) — single fast BFS (~1ms)!
+            floatingCandidates.sortByDescending { it.first.layer }
+            for ((w, wr) in floatingCandidates) {
                 val root = runCatching { w.root }.getOrNull() ?: continue
                 val pkg = root.packageName?.toString().orEmpty()
                 if (pkg == service.packageName || SelectionFilter.isImePackage(pkg)) continue
-                if (pkg == "com.android.systemui" && isFullWidth) continue
+                scannedWindowIds.add(w.id)
 
-                val isFloating = wr.height() in dp(24)..dp(180) && wr.width() < (realW * 0.97f).toInt()
-                if (isFloating || w.isActive || w.isFocused) {
-                    val hit = detectToolbarInRoot(root, w.id, isFloating, realW, realH, topInset, visBottom)
-                    if (hit != null) {
-                        detectedToolbar = hit
-                        break
-                    }
+                val hit = detectToolbarInFloatingWindow(root, w.id, wr, realW, realH, topInset, visBottom)
+                if (hit != null) {
+                    detectedToolbar = hit
+                    break
                 }
             }
 
+            // Pass 2: Rare legacy CAB / in-app toolbar inside active full-screen window (viewId-only, ZERO full-DOM text scan!)
             if (detectedToolbar == null) {
-                val activeRoot = runCatching { service.rootInActiveWindow }.getOrNull()
-                if (activeRoot != null) {
-                    val pkg = activeRoot.packageName?.toString().orEmpty()
-                    if (pkg != service.packageName && !SelectionFilter.isImePackage(pkg) && pkg != "com.android.systemui") {
-                        detectedToolbar = detectToolbarInRoot(activeRoot, -1, false, realW, realH, topInset, visBottom)
+                for (w in activeFullCandidates) {
+                    if (!scannedWindowIds.add(w.id)) continue
+                    val root = runCatching { w.root }.getOrNull() ?: continue
+                    val pkg = root.packageName?.toString().orEmpty()
+                    if (pkg == service.packageName || SelectionFilter.isImePackage(pkg) || pkg == "com.android.systemui") continue
+
+                    val hit = detectToolbarByViewIdsOnly(root, w.id, realH, visBottom)
+                    if (hit != null) {
+                        detectedToolbar = hit
+                        break
                     }
                 }
             }
@@ -175,7 +199,8 @@ class SelectionResolver(
                 lastToolbarTimeMs = now
             }
 
-            val effectiveToolbar = detectedToolbar ?: lastToolbar?.takeIf { now - lastToolbarTimeMs < 1100L }
+            val effectiveToolbar = detectedToolbar
+                ?: if (allowStaleToolbar) lastToolbar?.takeIf { now - lastToolbarTimeMs < 350L } else null
             return ScreenSnapshot(viewport, effectiveToolbar).also { cachedSnapshot = it }
         }
 
@@ -184,28 +209,114 @@ class SelectionResolver(
     }
 
     fun findActiveToolbarNow(): ToolbarHit? {
-        val snap = captureScreenSnapshot(force = true)
-        return snap.toolbar?.takeIf { System.currentTimeMillis() - lastToolbarTimeMs < 400L }
+        val snap = captureScreenSnapshot(force = true, allowStaleToolbar = false)
+        return snap.toolbar
     }
 
     fun clearCachedToolbar() {
         lastToolbar = null
         lastToolbarTimeMs = 0L
+        cachedSnapshot = null
     }
 
-    private fun detectToolbarInRoot(
+    /**
+     * Single-pass BFS over a small floating PopupWindow (typically 5-15 nodes total).
+     * Checks view IDs, known selection menu labels, AND clickable pill geometry in ONE traversal.
+     */
+    private fun detectToolbarInFloatingWindow(
         root: AccessibilityNodeInfo,
         windowId: Int,
-        isFloatingWindow: Boolean,
+        windowRect: Rect,
         realW: Int,
         realH: Int,
         topInset: Int,
         visBottom: Int
     ): ToolbarHit? {
+        val matchedButtons = mutableListOf<Rect>()
+        var clickableCount = 0
+        var copyBtn: AccessibilityNodeInfo? = null
+
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        queue.add(root to 0)
+        var visited = 0
+
+        while (queue.isNotEmpty() && visited < 40) {
+            val (node, depth) = queue.removeFirst()
+            visited++
+            if (node.isVisibleToUser) {
+                val idRes = node.viewIdResourceName.orEmpty()
+                val rawLabel = node.text?.toString()?.trim().orEmpty()
+                    .ifEmpty { node.contentDescription?.toString()?.trim().orEmpty() }
+                val labelLower = rawLabel.lowercase()
+
+                val isIdHit = idRes.isNotEmpty() && toolbarIdHints.any { hint ->
+                    idRes == hint || idRes.endsWith("/$hint") || idRes.contains("floating_toolbar")
+                }
+                val isKeywordHit = labelLower.isNotEmpty() && labelLower in toolbarKeywordsLower
+
+                if (isIdHit || isKeywordHit) {
+                    val target = clickableAncestor(node) ?: node
+                    val r = Rect()
+                    target.getBoundsInScreen(r)
+                    if (isPlausibleButton(r, realH, visBottom)) {
+                        matchedButtons.add(r)
+                        if (copyBtn == null && (idRes.endsWith("/copy") || labelLower == "copy")) {
+                            copyBtn = target
+                        }
+                    }
+                }
+                if (node.isClickable) {
+                    clickableCount++
+                    if (copyBtn == null && labelLower == "copy") copyBtn = node
+                }
+            }
+
+            if (depth < 6) {
+                val c = minOf(node.childCount, 12)
+                for (i in 0 until c) {
+                    runCatching { node.getChild(i) }.getOrNull()?.let { queue.add(it to depth + 1) }
+                }
+            }
+        }
+
+        val isPlausibleFloatingPill = windowRect.height() in dp(28)..dp(132) &&
+            windowRect.width() in dp(80)..(realW * 0.96f).toInt() &&
+            windowRect.top >= (topInset - dp(16)).coerceAtLeast(dp(16)) &&
+            windowRect.bottom <= visBottom + dp(12)
+
+        if (matchedButtons.isEmpty() && !(isPlausibleFloatingPill && clickableCount in 2..8)) {
+            return null
+        }
+
+        val finalBounds = if (windowRect.height() in dp(28)..dp(120) &&
+            windowRect.width() in dp(80)..(realW * 0.96f).toInt()
+        ) {
+            windowRect
+        } else if (matchedButtons.isNotEmpty()) {
+            unionToolbarRow(matchedButtons) ?: return null
+        } else {
+            return null
+        }
+
+        val q = dp(18).coerceAtLeast(24)
+        val sig = "${finalBounds.left / q}_${finalBounds.top / q}_${finalBounds.right / q}_${finalBounds.bottom / q}"
+        return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn)
+    }
+
+    /**
+     * Lightweight view-ID-only check for non-floating full-screen windows (e.g. legacy top CAB bar).
+     * Never calls findAccessibilityNodeInfosByText() on full webpages so target apps never lag!
+     */
+    private fun detectToolbarByViewIdsOnly(
+        root: AccessibilityNodeInfo,
+        windowId: Int,
+        realH: Int,
+        visBottom: Int
+    ): ToolbarHit? {
         val buttons = mutableListOf<Rect>()
         var copyBtn: AccessibilityNodeInfo? = null
 
-        for (idName in toolbarIdHints) {
+        for (idName in fullScreenToolbarIdHints) {
             val nodes = runCatching { root.findAccessibilityNodeInfosByViewId(idName) }.getOrNull() ?: continue
             for (n in nodes) {
                 if (!n.isVisibleToUser) continue
@@ -218,60 +329,11 @@ class SelectionResolver(
                     }
                 }
             }
-        }
-
-        if (buttons.isEmpty()) {
-            for (kw in toolbarKeywords) {
-                val matches = runCatching { root.findAccessibilityNodeInfosByText(kw) }.getOrNull() ?: continue
-                for (m in matches) {
-                    if (!m.isVisibleToUser) continue
-                    val label = m.text?.toString()?.trim().orEmpty()
-                        .ifEmpty { m.contentDescription?.toString()?.trim().orEmpty() }
-                    if (!label.equals(kw, ignoreCase = true)) continue
-                    val clickable = clickableAncestor(m) ?: continue
-                    val r = Rect()
-                    clickable.getBoundsInScreen(r)
-                    if (isPlausibleButton(r, realH, visBottom)) {
-                        buttons.add(r)
-                        if (copyBtn == null && kw.equals("Copy", ignoreCase = true)) {
-                            copyBtn = clickable
-                        }
-                    }
-                }
-                if (buttons.isNotEmpty()) break
-            }
-        }
-
-        if (buttons.isEmpty() && isFloatingWindow) {
-            val wr = Rect()
-            root.getBoundsInScreen(wr)
-            if (wr.height() in dp(28)..dp(132) &&
-                wr.width() in dp(80)..(realW * 0.96f).toInt() &&
-                wr.top >= (topInset - dp(16)).coerceAtLeast(dp(16)) &&
-                wr.bottom <= visBottom + dp(12)
-            ) {
-                val (clickableCount, foundCopy) = scanFloatingToolbarWindow(root)
-                if (clickableCount in 2..8) {
-                    buttons.add(wr)
-                    if (copyBtn == null) copyBtn = foundCopy
-                }
-            }
+            if (buttons.isNotEmpty()) break
         }
 
         if (buttons.isEmpty()) return null
-
-        val finalBounds = if (isFloatingWindow) {
-            val wr = Rect()
-            root.getBoundsInScreen(wr)
-            if (wr.height() in dp(28)..dp(120) && wr.width() in dp(80)..(realW * 0.96f).toInt()) {
-                wr
-            } else {
-                unionToolbarRow(buttons) ?: return null
-            }
-        } else {
-            unionToolbarRow(buttons) ?: return null
-        }
-
+        val finalBounds = unionToolbarRow(buttons) ?: return null
         val q = dp(18).coerceAtLeast(24)
         val sig = "${finalBounds.left / q}_${finalBounds.top / q}_${finalBounds.right / q}_${finalBounds.bottom / q}"
         return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn)
@@ -306,31 +368,6 @@ class SelectionResolver(
             r.top >= dp(16) &&
             r.bottom <= visBottom + dp(8) &&
             r.top <= realH - dp(72)
-
-    private fun scanFloatingToolbarWindow(root: AccessibilityNodeInfo): Pair<Int, AccessibilityNodeInfo?> {
-        var found = 0
-        var copyNode: AccessibilityNodeInfo? = null
-        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
-        queue.add(root to 0)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < 36) {
-            val (node, depth) = queue.removeFirst()
-            visited++
-            if (node.isVisibleToUser && node.isClickable) {
-                found++
-                if (copyNode == null && isCopyLabel(node)) copyNode = node
-            } else if (copyNode == null && node.isVisibleToUser && isCopyLabel(node)) {
-                copyNode = clickableAncestor(node)
-            }
-            if (depth < 5) {
-                val c = minOf(node.childCount, 10)
-                for (i in 0 until c) {
-                    runCatching { node.getChild(i) }.getOrNull()?.let { queue.add(it to depth + 1) }
-                }
-            }
-        }
-        return found to copyNode
-    }
 
     fun extractSelectionFromEvent(event: AccessibilityEvent): ResolvedSelection? {
         val pkg = event.packageName?.toString().orEmpty()
@@ -380,7 +417,8 @@ class SelectionResolver(
     fun extractFromNode(
         node: AccessibilityNodeInfo,
         evFrom: Int = -1,
-        evTo: Int = -1
+        evTo: Int = -1,
+        resolveCharBounds: Boolean = true
     ): ResolvedSelection? {
         if (node.isPassword) return null
         val raw = node.text?.toString().orEmpty()
@@ -391,13 +429,21 @@ class SelectionResolver(
         val ne = node.textSelectionEnd
         val nodeSub = SelectionFilter.extractRange(raw, ns, ne, isPassword = false, hintText = hint)
         if (nodeSub != null) {
-            val bounds = resolveExactBounds(node, raw, minOf(ns, ne), maxOf(ns, ne))
+            val bounds = if (resolveCharBounds) {
+                resolveExactBounds(node, raw, minOf(ns, ne), maxOf(ns, ne))
+            } else {
+                Rect().also { node.getBoundsInScreen(it) }.toBox().takeIf { !it.isEmpty } ?: fallbackCenterBox()
+            }
             return ResolvedSelection(nodeSub, node, bounds)
         }
 
         val evSub = SelectionFilter.extractRange(raw, evFrom, evTo, isPassword = false, hintText = hint)
         if (evSub != null) {
-            val bounds = resolveExactBounds(node, raw, minOf(evFrom, evTo), maxOf(evFrom, evTo))
+            val bounds = if (resolveCharBounds) {
+                resolveExactBounds(node, raw, minOf(evFrom, evTo), maxOf(evFrom, evTo))
+            } else {
+                Rect().also { node.getBoundsInScreen(it) }.toBox().takeIf { !it.isEmpty } ?: fallbackCenterBox()
+            }
             return ResolvedSelection(evSub, node, bounds)
         }
         return null
@@ -497,7 +543,8 @@ class SelectionResolver(
             }
 
             if (node.isVisibleToUser) {
-                val hit = extractFromNode(node)
+                // Skip expensive refreshWithExtraData char-bounds IPC when we're already docking to toolbarBounds!
+                val hit = extractFromNode(node, resolveCharBounds = toolbarBounds == null)
                 if (hit != null) {
                     hits.add(hit)
                     // Single non-browser selection returns immediately; browser might span 2-3 inline spans

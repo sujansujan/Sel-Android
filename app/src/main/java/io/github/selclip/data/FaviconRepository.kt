@@ -57,8 +57,9 @@ object FaviconRepository {
     }
 
     /**
-     * Returns a cached favicon immediately if available in memory or on disk; otherwise returns null
-     * and lazily fetches it in the background, invoking [onLoaded] on the main thread when ready.
+     * Strictly non-blocking on the main thread (O(1) RAM lookup only — ZERO disk I/O or PNG
+     * decoding on the UI thread!). If not in RAM, checks disk cache then network on a single
+     * lazy daemon thread and invokes [onLoaded] on the main thread when ready.
      */
     fun getOrFetch(
         context: Context,
@@ -68,27 +69,30 @@ object FaviconRepository {
         val host = extractHost(urlTemplate) ?: return null
         memCache.get(host)?.takeIf { !it.isRecycled }?.let { return it }
 
-        val file = cacheFile(context, host)
-        if (file.exists() && file.length() > 32L) {
-            val decoded = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
-            if (decoded != null && decoded.width > 0 && decoded.height > 0) {
-                memCache.put(host, decoded)
-                return decoded
-            }
-        }
-
         if (!inFlight.add(host)) return null
         val appCtx = context.applicationContext
         getOrCreateExecutor().execute {
             try {
-                val bmp = downloadFavicon(host)
-                if (bmp != null && bmp.width > 0 && bmp.height > 0) {
-                    memCache.put(host, bmp)
-                    runCatching {
-                        FileOutputStream(cacheFile(appCtx, host)).use { out ->
-                            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                // 1. Check disk cache off the main thread first
+                val file = cacheFile(appCtx, host)
+                val fromDisk = if (file.exists() && file.length() > 32L) {
+                    runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+                } else null
+
+                val bmp = if (fromDisk != null && fromDisk.width > 0 && fromDisk.height > 0) {
+                    fromDisk
+                } else {
+                    downloadFavicon(host)?.also { downloaded ->
+                        runCatching {
+                            FileOutputStream(file).use { out ->
+                                downloaded.compress(Bitmap.CompressFormat.PNG, 100, out)
+                            }
                         }
                     }
+                }
+
+                if (bmp != null && bmp.width > 0 && bmp.height > 0) {
+                    memCache.put(host, bmp)
                     if (onLoaded != null) {
                         mainHandler.post { onLoaded(bmp) }
                     }
@@ -98,6 +102,28 @@ object FaviconRepository {
             }
         }
         return null
+    }
+
+    /**
+     * Pre-warms the in-memory favicon cache off the main thread for the active bar portals
+     * so the very first popup renders with crisp favicons immediately at 0ms main-thread cost.
+     */
+    fun warmMemoryCacheAsync(context: Context, urls: List<String>) {
+        val hosts = urls.mapNotNull { extractHost(it) }.distinct()
+        if (hosts.isEmpty()) return
+        val appCtx = context.applicationContext
+        getOrCreateExecutor().execute {
+            for (host in hosts) {
+                if (memCache.get(host)?.takeIf { !it.isRecycled } != null) continue
+                val file = cacheFile(appCtx, host)
+                val fromDisk = if (file.exists() && file.length() > 32L) {
+                    runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+                } else null
+                if (fromDisk != null && fromDisk.width > 0 && fromDisk.height > 0) {
+                    memCache.put(host, fromDisk)
+                }
+            }
+        }
     }
 
     fun prefetchAll(context: Context, urls: List<String>) {

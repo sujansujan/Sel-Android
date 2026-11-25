@@ -29,6 +29,7 @@ object RulesRepository {
 
     fun invalidateCache() {
         cached = null
+        PrefsStore.invalidateToolCaches()
     }
 
     fun rulesFile(context: Context): File =
@@ -76,12 +77,12 @@ object RulesRepository {
     }
 
     fun parseSnapshot(context: Context): ParsedSnapshot {
+        // O(1) RAM fast-path: zero filesystem syscalls on hot popup open!
+        cached?.let { return it }
+
         val file = ensureRulesFile(context)
         val mod = file.lastModified()
         val len = file.length()
-        cached?.let { snap ->
-            if (snap.lastModified == mod && snap.fileLength == len) return snap
-        }
 
         val entries = mutableListOf<CustomRuleEntry>()
         val topLevel = mutableListOf<ToolSpec>()

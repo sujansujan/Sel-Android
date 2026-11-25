@@ -24,8 +24,27 @@ import io.github.selclip.data.ThemePalette
  */
 object PopupBarRenderer {
 
+    private val mediumTypeface: Typeface by lazy {
+        Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+
     private fun dp(context: Context, v: Int): Int = (v * context.resources.displayMetrics.density).toInt()
     private fun dpF(context: Context, v: Float): Float = v * context.resources.displayMetrics.density
+
+    /**
+     * HorizontalScrollView that wraps tightly to its content width up to [maxWidthPx],
+     * avoiding `width = 0, weight = 1f` measurement discrepancies between offscreen pre-measure
+     * and attached WindowManager layout (eliminates Frame-1 horizontal jump!).
+     */
+    private class CappedHorizontalScrollView(
+        context: Context,
+        private val maxWidthPx: Int
+    ) : HorizontalScrollView(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val capped = MeasureSpec.makeMeasureSpec(maxWidthPx, MeasureSpec.AT_MOST)
+            super.onMeasure(capped, heightMeasureSpec)
+        }
+    }
 
     fun render(
         context: Context,
@@ -34,6 +53,7 @@ object PopupBarRenderer {
         pal: ThemePalette,
         iconsOnly: Boolean,
         isDrawerOpen: Boolean,
+        maxBarWidthPx: Int,
         onActionClick: (PopAction) -> Unit,
         onActionLongClick: (PopAction) -> Unit,
         onToggleMore: () -> Unit
@@ -51,10 +71,17 @@ object PopupBarRenderer {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val scroll = HorizontalScrollView(context).apply {
+        // Reserve exact chrome width for outer padding (8dp) + divider (5dp) + overflow button (44dp)
+        val overflowChromePx = dp(context, 57)
+        val maxScrollWidthPx = (maxBarWidthPx - overflowChromePx).coerceAtLeast(dp(context, 120))
+
+        val scroll = CappedHorizontalScrollView(context, maxScrollWidthPx).apply {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
             addView(itemsRow)
         }
 
@@ -192,7 +219,7 @@ object PopupBarRenderer {
 
         cell.addView(TextView(context).apply {
             text = action.label
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            typeface = mediumTypeface
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(fgColor)
             isSingleLine = true

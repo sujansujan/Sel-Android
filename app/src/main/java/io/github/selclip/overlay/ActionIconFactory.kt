@@ -22,6 +22,10 @@ import io.github.selclip.data.ToolSpec
  */
 object ActionIconFactory {
 
+    private val boldMediumTypeface: Typeface by lazy {
+        Typeface.create("sans-serif-medium", Typeface.BOLD)
+    }
+
     fun createForAction(
         context: Context,
         action: PopAction,
@@ -137,12 +141,26 @@ object ActionIconFactory {
         }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = colorInt
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            typeface = boldMediumTypeface
             textAlign = Paint.Align.CENTER
         }
+        // Reusable scratch geometry: zero per-frame allocations during hardware fade-in!
+        private val tmpPath = Path()
+        private val tmpRectF = RectF()
 
         override fun getIntrinsicWidth(): Int = sizePx
         override fun getIntrinsicHeight(): Int = sizePx
+
+        private fun resetRect(l: Float, t: Float, r: Float, b: Float): RectF {
+            tmpRectF.set(l, t, r, b)
+            return tmpRectF
+        }
+
+        private inline fun drawPathReuse(canvas: Canvas, paint: Paint, build: Path.() -> Unit) {
+            tmpPath.reset()
+            tmpPath.build()
+            canvas.drawPath(tmpPath, paint)
+        }
 
         override fun draw(canvas: Canvas) {
             val w = bounds.width().toFloat().takeIf { it > 0f } ?: sizePx.toFloat()
@@ -169,14 +187,13 @@ object ActionIconFactory {
                 }
 
                 "youtube_direct", "youtube_folder" -> {
-                    canvas.drawRoundRect(RectF(px(2.5f), py(5.5f), px(21.5f), py(18.5f)), 3.6f * u, 3.6f * u, strokePaint)
-                    val tri = Path().apply {
+                    canvas.drawRoundRect(resetRect(px(2.5f), py(5.5f), px(21.5f), py(18.5f)), 3.6f * u, 3.6f * u, strokePaint)
+                    drawPathReuse(canvas, fillPaint) {
                         moveTo(px(10f), py(9f))
                         lineTo(px(15.8f), py(12f))
                         lineTo(px(10f), py(15f))
                         close()
                     }
-                    canvas.drawPath(tri, fillPaint)
                 }
 
                 // Crisp A / 文 Translate icon (immediately recognizable, never confused with internet globe!)
@@ -184,28 +201,22 @@ object ActionIconFactory {
                     // Geometric 文 (top-left)
                     canvas.drawLine(px(7.5f), py(3.5f), px(7.5f), py(5.5f), strokePaint)
                     canvas.drawLine(px(3.2f), py(6f), px(11.8f), py(6f), strokePaint)
-                    // Left-to-right curves of 文
-                    val cjk = Path().apply {
+                    // Left-to-right curves of 文 + crisp capital A (bottom-right)
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(10.2f), py(6.2f))
                         quadTo(px(8.5f), py(11.5f), px(3.8f), py(14f))
                         moveTo(px(5.2f), py(7.8f))
                         quadTo(px(7.5f), py(11.5f), px(11.4f), py(13.6f))
-                    }
-                    canvas.drawPath(cjk, strokePaint)
-
-                    // Crisp capital A (bottom-right)
-                    val letterA = Path().apply {
                         moveTo(px(12.2f), py(20.5f))
                         lineTo(px(16.2f), py(10.2f))
                         lineTo(px(20.2f), py(20.5f))
                         moveTo(px(13.6f), py(17.2f))
                         lineTo(px(18.8f), py(17.2f))
                     }
-                    canvas.drawPath(letterA, strokePaint)
                 }
 
                 "define" -> {
-                    val book = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(cx, py(6.5f))
                         quadTo(px(8f), py(4.5f), px(4f), py(6f))
                         lineTo(px(4f), py(18f))
@@ -216,11 +227,10 @@ object ActionIconFactory {
                         moveTo(cx, py(6.5f))
                         lineTo(cx, py(18.5f))
                     }
-                    canvas.drawPath(book, strokePaint)
                 }
 
                 "phone_call" -> {
-                    val p = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(6.5f), py(4.5f))
                         lineTo(px(9.5f), py(4.5f))
                         lineTo(px(10.5f), py(8.5f))
@@ -233,34 +243,31 @@ object ActionIconFactory {
                         quadTo(px(5.5f), py(16.5f), px(4.5f), py(7.5f))
                         quadTo(px(4.5f), py(4.5f), px(6.5f), py(4.5f))
                     }
-                    canvas.drawPath(p, strokePaint)
                 }
 
                 "phone_sms" -> {
-                    canvas.drawRoundRect(RectF(px(3.5f), py(4.5f), px(20.5f), py(16.2f)), 3f * u, 3f * u, strokePaint)
-                    val tail = Path().apply {
+                    canvas.drawRoundRect(resetRect(px(3.5f), py(4.5f), px(20.5f), py(16.2f)), 3f * u, 3f * u, strokePaint)
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(7.5f), py(16.2f))
                         lineTo(px(6f), py(20.2f))
                         lineTo(px(11.5f), py(16.2f))
                     }
-                    canvas.drawPath(tail, strokePaint)
                     canvas.drawLine(px(7.5f), py(9f), px(16.5f), py(9f), strokePaint)
                     canvas.drawLine(px(7.5f), py(12.2f), px(13.5f), py(12.2f), strokePaint)
                 }
 
                 "phone_wa", "phone_w4b" -> {
                     canvas.drawCircle(cx, py(11.5f), 8.2f * u, strokePaint)
-                    val tail = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(6.2f), py(17.2f))
                         lineTo(px(4.5f), py(20.5f))
                         lineTo(px(8.8f), py(19f))
                     }
-                    canvas.drawPath(tail, strokePaint)
                     drawCenteredText(canvas, if (iconKey == "phone_w4b") "B" else "W", cx, py(11.5f), 9.5f * u)
                 }
 
                 "open_url", "open_magnet" -> {
-                    val p = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(13f), py(5f))
                         lineTo(px(19f), py(5f))
                         lineTo(px(19f), py(11f))
@@ -272,18 +279,15 @@ object ActionIconFactory {
                         lineTo(px(17f), py(18.5f))
                         lineTo(px(17f), py(13f))
                     }
-                    canvas.drawPath(p, strokePaint)
                 }
 
                 "clean_url" -> {
-                    // Link ring + diagonal clean slash
-                    canvas.drawRoundRect(RectF(px(3.5f), py(8.5f), px(12f), py(15.5f)), 3.2f * u, 3.2f * u, strokePaint)
-                    canvas.drawRoundRect(RectF(px(12f), py(8.5f), px(20.5f), py(15.5f)), 3.2f * u, 3.2f * u, strokePaint)
+                    canvas.drawRoundRect(resetRect(px(3.5f), py(8.5f), px(12f), py(15.5f)), 3.2f * u, 3.2f * u, strokePaint)
+                    canvas.drawRoundRect(resetRect(px(12f), py(8.5f), px(20.5f), py(15.5f)), 3.2f * u, 3.2f * u, strokePaint)
                     canvas.drawLine(px(6f), py(19f), px(18f), py(5f), strokePaint)
                 }
 
                 "clean_text" -> {
-                    // Three crisp sparkles
                     drawSparkle(canvas, px(10.5f), py(12.5f), 6.2f * u)
                     drawSparkle(canvas, px(17.5f), py(6.5f), 2.8f * u)
                     drawSparkle(canvas, px(18f), py(17.5f), 2.2f * u)
@@ -298,17 +302,16 @@ object ActionIconFactory {
                 }
 
                 "email_send" -> {
-                    canvas.drawRoundRect(RectF(px(3.5f), py(5.5f), px(20.5f), py(18.5f)), 2.2f * u, 2.2f * u, strokePaint)
-                    val flap = Path().apply {
+                    canvas.drawRoundRect(resetRect(px(3.5f), py(5.5f), px(20.5f), py(18.5f)), 2.2f * u, 2.2f * u, strokePaint)
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(4.5f), py(7f))
                         lineTo(cx, py(13f))
                         lineTo(px(19.5f), py(7f))
                     }
-                    canvas.drawPath(flap, strokePaint)
                 }
 
                 "magnet" -> {
-                    val mag = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(6f), py(5f))
                         lineTo(px(6f), py(13f))
                         quadTo(px(6f), py(19.5f), cx, py(19.5f))
@@ -319,26 +322,24 @@ object ActionIconFactory {
                         moveTo(px(16.5f), py(8.5f))
                         lineTo(px(19.5f), py(8.5f))
                     }
-                    canvas.drawPath(mag, strokePaint)
                 }
 
                 "extract", "md_link" -> {
-                    canvas.drawRoundRect(RectF(px(3.5f), py(8.5f), px(13f), py(15.5f)), 3.5f * u, 3.5f * u, strokePaint)
-                    canvas.drawRoundRect(RectF(px(11f), py(8.5f), px(20.5f), py(15.5f)), 3.5f * u, 3.5f * u, strokePaint)
+                    canvas.drawRoundRect(resetRect(px(3.5f), py(8.5f), px(13f), py(15.5f)), 3.5f * u, 3.5f * u, strokePaint)
+                    canvas.drawRoundRect(resetRect(px(11f), py(8.5f), px(20.5f), py(15.5f)), 3.5f * u, 3.5f * u, strokePaint)
                 }
 
                 "sort" -> {
                     canvas.drawLine(px(4f), py(7f), px(13.5f), py(7f), strokePaint)
                     canvas.drawLine(px(4f), py(12f), px(11.5f), py(12f), strokePaint)
                     canvas.drawLine(px(4f), py(17f), px(9f), py(17f), strokePaint)
-                    // Downward sort arrow
                     canvas.drawLine(px(17.5f), py(6.5f), px(17.5f), py(18f), strokePaint)
                     canvas.drawLine(px(14.8f), py(15.2f), px(17.5f), py(18f), strokePaint)
                     canvas.drawLine(px(20.2f), py(15.2f), px(17.5f), py(18f), strokePaint)
                 }
 
                 "speak" -> {
-                    val spk = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(4f), py(9.5f))
                         lineTo(px(8f), py(9.5f))
                         lineTo(px(12.5f), py(5.5f))
@@ -347,41 +348,36 @@ object ActionIconFactory {
                         lineTo(px(4f), py(14.5f))
                         close()
                     }
-                    canvas.drawPath(spk, strokePaint)
-                    canvas.drawArc(RectF(px(13f), py(8.5f), px(17.2f), py(15.5f)), -50f, 100f, false, strokePaint)
-                    canvas.drawArc(RectF(px(14.5f), py(6f), px(20.5f), py(18f)), -50f, 100f, false, strokePaint)
+                    canvas.drawArc(resetRect(px(13f), py(8.5f), px(17.2f), py(15.5f)), -50f, 100f, false, strokePaint)
+                    canvas.drawArc(resetRect(px(14.5f), py(6f), px(20.5f), py(18f)), -50f, 100f, false, strokePaint)
                 }
 
                 "markdown_folder" -> {
-                    canvas.drawRoundRect(RectF(px(2.5f), py(5.5f), px(21.5f), py(18.5f)), 2.8f * u, 2.8f * u, strokePaint)
-                    val m = Path().apply {
+                    canvas.drawRoundRect(resetRect(px(2.5f), py(5.5f), px(21.5f), py(18.5f)), 2.8f * u, 2.8f * u, strokePaint)
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(5.5f), py(15f))
                         lineTo(px(5.5f), py(9f))
                         lineTo(px(8.2f), py(12.2f))
                         lineTo(px(11f), py(9f))
                         lineTo(px(11f), py(15f))
                     }
-                    canvas.drawPath(m, strokePaint)
-                    // Down arrow
                     canvas.drawLine(px(16.5f), py(8.8f), px(16.5f), py(15f), strokePaint)
                     canvas.drawLine(px(14.2f), py(12.8f), px(16.5f), py(15f), strokePaint)
                     canvas.drawLine(px(18.8f), py(12.8f), px(16.5f), py(15f), strokePaint)
                 }
 
                 "regex_pipe" -> {
-                    canvas.drawRoundRect(RectF(px(3f), py(4.5f), px(21f), py(19.5f)), 3f * u, 3f * u, strokePaint)
-                    // Terminal chevron >_
-                    val chevron = Path().apply {
+                    canvas.drawRoundRect(resetRect(px(3f), py(4.5f), px(21f), py(19.5f)), 3f * u, 3f * u, strokePaint)
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(6.8f), py(9f))
                         lineTo(px(10.5f), py(12f))
                         lineTo(px(6.8f), py(15f))
                     }
-                    canvas.drawPath(chevron, strokePaint)
                     canvas.drawLine(px(12.5f), py(15f), px(17.2f), py(15f), strokePaint)
                 }
 
                 "folder_custom" -> {
-                    val folder = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(3.5f), py(7f))
                         lineTo(px(3.5f), py(18.5f))
                         lineTo(px(20.5f), py(18.5f))
@@ -391,7 +387,6 @@ object ActionIconFactory {
                         lineTo(px(3.5f), py(6f))
                         close()
                     }
-                    canvas.drawPath(folder, strokePaint)
                 }
 
                 "mute_app" -> {
@@ -400,7 +395,7 @@ object ActionIconFactory {
                 }
 
                 "undo" -> {
-                    val p = Path().apply {
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(9f), py(7f))
                         lineTo(px(4.5f), py(11f))
                         lineTo(px(9f), py(15f))
@@ -409,7 +404,6 @@ object ActionIconFactory {
                         quadTo(px(19.5f), py(11f), px(19.5f), py(15.5f))
                         quadTo(px(19.5f), py(18.5f), px(15.5f), py(18.5f))
                     }
-                    canvas.drawPath(p, strokePaint)
                 }
 
                 "case" -> drawCenteredText(canvas, "Aa", cx, cy, 13f * u)
@@ -419,7 +413,7 @@ object ActionIconFactory {
                 "pipe_b64_enc" -> drawCenteredText(canvas, "64", cx, cy, 12.5f * u)
                 "pipe_sha256" -> drawCenteredText(canvas, "#", cx, cy, 15f * u)
                 "pipe_rot13" -> {
-                    canvas.drawArc(RectF(px(5f), py(5f), px(19f), py(19f)), 20f, 290f, false, strokePaint)
+                    canvas.drawArc(resetRect(px(5f), py(5f), px(19f), py(19f)), 20f, 290f, false, strokePaint)
                     canvas.drawLine(px(18.5f), py(8f), px(18.5f), py(12.5f), strokePaint)
                     canvas.drawLine(px(14.5f), py(12.2f), px(18.5f), py(12.5f), strokePaint)
                 }
@@ -432,13 +426,12 @@ object ActionIconFactory {
                     canvas.drawLine(px(9.5f), py(16.5f), px(19.5f), py(16.5f), strokePaint)
                 }
                 "md_task" -> {
-                    canvas.drawRoundRect(RectF(px(4f), py(4.5f), px(20f), py(19.5f)), 2.5f * u, 2.5f * u, strokePaint)
-                    val chk = Path().apply {
+                    canvas.drawRoundRect(resetRect(px(4f), py(4.5f), px(20f), py(19.5f)), 2.5f * u, 2.5f * u, strokePaint)
+                    drawPathReuse(canvas, strokePaint) {
                         moveTo(px(7.8f), py(12.2f))
                         lineTo(px(10.8f), py(15.2f))
                         lineTo(px(16.5f), py(9.2f))
                     }
-                    canvas.drawPath(chk, strokePaint)
                 }
                 "md_bold" -> drawCenteredText(canvas, "B", cx, cy, 15f * u)
                 "md_italic" -> drawCenteredText(canvas, "I", cx, cy, 15f * u)
@@ -450,7 +443,7 @@ object ActionIconFactory {
                 "md_h2" -> drawCenteredText(canvas, "H2", cx, cy, 12f * u)
                 "md_spoiler" -> drawCenteredText(canvas, "||", cx, cy, 13f * u)
                 "md_table" -> {
-                    canvas.drawRoundRect(RectF(px(4f), py(5f), px(20f), py(19f)), 2f * u, 2f * u, strokePaint)
+                    canvas.drawRoundRect(resetRect(px(4f), py(5f), px(20f), py(19f)), 2f * u, 2f * u, strokePaint)
                     canvas.drawLine(px(4f), py(10.5f), px(20f), py(10.5f), strokePaint)
                     canvas.drawLine(cx, py(5f), cx, py(19f), strokePaint)
                 }
@@ -462,14 +455,13 @@ object ActionIconFactory {
         }
 
         private fun drawSparkle(canvas: Canvas, sx: Float, sy: Float, r: Float) {
-            val p = Path().apply {
+            drawPathReuse(canvas, strokePaint) {
                 moveTo(sx, sy - r)
                 quadTo(sx, sy, sx + r, sy)
                 quadTo(sx, sy, sx, sy + r)
                 quadTo(sx, sy, sx - r, sy)
                 quadTo(sx, sy, sx, sy - r)
             }
-            canvas.drawPath(p, strokePaint)
         }
 
         private fun drawCenteredText(canvas: Canvas, txt: String, cx: Float, cy: Float, textSizePx: Float) {

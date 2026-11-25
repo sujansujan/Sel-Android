@@ -5,9 +5,11 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
@@ -22,14 +24,17 @@ import io.github.selclip.data.PrefsStore
 import kotlin.math.abs
 
 /**
- * Owns the single lightweight TYPE_ACCESSIBILITY_OVERLAY window.
+ * Owns the single lightweight, GPU-accelerated TYPE_ACCESSIBILITY_OVERLAY window.
  *
  * Zero-stutter guarantees:
- * - Pre-measures the fully rendered popup BEFORE calling `windowManager.addView()` so it spawns
- *   at the exact final `(x, y)` on Frame 0 (zero mid-animation jump/teleport!).
- * - Hardware-accelerated native alpha fade-in (`110ms`) matching Android's FloatingToolbarPopup.
- * - Supports smooth 1-call `updateAnchorPosition()` when Android's native toolbar moves.
- * - Built-in safety watchdog auto-dismisses orphaned windows so a stuck popup is impossible.
+ * - Explicitly sets `FLAG_HARDWARE_ACCELERATED` so ViewRootImpl uses GPU ThreadedRenderer
+ *   instead of slow CPU software Canvas rendering (critical for Service overlays!).
+ * - Explicitly sets `params.windowAnimations = 0` to eliminate conflicting OEM window transitions.
+ * - Starts the 115ms alpha fade-in strictly inside a one-shot `OnPreDrawListener` AFTER the
+ *   SurfaceFlinger surface is created & laid out (60/120fps from 0.0 -> 1.0, ZERO skipped frames!).
+ * - No redundant `.withLayer()` offscreen FBO allocation on an already-composited overlay window.
+ * - Tracks self window mutations (`addView`/`updateViewLayout`/`removeView`) so the service
+ *   ignores its own `TYPE_WINDOWS_CHANGED` echoes during Frame 1.
  */
 class OverlayWindowController(
     private val context: Context,
@@ -38,13 +43,19 @@ class OverlayWindowController(
     private val onSafetyTimeout: () -> Unit
 ) {
 
+    companion object {
+        private val enterInterpolator = DecelerateInterpolator()
+    }
+
     private val handler = Handler(Looper.getMainLooper())
 
     private var rootView: LinearLayout? = null
+    private var cardBgDrawable: GradientDrawable? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var barContainer: LinearLayout? = null
     private var drawerScroll: ScrollView? = null
     private var drawerContainer: LinearLayout? = null
+    private var pendingPreDrawListener: ViewTreeObserver.OnPreDrawListener? = null
 
     private var lastAnchorTarget: AnchorTarget = AnchorTarget(Box(0, 0, 0, 0), false)
     private var lastViewport: Viewport = Viewport(1080, 2200, 96, 120)
@@ -52,9 +63,19 @@ class OverlayWindowController(
     private var activeMaxWidthPx: Int = 640
     private var currentMode: PopupMode = PopupMode.Bar
 
+    private var lastSelfMutationUptimeMs: Long = 0L
+    private var attachedAtUptimeMs: Long = 0L
+
     private val safetyTimeoutRunnable = Runnable { onSafetyTimeout() }
 
     val isAttached: Boolean get() = rootView?.isAttachedToWindow == true
+
+    fun markSelfWindowMutation() {
+        lastSelfMutationUptimeMs = SystemClock.uptimeMillis()
+    }
+
+    fun isRecentSelfWindowMutation(withinMs: Long = 90L): Boolean =
+        (SystemClock.uptimeMillis() - lastSelfMutationUptimeMs) < withinMs
 
     private val density: Float get() = context.resources.displayMetrics.density
     private fun dp(v: Int): Int = (v * density).toInt()
@@ -99,7 +120,7 @@ class OverlayWindowController(
         val drawer = drawerContainer ?: return
 
         val cornerDp = if (isDrawerOpen) 16f else 24f
-        root.background = GradientDrawable().apply {
+        cardBgDrawable?.apply {
             setColor(pal.popupSurfaceInt)
             setStroke(dp(1), pal.popupBorderInt)
             cornerRadius = dpF(cornerDp)
@@ -128,6 +149,7 @@ class OverlayWindowController(
                 pal = pal,
                 iconsOnly = iconsOnly,
                 isDrawerOpen = false,
+                maxBarWidthPx = activeMaxWidthPx,
                 onActionClick = onActionClick,
                 onActionLongClick = onActionLongClick,
                 onToggleMore = onToggleMore
@@ -155,27 +177,49 @@ class OverlayWindowController(
             isDrawerOpen = isDrawerOpen
         )
         maxDrawerHeightPx = minOf(placement.maxDrawerHeight, dp(260))
-        params.x = placement.x
-        params.y = placement.y
 
         resetSafetyTimer(isDrawerOpen)
 
         if (createdNow) {
+            params.x = placement.x
+            params.y = placement.y
             root.alpha = 0f
+            markSelfWindowMutation()
             val added = runCatching { windowManager.addView(root, params) }.isSuccess
             if (!added) {
                 hide()
                 return
             }
-            // Crisp native Android fade-in on GPU layer (zero scale jitter, zero position teleport)
-            root.animate()
-                .alpha(1f)
-                .setDuration(105L)
-                .setInterpolator(DecelerateInterpolator())
-                .withLayer()
-                .start()
+            attachedAtUptimeMs = SystemClock.uptimeMillis()
+
+            // Start hardware fade-in strictly on the first real VSync frame after surface attach!
+            val listener = object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (root.viewTreeObserver.isAlive) {
+                        root.viewTreeObserver.removeOnPreDrawListener(this)
+                    }
+                    if (pendingPreDrawListener === this) pendingPreDrawListener = null
+                    if (rootView === root && root.isAttachedToWindow) {
+                        root.animate()
+                            .alpha(1f)
+                            .setDuration(115L)
+                            .setInterpolator(enterInterpolator)
+                            .start()
+                    }
+                    return true
+                }
+            }
+            pendingPreDrawListener = listener
+            root.viewTreeObserver.addOnPreDrawListener(listener)
         } else {
-            relayout()
+            val posChanged = params.x != placement.x || params.y != placement.y
+            params.x = placement.x
+            params.y = placement.y
+            root.requestLayout()
+            if (posChanged || isDrawerOpen) {
+                markSelfWindowMutation()
+                runCatching { windowManager.updateViewLayout(root, params) }
+            }
         }
     }
 
@@ -200,9 +244,14 @@ class OverlayWindowController(
             density = density,
             isDrawerOpen = currentMode != PopupMode.Bar
         )
-        if (abs(placement.x - params.x) > dp(2) || abs(placement.y - params.y) > dp(2)) {
+
+        // Ignore small native-toolbar settle wobble during our 160ms enter fade-in!
+        val inEnterFade = (SystemClock.uptimeMillis() - attachedAtUptimeMs) < 160L
+        val deadzone = if (inEnterFade) dp(24) else dp(8)
+        if (abs(placement.x - params.x) > deadzone || abs(placement.y - params.y) > deadzone) {
             params.x = placement.x
             params.y = placement.y
+            markSelfWindowMutation()
             runCatching { windowManager.updateViewLayout(root, params) }
         }
     }
@@ -226,6 +275,7 @@ class OverlayWindowController(
             p.x = placement.x
             p.y = placement.y
             v.requestLayout()
+            markSelfWindowMutation()
             runCatching { windowManager.updateViewLayout(v, p) }
         }
     }
@@ -233,11 +283,17 @@ class OverlayWindowController(
     fun hide() {
         handler.removeCallbacks(safetyTimeoutRunnable)
         rootView?.let { v ->
+            pendingPreDrawListener?.let { l ->
+                if (v.viewTreeObserver.isAlive) v.viewTreeObserver.removeOnPreDrawListener(l)
+            }
+            pendingPreDrawListener = null
             v.animate().cancel()
-            runCatching { windowManager.removeViewImmediate(v) }
-                .onFailure { runCatching { windowManager.removeView(v) } }
+            v.visibility = View.GONE
+            runCatching { windowManager.removeView(v) }
+                .onFailure { runCatching { windowManager.removeViewImmediate(v) } }
         }
         rootView = null
+        cardBgDrawable = null
         windowParams = null
         barContainer = null
         drawerScroll = null
@@ -262,10 +318,18 @@ class OverlayWindowController(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
+            windowAnimations = 0
+        }
+
+        val bg = GradientDrawable().apply {
+            setColor(pal.popupSurfaceInt)
+            setStroke(dp(1), pal.popupBorderInt)
+            cornerRadius = dpF(if (isDrawerOpen) 16f else 24f)
         }
 
         val card = object : LinearLayout(context) {
@@ -276,11 +340,7 @@ class OverlayWindowController(
             orientation = LinearLayout.VERTICAL
             elevation = dpF(6f)
             clipToOutline = true
-            background = GradientDrawable().apply {
-                setColor(pal.popupSurfaceInt)
-                setStroke(dp(1), pal.popupBorderInt)
-                cornerRadius = dpF(if (isDrawerOpen) 16f else 24f)
-            }
+            background = bg
             setOnTouchListener { _, event ->
                 if (event.action == MotionEvent.ACTION_OUTSIDE || event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
                     onOutsideTouch()
@@ -313,6 +373,7 @@ class OverlayWindowController(
         card.addView(scroll)
 
         rootView = card
+        cardBgDrawable = bg
         windowParams = params
         barContainer = bar
         drawerScroll = scroll
