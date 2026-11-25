@@ -3,6 +3,7 @@ package io.github.selclip.overlay
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.text.TextUtils
@@ -23,8 +24,8 @@ import io.github.selclip.data.ThemePalette
 import io.github.selclip.data.ToolSpec
 
 /**
- * Renders all expandable drawers inside the native Material dropdown card
- * (Clipboard History removed; Search Engine drawer displays auto-fetched favicons).
+ * Renders all expandable drawers inside the native Material dropdown card,
+ * displaying dedicated crisp icons / favicons for every single tool and portal.
  */
 object DrawerRenderer {
 
@@ -78,15 +79,17 @@ object DrawerRenderer {
         cb: Callbacks
     ) {
         val tools = PrefsStore.getVisibleToolsForDrawer(context)
+        val iconPx = dp(context, 18)
         var i = 0
         while (i < tools.size) {
             val t1 = tools[i]
             val t2 = tools.getOrNull(i + 1)
             if (t2 != null) {
-                container.addView(makeTwoColRow(context, t1, t2, pal, cb))
+                container.addView(makeTwoColRow(context, t1, t2, pal, iconPx, cb))
                 i += 2
             } else {
-                container.addView(makeRow(context, t1.label, pal) {
+                val icon = ActionIconFactory.createForTool(context, t1, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
+                container.addView(makeIconRow(context, t1.label, icon, pal) {
                     PrefsStore.recordUse(context, t1.id)
                     cb.onExecuteTool(t1)
                 })
@@ -97,7 +100,8 @@ object DrawerRenderer {
         if (activePackage.isNotBlank() && activePackage != context.packageName) {
             container.addView(makeDivider(context, pal))
             val shortPkg = activePackage.substringAfterLast('.')
-            container.addView(makeRow(context, "Mute popup in $shortPkg", pal, pal.fgMutedInt) {
+            val muteIcon = ActionIconFactory.createMuteIcon(pal.fgMutedInt, iconPx)
+            container.addView(makeIconRow(context, "Mute popup in $shortPkg", muteIcon, pal, pal.fgMutedInt) {
                 cb.onMutePackage(activePackage)
             })
         }
@@ -110,26 +114,6 @@ object DrawerRenderer {
 
         for (engine in PrefsStore.loadWebSearchTools(context)) {
             val isDefault = engine.id == defaultId
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(context, 44)
-                setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
-                background = pressedBg(context, pal)
-                setOnClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
-                    PrefsStore.recordUse(context, "web_search_folder")
-                    cb.onExecuteTool(engine)
-                }
-                setOnLongClickListener {
-                    runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-                    PrefsStore.setDefaultSearchEngineId(context, engine.id)
-                    Toast.makeText(context, "Default search: ${engine.label}", Toast.LENGTH_SHORT).show()
-                    cb.onRerender()
-                    true
-                }
-            }
-
             val icon = ActionIconFactory.createFaviconOrBadge(
                 context = context,
                 urlTemplate = engine.customTarget,
@@ -138,29 +122,33 @@ object DrawerRenderer {
                 sizePx = iconPx,
                 onFaviconLoaded = { cb.onRerender() }
             )
-            row.addView(ImageView(context).apply {
-                setImageDrawable(icon)
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(context, 10) }
-            })
-
-            row.addView(TextView(context).apply {
-                text = if (isDefault) "${engine.label}  ★" else engine.label
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-                setTextColor(if (isDefault) pal.accentPrimaryInt else pal.fgPrimaryInt)
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            })
+            val row = makeIconRow(
+                context = context,
+                label = if (isDefault) "${engine.label}  ★" else engine.label,
+                icon = icon,
+                pal = pal,
+                colorInt = if (isDefault) pal.accentPrimaryInt else pal.fgPrimaryInt
+            ) {
+                PrefsStore.recordUse(context, "web_search_folder")
+                cb.onExecuteTool(engine)
+            }
+            row.setOnLongClickListener {
+                runCatching { row.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
+                PrefsStore.setDefaultSearchEngineId(context, engine.id)
+                Toast.makeText(context, "Default search: ${engine.label}", Toast.LENGTH_SHORT).show()
+                cb.onRerender()
+                true
+            }
             container.addView(row)
         }
     }
 
     private fun renderYouTube(context: Context, container: LinearLayout, pal: ThemePalette, cb: Callbacks) {
         container.addView(makeBackHeader(context, "YouTube Filters", pal, cb))
+        val iconPx = dp(context, 18)
         for (yt in PrefsStore.loadYouTubeTools(context)) {
-            container.addView(makeRow(context, "${yt.glyph}  ·  ${yt.label}", pal) {
+            val icon = ActionIconFactory.createForTool(context, yt, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
+            container.addView(makeIconRow(context, "${yt.glyph}  ·  ${yt.label}", icon, pal) {
                 PrefsStore.recordUse(context, "youtube_folder")
                 cb.onExecuteTool(yt)
             })
@@ -175,8 +163,10 @@ object DrawerRenderer {
         cb: Callbacks
     ) {
         container.addView(makeBackHeader(context, "Markdown", pal, cb))
+        val iconPx = dp(context, 18)
         for (md in PrefsStore.loadMarkdownTools(context)) {
-            container.addView(makeRow(context, md.label, pal) {
+            val icon = ActionIconFactory.createForTool(context, md, pal.fgPrimaryInt, iconPx)
+            container.addView(makeIconRow(context, md.label, icon, pal) {
                 val out = if (md.customTarget != null) {
                     TextTransforms.executeCustomTargetTransform(md.customTarget, selectedText)
                 } else {
@@ -195,8 +185,10 @@ object DrawerRenderer {
         cb: Callbacks
     ) {
         container.addView(makeBackHeader(context, "Regex & Pipe", pal, cb))
+        val iconPx = dp(context, 18)
         for (pt in PrefsStore.loadPipeTools(context)) {
-            container.addView(makeRow(context, pt.label, pal) {
+            val icon = ActionIconFactory.createForTool(context, pt, pal.fgPrimaryInt, iconPx)
+            container.addView(makeIconRow(context, pt.label, icon, pal) {
                 val out = if (pt.customTarget != null) {
                     TextTransforms.executeCustomTargetTransform(pt.customTarget, selectedText)
                 } else {
@@ -220,8 +212,10 @@ object DrawerRenderer {
             container.addView(makeNote(context, "Folder is empty.", pal))
             return
         }
+        val iconPx = dp(context, 18)
         items.forEach { item ->
-            container.addView(makeRow(context, item.label, pal) { cb.onExecuteTool(item) })
+            val icon = ActionIconFactory.createForTool(context, item, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
+            container.addView(makeIconRow(context, item.label, icon, pal) { cb.onExecuteTool(item) })
         }
     }
 
@@ -381,28 +375,20 @@ object DrawerRenderer {
         t1: ToolSpec,
         t2: ToolSpec,
         pal: ThemePalette,
+        iconPx: Int,
         cb: Callbacks
     ): View {
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        fun cell(tool: ToolSpec): TextView = TextView(context).apply {
-            text = tool.label
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
-            setTextColor(pal.fgPrimaryInt)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            minimumHeight = dp(context, 44)
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            background = pressedBg(context, pal)
-            setOnClickListener {
-                runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+        fun cell(tool: ToolSpec): View {
+            val icon = ActionIconFactory.createForTool(context, tool, pal.fgPrimaryInt, iconPx) { cb.onRerender() }
+            return makeIconRow(context, tool.label, icon, pal) {
                 PrefsStore.recordUse(context, tool.id)
                 cb.onExecuteTool(tool)
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
         }
         row.addView(cell(t1))
@@ -412,6 +398,40 @@ object DrawerRenderer {
         })
         row.addView(cell(t2))
         return row
+    }
+
+    private fun makeIconRow(
+        context: Context,
+        label: String,
+        icon: Drawable,
+        pal: ThemePalette,
+        colorInt: Int = pal.fgPrimaryInt,
+        onClick: () -> Unit
+    ): LinearLayout = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(context, 44)
+        setPadding(dp(context, 10), dp(context, 8), dp(context, 10), dp(context, 8))
+        background = pressedBg(context, pal)
+        setOnClickListener {
+            runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+            onClick()
+        }
+        val iconPx = dp(context, 18)
+        addView(ImageView(context).apply {
+            setImageDrawable(icon)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(context, 9) }
+        })
+        addView(TextView(context).apply {
+            text = label
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f)
+            setTextColor(colorInt)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
     }
 
     private fun makeBackHeader(context: Context, title: String, pal: ThemePalette, cb: Callbacks): View =

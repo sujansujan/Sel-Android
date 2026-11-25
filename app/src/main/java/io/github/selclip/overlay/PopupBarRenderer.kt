@@ -17,12 +17,11 @@ import io.github.selclip.data.PopAction
 import io.github.selclip.data.ThemePalette
 
 /**
- * Renders the floating bar to look and feel indistinguishable from Android's native
- * Material 3 FloatingToolbarPopup:
- * - Clean single-row 48dp native pill with smooth horizontal scrolling when needed.
- * - Supports both Native Text Mode (crisp sans-serif-medium 14sp + portal favicons) and
- *   Icons-Only Mode (razor-sharp 20dp native vector icons & auto-fetched search favicons).
- * - Right-aligned native ⋮ overflow button matching Android's system popup.
+ * Renders the floating bar to match Android's native FloatingToolbarPopup:
+ * - Single-row 48dp native pill with smooth horizontal scroll when needed.
+ * - Labels mode: clean native `sans-serif-medium` 14sp labels + crisp 16dp icons for EVERY item.
+ * - Icons-Only mode: crisp 20dp native vector icons + auto-fetched favicons for search portals.
+ * - Right-aligned native ⋮ overflow button matching Android's system selection popup.
  */
 object PopupBarRenderer {
 
@@ -64,8 +63,8 @@ object PopupBarRenderer {
         val iconSize = dp(context, 20)
 
         actions.forEach { act ->
-            val fg = if (act.accent) pal.accentPrimaryInt else pal.fgPrimaryInt
-            // Computed values (e.g., "= 1740") always show their text so the user can read the answer!
+            // Match Android's native popup: neutral primary ink for standard buttons, accent only for computed answers!
+            val fg = if (act.id == "apply_computed" || act.id == "undo") pal.accentPrimaryInt else pal.fgPrimaryInt
             val showAsIconOnly = iconsOnly && act.id != "apply_computed"
 
             if (showAsIconOnly) {
@@ -101,9 +100,8 @@ object PopupBarRenderer {
 
         outerRow.addView(scroll)
 
-        // Subtle hairline divider + native Android ⋮ overflow button
         outerRow.addView(View(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(context, 1), dp(context, 22)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(context, 1), dp(context, 20)).apply {
                 marginStart = dp(context, 2)
                 marginEnd = dp(context, 2)
             }
@@ -162,12 +160,11 @@ object PopupBarRenderer {
         onLongClick: () -> Unit,
         onClick: () -> Unit
     ): View {
-        val hasPortalFavicon = !action.faviconUrl.isNullOrBlank()
         val cell = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             minimumHeight = dp(context, 48)
-            setPadding(dp(context, 13), dp(context, 10), dp(context, 13), dp(context, 10))
+            setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 10))
             background = pillItemBackground(context, pal)
             setOnClickListener {
                 runCatching { performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
@@ -180,7 +177,8 @@ object PopupBarRenderer {
             }
         }
 
-        if (hasPortalFavicon) {
+        // Every item (except computed answers like "= 1740") shows its dedicated crisp icon/favicon!
+        if (action.id != "apply_computed") {
             val icon = ActionIconFactory.createForAction(context, action, fgColor, iconSize, onFaviconLoaded)
             cell.addView(ImageView(context).apply {
                 setImageDrawable(icon)

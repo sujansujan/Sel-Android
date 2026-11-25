@@ -32,8 +32,11 @@ import io.github.selclip.service.SelectionResolver
 /**
  * Lean, strictly event-driven AccessibilityService orchestrator.
  *
- * Works seamlessly across native views, browsers (Chrome, Brave, Edge, Firefox, WebViews),
- * Jetpack Compose, and messaging apps — docking right below Android's native selection popup.
+ * Key reliability fixes:
+ * - Trailing-edge coalesced scan (65ms) on TYPE_WINDOWS_CHANGED so the very first browser selection
+ *   is ALWAYS caught right after Chrome's floating toolbar finishes laying out.
+ * - Strict post-probe settling & single-shot copy lock so Chrome's native popup NEVER blinks or
+ *   re-copies in a loop.
  */
 class SelAccessibilityService : AccessibilityService() {
 
@@ -44,8 +47,7 @@ class SelAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val stateMachine = PopupStateMachine()
-    private val windowsDebouncer = EventDebouncer(120L)
-    private val contentDebouncer = EventDebouncer(200L)
+    private val contentDebouncer = EventDebouncer(240L)
 
     private lateinit var windowManager: WindowManager
     private lateinit var clipboardManager: ClipboardManager
@@ -59,6 +61,7 @@ class SelAccessibilityService : AccessibilityService() {
     private var lastSelectionBounds: Box? = null
     private var lastSelectionBoundsMs: Long = 0L
 
+    private var pendingWindowsScan: Runnable? = null
     private var pendingProbe1: Runnable? = null
     private var pendingProbe2: Runnable? = null
     private var pendingClipRetry1: Runnable? = null
@@ -66,6 +69,7 @@ class SelAccessibilityService : AccessibilityService() {
     private var pendingProbeSource: AccessibilityNodeInfo? = null
     private var pendingProbePkg: String = ""
     private var pendingProbeSig: String = ""
+
     private var lastAutoCopyMs: Long = 0L
     private var lastAutoCopySig: String = ""
 
@@ -95,7 +99,10 @@ class SelAccessibilityService : AccessibilityService() {
             clipboardManager = clipboardManager,
             windowManager = windowManager,
             shouldAcceptExternalClip = { activePackage.isEmpty() || !PrefsStore.isAppMuted(this, activePackage) },
-            onClipCaptured = { clipText -> showFromExternalText(clipText) }
+            onClipCaptured = { clipText ->
+                cancelClipRetries()
+                showFromExternalText(clipText)
+            }
         )
         clipboardBridge.start()
     }
@@ -124,7 +131,9 @@ class SelAccessibilityService : AccessibilityService() {
 
     private fun teardown() {
         if (instance === this) instance = null
+        cancelWindowsScan()
         cancelProbes()
+        cancelClipRetries()
         if (::clipboardBridge.isInitialized) clipboardBridge.stop()
         if (::actionExecutor.isInitialized) actionExecutor.shutdown()
         if (::overlayController.isInitialized) overlayController.hide()
@@ -220,41 +229,27 @@ class SelAccessibilityService : AccessibilityService() {
                 }
             }
 
+            // Trailing-edge coalesced scan (65ms) catches the VERY FIRST browser selection as soon as
+            // Chrome's FloatingToolbarPopup finishes laying out — never drops the real layout event!
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                if (clipboardBridge.isProbeActive) return
+                if (clipboardBridge.isProbeOrSettling) return
                 if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return
-                if (!windowsDebouncer.shouldAllow(now())) return
-
-                val toolbar = selectionResolver.findActiveToolbarNow()
-                if (toolbar == null) {
-                    selectionResolver.clearCachedToolbar()
-                    lastAutoCopySig = ""
-                    dispatch(PopupEvent.ToolbarGone(now()))
-                } else {
-                    val cur = stateMachine.state
-                    // Trigger when Hidden OR when toolbar moved (user dragged browser selection handles!)
-                    if (cur !is PopupState.Visible || (toolbar.signature.isNotEmpty() && toolbar.signature != cur.toolbarSig)) {
-                        requestProbe(null, activePackage, toolbar.signature)
-                    }
-                }
+                scheduleTrailingWindowsScan()
             }
 
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                if (clipboardBridge.isProbeActive) return
+                if (clipboardBridge.isProbeOrSettling) return
                 if (stateMachine.state !is PopupState.Visible &&
                     pkg != packageName &&
                     !SelectionFilter.isImePackage(pkg) &&
                     SelectionFilter.isTransientPopupClass(cls)
                 ) {
-                    val toolbar = selectionResolver.findActiveToolbarNow()
-                    if (toolbar != null) {
-                        requestProbe(event.source, activePackage.ifEmpty { pkg }, toolbar.signature)
-                    }
+                    scheduleTrailingWindowsScan()
                 }
             }
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (clipboardBridge.isProbeActive) return
+                if (clipboardBridge.isProbeOrSettling) return
                 if (stateMachine.state !is PopupState.Visible &&
                     pkg.isNotEmpty() &&
                     pkg != packageName &&
@@ -267,12 +262,41 @@ class SelAccessibilityService : AccessibilityService() {
                         selectionResolver.clearCachedToolbar()
                         lastAutoCopySig = ""
                         dispatch(PopupEvent.ToolbarGone(now()))
-                    } else {
+                    } else if (toolbar.signature != lastAutoCopySig) {
                         requestProbe(event.source, pkg, toolbar.signature)
                     }
                 }
             }
         }
+    }
+
+    private fun scheduleTrailingWindowsScan() {
+        cancelWindowsScan()
+        val scan = Runnable {
+            pendingWindowsScan = null
+            if (clipboardBridge.isProbeOrSettling) return@Runnable
+            if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return@Runnable
+
+            val toolbar = selectionResolver.findActiveToolbarNow()
+            if (toolbar == null) {
+                selectionResolver.clearCachedToolbar()
+                lastAutoCopySig = ""
+                dispatch(PopupEvent.ToolbarGone(now()))
+                return@Runnable
+            }
+
+            // Only probe when Hidden! While already Visible, NEVER re-copy/blink Chrome's toolbar!
+            if (stateMachine.state !is PopupState.Visible && toolbar.signature != lastAutoCopySig) {
+                requestProbe(null, activePackage, toolbar.signature)
+            }
+        }
+        pendingWindowsScan = scan
+        handler.postDelayed(scan, 65L)
+    }
+
+    private fun cancelWindowsScan() {
+        pendingWindowsScan?.let { handler.removeCallbacks(it) }
+        pendingWindowsScan = null
     }
 
     private fun handleDirectSelectionEvent(event: AccessibilityEvent, pkg: String) {
@@ -325,6 +349,8 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private fun requestProbe(source: AccessibilityNodeInfo?, pkg: String, toolbarSig: String) {
+        if (stateMachine.state is PopupState.Visible) return
+        if (clipboardBridge.isProbeOrSettling) return
         pendingProbeSource = source
         pendingProbePkg = pkg
         pendingProbeSig = toolbarSig
@@ -332,15 +358,17 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private fun executeProbeAttempt(): Boolean {
+        if (stateMachine.state is PopupState.Visible) return true
+        if (clipboardBridge.isProbeOrSettling) return false
+
         val tNow = now()
-        if (tNow - lastAutoCopyMs < 480L) return false
         val pkg = pendingProbePkg
         if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
             activePackage = pkg
         }
         if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return true
 
-        // Tier 1: Zero-side-effect deep BFS read of selection from accessibility tree
+        // Tier 1: Zero-side-effect deep BFS read of selection from accessibility tree (ZERO clipboard access!)
         val treeHit = selectionResolver.findSelectionInTreeBfs(pendingProbeSource ?: rootInActiveWindow)
         if (treeHit != null) {
             currentNode = treeHit.node
@@ -358,12 +386,11 @@ class SelAccessibilityService : AccessibilityService() {
             return true
         }
 
-        // Tier 2: Browser / WebView / Compose extraction when a real native selection toolbar is visible
+        // Tier 2: Single-shot browser/WebView copy extraction strictly gated by cooldown + signature
+        if (tNow - lastAutoCopyMs < 1800L) return false
         val activeToolbar = selectionResolver.findActiveToolbarNow() ?: return false
         val effSig = pendingProbeSig.ifEmpty { activeToolbar.signature }
-        if (effSig.isNotEmpty() && effSig == lastAutoCopySig && (tNow - lastAutoCopyMs) < 1600L) {
-            return false
-        }
+        if (effSig.isNotEmpty() && effSig == lastAutoCopySig) return true
 
         lastAutoCopyMs = tNow
         lastAutoCopySig = effSig
@@ -372,8 +399,7 @@ class SelAccessibilityService : AccessibilityService() {
 
         val copied = selectionResolver.performBestCopyAction(pendingProbeSource, activeToolbar)
         if (copied) {
-            val triggerTime = now()
-            scheduleClipboardReadRetries(triggerTime)
+            scheduleClipboardReadRetries(now())
             return true
         }
         return false
@@ -395,8 +421,8 @@ class SelAccessibilityService : AccessibilityService() {
         }
         pendingClipRetry1 = r1
         pendingClipRetry2 = r2
-        handler.postDelayed(r1, 80L)
-        handler.postDelayed(r2, 210L)
+        handler.postDelayed(r1, 90L)
+        handler.postDelayed(r2, 240L)
     }
 
     private fun cancelClipRetries() {
@@ -415,6 +441,7 @@ class SelAccessibilityService : AccessibilityService() {
                     renderVisibleState(effect.state, effect.isNewSession)
                 }
                 PopupEffect.HideOverlay -> {
+                    cancelWindowsScan()
                     cancelClipRetries()
                     lastAutoCopySig = ""
                     overlayController.hide()

@@ -327,9 +327,21 @@ class ActionsTab(private val activity: Activity) {
             }
 
             val handle = UiKit.text(activity, "⋮⋮", 14f, p.fgMutedInt, bold = true).apply {
-                minWidth = dp(34)
+                minWidth = dp(32)
                 minimumHeight = dp(40)
                 gravity = Gravity.CENTER
+            }
+            val toolIcon = ActionIconFactory.createForTool(
+                context = activity,
+                tool = tool,
+                tintColor = if (hidden) p.fgMutedInt else p.fgPrimaryInt,
+                sizePx = iconPx,
+                onFaviconLoaded = { refresh() }
+            )
+            val iconView = ImageView(activity).apply {
+                setImageDrawable(toolIcon)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = LinearLayout.LayoutParams(iconPx, iconPx).apply { marginEnd = dp(10) }
             }
             val title = UiKit.text(activity, tool.label, 13.5f, if (hidden) p.fgMutedInt else p.fgPrimaryInt).apply {
                 isSingleLine = true
@@ -338,6 +350,7 @@ class ActionsTab(private val activity: Activity) {
             }
 
             row.addView(handle)
+            row.addView(iconView)
             row.addView(title)
 
             if (alwaysOnBar) {

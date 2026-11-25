@@ -22,8 +22,7 @@ import kotlin.math.abs
 
 /**
  * Owns the single lightweight TYPE_ACCESSIBILITY_OVERLAY window styled to match Android's native
- * Material 3 FloatingToolbarPopup (full 24dp pill when collapsed, 16dp Material menu when expanded)
- * and docked seamlessly right below Android's native selection popup.
+ * FloatingToolbarPopup surface, elevation, and rounded pill geometry.
  */
 class OverlayWindowController(
     private val context: Context,
@@ -71,16 +70,12 @@ class OverlayWindowController(
         currentIsDrawerOpen = isDrawerOpen
         if (isNewSession) manuallyDragged = false
 
-        if (rootView != null && !isAttached) {
-            hide()
-        }
+        if (rootView != null && !isAttached) hide()
 
         val pal = PrefsStore.resolvePalette(context)
         val createdNow = rootView == null
 
-        if (createdNow) {
-            createWindow(anchorTarget, viewport, isDrawerOpen)
-        }
+        if (createdNow) createWindow(anchorTarget, viewport, isDrawerOpen)
 
         val root = rootView ?: return
         val params = windowParams ?: return
@@ -91,11 +86,11 @@ class OverlayWindowController(
 
         val cornerDp = if (isDrawerOpen) 16f else 24f
         root.background = GradientDrawable().apply {
-            setColor(pal.bgPrimaryInt)
-            setStroke(dp(1), pal.borderInt)
+            setColor(pal.popupSurfaceInt)
+            setStroke(dp(1), pal.popupBorderInt)
             cornerRadius = dpF(cornerDp)
         }
-        bar.setBackgroundColor(pal.bgHeaderInt)
+        bar.setBackgroundColor(pal.popupSurfaceInt)
         div.setBackgroundColor(pal.dividerInt)
 
         PopupBarRenderer.render(
@@ -214,11 +209,11 @@ class OverlayWindowController(
             }
         }.apply {
             orientation = LinearLayout.VERTICAL
-            elevation = dpF(8f)
+            elevation = dpF(6f)
             clipToOutline = true
             background = GradientDrawable().apply {
-                setColor(pal.bgPrimaryInt)
-                setStroke(dp(1), pal.borderInt)
+                setColor(pal.popupSurfaceInt)
+                setStroke(dp(1), pal.popupBorderInt)
                 cornerRadius = dpF(if (isDrawerOpen) 16f else 24f)
             }
             addOnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
@@ -258,7 +253,7 @@ class OverlayWindowController(
 
         val bar = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(pal.bgHeaderInt)
+            setBackgroundColor(pal.popupSurfaceInt)
         }
         card.addView(bar)
 

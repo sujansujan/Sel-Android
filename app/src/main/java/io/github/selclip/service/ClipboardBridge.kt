@@ -12,8 +12,10 @@ import android.view.View
 import android.view.WindowManager
 
 /**
- * Single-flight internal clipboard bridge used to read browser/WebView selections reliably on
- * Android 10+ (never stores user clipboard history).
+ * Single-flight internal clipboard bridge for reading browser/WebView selections on Android 10+.
+ *
+ * Includes a post-probe focus-settle cooldown (`950ms`) so Chrome restoring focus after the 1x1
+ * probe finishes NEVER triggers a second selection probe or causes Chrome's toolbar to blink.
  */
 class ClipboardBridge(
     private val context: Context,
@@ -25,12 +27,19 @@ class ClipboardBridge(
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastInternalCopyMs: Long = 0L
+    private var lastProbeFinishedMs: Long = 0L
+    private var lastReadAttemptMs: Long = 0L
     private var activeProbe: View? = null
     private var probeCleanupRunnable: Runnable? = null
     private var probeRetry1: Runnable? = null
     private var probeRetry2: Runnable? = null
 
-    val isProbeActive: Boolean get() = activeProbe != null
+    /**
+     * True while the 1x1 focus probe is attached OR within 950ms after it detaches, so the
+     * host browser's focus-restore window events are cleanly ignored (zero blinking loop!).
+     */
+    val isProbeOrSettling: Boolean
+        get() = activeProbe != null || (System.currentTimeMillis() - lastProbeFinishedMs) < 950L
 
     private val listener = ClipboardManager.OnPrimaryClipChangedListener {
         val now = System.currentTimeMillis()
@@ -57,6 +66,11 @@ class ClipboardBridge(
 
     fun readNowOrProbe() {
         if (isPrimaryClipSensitive()) return
+        val now = System.currentTimeMillis()
+        // Prevent double-launching probe within 350ms
+        if (activeProbe != null || (now - lastReadAttemptMs) < 350L) return
+        lastReadAttemptMs = now
+
         val direct = readPrimaryClipText()
         if (!direct.isNullOrBlank()) {
             onClipCaptured(direct)
@@ -84,7 +98,10 @@ class ClipboardBridge(
         probeRetry1 = null
         probeRetry2 = null
         probeCleanupRunnable = null
-        activeProbe?.let { v -> runCatching { windowManager.removeView(v) } }
+        activeProbe?.let { v ->
+            runCatching { windowManager.removeView(v) }
+            lastProbeFinishedMs = System.currentTimeMillis()
+        }
         activeProbe = null
     }
 
@@ -108,6 +125,7 @@ class ClipboardBridge(
         fun finishProbe() {
             if (finished) return
             finished = true
+            lastProbeFinishedMs = System.currentTimeMillis()
             if (activeProbe === probe) cancelProbe()
             else runCatching { windowManager.removeView(probe) }
         }

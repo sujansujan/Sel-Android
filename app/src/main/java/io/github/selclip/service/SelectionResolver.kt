@@ -38,12 +38,12 @@ data class ScreenSnapshot(
 /**
  * Cross-app selection, native floating toolbar, and browser WebView/GeckoView resolver.
  *
- * Key browser fixes:
- * - Inspects ALL floating windows (including TYPE_SYSTEM and pkg="android", filtering out status/nav
- *   bars by geometry) because Android's FloatingToolbarPopup in Chrome/Brave/Edge/Firefox often
- *   reports TYPE_SYSTEM or pkg="android".
- * - Deep WebView/Chromium/GeckoView ACTION_COPY trigger (copies without closing the native toolbar!).
- * - Safe single-shot Copy-button click fallback only for browsers that reject ACTION_COPY entirely.
+ * Key stability guarantees:
+ * - Toolbar signature is based ONLY on quantized screen coordinates (never windowId!), so Chrome
+ *   recreating its FloatingToolbarPopup after a brief focus change never causes a re-trigger loop.
+ * - Inspects ALL floating windows (including TYPE_SYSTEM and pkg="android", excluding status/nav
+ *   bars by geometry) so Chrome, Brave, Edge, Firefox, and OEM toolbars are always detected on
+ *   the very first selection.
  */
 class SelectionResolver(
     private val service: AccessibilityService,
@@ -87,7 +87,7 @@ class SelectionResolver(
     fun captureScreenSnapshot(force: Boolean = false): ScreenSnapshot {
         val now = System.currentTimeMillis()
         cachedSnapshot?.let { snap ->
-            if (!force && (now - lastSnapshotTimeMs) < 260L) return snap
+            if (!force && (now - lastSnapshotTimeMs) < 220L) return snap
         }
         lastSnapshotTimeMs = now
 
@@ -109,7 +109,7 @@ class SelectionResolver(
 
         val windows = runCatching { service.windows }.getOrNull()
         if (!windows.isNullOrEmpty()) {
-            // Pass 1: Detect live IME height
+            // Pass 1: Detect live IME top
             for (w in windows) {
                 if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                     val r = Rect()
@@ -123,7 +123,7 @@ class SelectionResolver(
             val viewport = Viewport(realW, realH, topInset, bottomInset, imeTop)
             val visBottom = viewport.visibleBottom
 
-            // Pass 2: Prioritize small floating windows (Android FloatingToolbarPopup in Chrome/WebViews/Compose!)
+            // Pass 2: Prioritize small floating windows (Android FloatingToolbarPopup)
             val ordered = windows.sortedWith(
                 compareByDescending<AccessibilityWindowInfo> {
                     val r = Rect()
@@ -140,7 +140,6 @@ class SelectionResolver(
                 val wr = Rect()
                 w.getBoundsInScreen(wr)
 
-                // Skip status bar & navigation bar strictly by geometry (never skip system FloatingToolbar!)
                 val isFullWidth = wr.width() >= (realW * 0.96f).toInt()
                 val isStatusBar = isFullWidth && wr.top <= dp(8) && wr.height() <= dp(72)
                 val isNavBar = isFullWidth && wr.bottom >= realH - dp(8) && wr.height() <= dp(96)
@@ -149,8 +148,6 @@ class SelectionResolver(
                 val root = runCatching { w.root }.getOrNull() ?: continue
                 val pkg = root.packageName?.toString().orEmpty()
                 if (pkg == service.packageName || SelectionFilter.isImePackage(pkg)) continue
-
-                // Skip SystemUI notification shade / status bar, but ALLOW pkg == "android" & browser windows!
                 if (pkg == "com.android.systemui" && isFullWidth) continue
 
                 val isFloating = wr.height() in dp(24)..dp(180) && wr.width() < (realW * 0.97f).toInt()
@@ -188,7 +185,7 @@ class SelectionResolver(
 
     fun findActiveToolbarNow(): ToolbarHit? {
         val snap = captureScreenSnapshot(force = true)
-        return snap.toolbar?.takeIf { System.currentTimeMillis() - lastToolbarTimeMs < 450L }
+        return snap.toolbar?.takeIf { System.currentTimeMillis() - lastToolbarTimeMs < 400L }
     }
 
     fun clearCachedToolbar() {
@@ -208,7 +205,7 @@ class SelectionResolver(
         val buttons = mutableListOf<Rect>()
         var copyBtn: AccessibilityNodeInfo? = null
 
-        // Check 1: Standard Android FloatingToolbar view IDs (works in every locale!)
+        // Check 1: Standard Android FloatingToolbar view IDs
         for (idName in toolbarIdHints) {
             val nodes = runCatching { root.findAccessibilityNodeInfosByViewId(idName) }.getOrNull() ?: continue
             for (n in nodes) {
@@ -247,7 +244,7 @@ class SelectionResolver(
             }
         }
 
-        // Check 3: Small floating popup window heuristic (non-English locales, custom Chrome/OEM toolbars)
+        // Check 3: Small floating popup window heuristic
         if (buttons.isEmpty() && isFloatingWindow) {
             val wr = Rect()
             root.getBoundsInScreen(wr)
@@ -266,7 +263,6 @@ class SelectionResolver(
 
         if (buttons.isEmpty()) return null
 
-        // If this is a dedicated small floating window, use its crisp outer bounds so Sel docks flush below it!
         val finalBounds = if (isFloatingWindow) {
             val wr = Rect()
             root.getBoundsInScreen(wr)
@@ -279,7 +275,9 @@ class SelectionResolver(
             unionToolbarRow(buttons) ?: return null
         }
 
-        val sig = "${windowId}_${finalBounds.left / 16}_${finalBounds.top / 16}_${finalBounds.right / 16}_${finalBounds.bottom / 16}"
+        // Position-only signature (NO windowId!) so recreating the native popup in the same spot never loops!
+        val q = dp(18).coerceAtLeast(24)
+        val sig = "${finalBounds.left / q}_${finalBounds.top / q}_${finalBounds.right / q}_${finalBounds.bottom / q}"
         return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn)
     }
 
@@ -357,7 +355,6 @@ class SelectionResolver(
             return ResolvedSelection(rangeSub, source, bounds)
         }
 
-        // Chromium / WebView quirk: event.text carries the selected snippet with fromIndex/toIndex = -1
         if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED &&
             eventText.isNotBlank() &&
             eventText.length <= 500 &&
@@ -412,8 +409,8 @@ class SelectionResolver(
 
     fun findSelectionInTreeBfs(
         root: AccessibilityNodeInfo?,
-        maxNodes: Int = 220,
-        maxDepth: Int = 22
+        maxNodes: Int = 260,
+        maxDepth: Int = 24
     ): ResolvedSelection? {
         if (root == null) return null
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
@@ -450,12 +447,10 @@ class SelectionResolver(
     }
 
     /**
-     * Multi-tier universal copy extraction for browsers (Chrome, Brave, Edge, Firefox, Samsung
-     * Internet, WebViews) and Jetpack Compose:
-     * 1. ACTION_COPY on source / focused node (silent — keeps native toolbar open!).
-     * 2. Deep BFS for any node advertising ACTION_COPY OR any WebView/GeckoView/Chromium container
-     *    (many browsers accept ACTION_COPY on their WebView even when omitted from actionList!).
-     * 3. Last-resort click on the detected toolbar's Copy button if ACTION_COPY is unsupported.
+     * Multi-tier copy extraction for browsers & WebViews:
+     * 1. ACTION_COPY on source / focused node / WebView (keeps native toolbar open!).
+     * 2. Deep BFS for ACTION_COPY or WebView/GeckoView/Chromium containers.
+     * 3. Single-shot fallback click on detected Copy toolbar button if ACTION_COPY fails.
      */
     fun performBestCopyAction(
         sourceNode: AccessibilityNodeInfo?,
@@ -508,14 +503,12 @@ class SelectionResolver(
             }
         }
 
-        // Try direct ACTION_COPY on discovered WebView / GeckoView / Chromium containers
         for (wv in webViewFallbacks) {
             if (runCatching { wv.performAction(AccessibilityNodeInfo.ACTION_COPY) }.getOrDefault(false)) {
                 return true
             }
         }
 
-        // Last resort (e.g., Firefox GeckoView / hardened browsers): tap detected Copy toolbar button once
         val copyBtn = toolbarHit?.copyButtonNode
         if (copyBtn != null) {
             if (runCatching { copyBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) {
