@@ -1,18 +1,10 @@
-package io.github.selclip
+package io.github.selclip.core
+
+import io.github.selclip.data.PopAction
+import io.github.selclip.data.ToolSpec
 
 /**
- * A single crisp action displayed on the PopClip-style ASCII bar.
- */
-data class PopAction(
-    val id: String,
-    val label: String,
-    val accent: Boolean = false,
-    val payload: String? = null,
-    val customTool: ToolSpec? = null
-)
-
-/**
- * Rich semantic classification of the currently selected text.
+ * Semantic classification of the currently selected text.
  */
 data class SelectionContext(
     val rawText: String,
@@ -39,18 +31,12 @@ data class SelectionContext(
 )
 
 /**
- * Pure, deterministic PopClip-style context engine for Android:
- *
- * - Omits Copy/Cut/Paste/Select All on normal native selections (redundant with Android's
- *   un-suppressible native floating toolbar), while optionally including Copy inside
- *   Screen Text Grab where Android's native menu doesn't exist.
- * - ALWAYS includes customizable Search ([WEB] / default engine) and YouTube ([YT]).
- * - ALWAYS includes any user-pinned tools.
- * - Dynamically injects high-value context actions (Call/SMS/WA, Open/Clean URL, Mail,
- *   Math/Unit/Timestamp/Base64 answer, Magnet, Define, Translate, Links, Sort, JSON/HTML)
- *   ONLY when relevant to the selected text.
+ * Pure PopClip context engine:
+ * - Excludes Copy/Cut/Paste/Select All (redundant with Android's native toolbar).
+ * - Injects only context-relevant smart actions first.
+ * - Always appends customizable Default Search + YouTube + user-pinned actions.
  */
-object PopupContextEngine {
+object ContextActionResolver {
 
     fun analyze(
         rawText: String,
@@ -59,8 +45,8 @@ object PopupContextEngine {
     ): SelectionContext {
         val trimmed = rawText.trim()
         val wordCount = TextTransforms.countWords(trimmed)
-
         val isSingleToken = !trimmed.contains(' ') && !trimmed.contains('\n') && trimmed.isNotEmpty()
+
         val singleUrl = if (isSingleToken &&
             (trimmed.startsWith("http://", ignoreCase = true) ||
                 trimmed.startsWith("https://", ignoreCase = true) ||
@@ -124,85 +110,65 @@ object PopupContextEngine {
         )
     }
 
-    fun shortLabelForPinnedTool(tool: ToolSpec): String {
-        return when (tool.id) {
-            "define" -> "DEF"
-            "translate" -> "TR"
-            "qr" -> "QR"
-            "screen_grab" -> "GRAB"
-            "clip_history" -> "CLIPS"
-            "markdown_folder" -> "MD"
-            "regex_pipe" -> "PIPE"
-            "clean_url" -> "CLEAN"
-            "clean_text" -> "TIDY"
-            "extract" -> "LINKS"
-            "sort" -> "SORT"
-            "case" -> "Aa"
-            "speak" -> "SPEAK"
-            "log" -> "NOTE"
-            "magnet" -> "MAG"
-            else -> tool.label.substringBefore(">").trim().take(7).uppercase()
-        }
+    fun shortLabelForPinnedTool(tool: ToolSpec): String = when (tool.id) {
+        "define" -> "Define"
+        "translate" -> "Translate"
+        "qr" -> "QR"
+        "clip_history" -> "Clips"
+        "markdown_folder" -> "MD"
+        "regex_pipe" -> "Pipe"
+        "clean_url" -> "Clean"
+        "clean_text" -> "Tidy"
+        "extract" -> "Links"
+        "sort" -> "Sort"
+        "case" -> "Aa"
+        "speak" -> "Speak"
+        "log" -> "Note"
+        "magnet" -> "Magnet"
+        else -> tool.label.substringBefore(">").trim().take(8)
     }
 
-    /**
-     * Resolves the crisp list of actions for the PopClip ASCII bar:
-     * 1. High-priority context actions (only what matches the selected text)
-     * 2. Always-visible Search ([SEARCH] using user's default engine; long-press for all) & YouTube ([YT])
-     * 3. Always-visible user-pinned tools
-     *
-     * Note: Copy/Cut/Paste/Select All are intentionally excluded when `includeCopy = false`
-     * because Android's native selection toolbar already provides them.
-     */
     fun resolveBarActions(
         ctx: SelectionContext,
         hiddenToolIds: Set<String> = emptySet(),
         pinnedTools: List<ToolSpec> = emptyList(),
-        searchLabel: String = "SEARCH",
-        includeCopy: Boolean = false
+        searchLabel: String = "Search"
     ): List<PopAction> {
         val actions = ArrayList<PopAction>(10)
         fun isAllowed(toolId: String): Boolean = toolId !in hiddenToolIds
         fun addUnique(action: PopAction) {
-            if (actions.none { it.id == action.id }) {
-                actions.add(action)
-            }
-        }
-
-        if (includeCopy) {
-            addUnique(PopAction("copy", "COPY", accent = true))
+            if (actions.none { it.id == action.id }) actions.add(action)
         }
 
         if (ctx.hasUndo && ctx.isEditable) {
-            addUnique(PopAction("undo", "UNDO", accent = true))
+            addUnique(PopAction("undo", "Undo", accent = true))
         }
 
-        // --- 1. Context-Specific Primary Actions (shown ONLY when relevant!) ---
         when {
             ctx.nepalPhone != null -> {
-                addUnique(PopAction("phone_call", "CALL", accent = true, payload = ctx.nepalPhone.dialNumber))
+                addUnique(PopAction("phone_call", "Call", accent = true, payload = ctx.nepalPhone.dialNumber))
                 addUnique(PopAction("phone_sms", "SMS", payload = ctx.nepalPhone.dialNumber))
                 addUnique(PopAction("phone_wa", "WA", accent = true, payload = ctx.nepalPhone.waDigits))
                 addUnique(PopAction("phone_w4b", "W4B", payload = ctx.nepalPhone.waDigits))
             }
             ctx.genericPhone != null -> {
-                addUnique(PopAction("phone_call", "CALL", accent = true, payload = ctx.genericPhone))
+                addUnique(PopAction("phone_call", "Call", accent = true, payload = ctx.genericPhone))
                 addUnique(PopAction("phone_sms", "SMS", payload = ctx.genericPhone))
             }
             ctx.singleUrl != null -> {
-                addUnique(PopAction("open_url", "OPEN", accent = true, payload = ctx.singleUrl))
+                addUnique(PopAction("open_url", "Open", accent = true, payload = ctx.singleUrl))
                 if (ctx.isDirtyUrl && isAllowed("clean_url")) {
-                    addUnique(PopAction("clean_url", "CLEAN", accent = true))
+                    addUnique(PopAction("clean_url", "Clean", accent = true))
                 }
                 if (isAllowed("qr")) addUnique(PopAction("qr", "QR"))
             }
             ctx.singleEmail != null -> {
-                addUnique(PopAction("email_send", "MAIL", accent = true, payload = ctx.singleEmail))
+                addUnique(PopAction("email_send", "Email", accent = true, payload = ctx.singleEmail))
             }
             ctx.torrentHash != null || ctx.isMagnetUri -> {
                 val magnetUri = ctx.torrentHash?.let { TextTransforms.buildMagnetUri(it) } ?: ctx.trimmed
-                if (isAllowed("magnet")) addUnique(PopAction("magnet", "MAGNET", accent = true))
-                addUnique(PopAction("open_magnet", "OPEN", payload = magnetUri))
+                if (isAllowed("magnet")) addUnique(PopAction("magnet", "Magnet", accent = true))
+                addUnique(PopAction("open_magnet", "Open", payload = magnetUri))
             }
             ctx.mathAnswer != null -> {
                 addUnique(PopAction("apply_computed", "= ${ctx.mathAnswer}", accent = true, payload = ctx.mathAnswer))
@@ -214,36 +180,36 @@ object PopupContextEngine {
                 addUnique(PopAction("apply_computed", ctx.timestampAnswer.take(16), accent = true, payload = ctx.timestampAnswer))
             }
             ctx.base64Answer != null -> {
-                addUnique(PopAction("apply_computed", "-> ${ctx.base64Answer.take(12)}", accent = true, payload = ctx.base64Answer))
+                addUnique(PopAction("apply_computed", "→ ${ctx.base64Answer.take(12)}", accent = true, payload = ctx.base64Answer))
             }
             ctx.isJson -> {
-                addUnique(PopAction("pipe_json_pretty", "JSON", accent = true))
+                addUnique(PopAction("pipe_json_pretty", "Format JSON", accent = true))
             }
             ctx.isHtml -> {
-                addUnique(PopAction("pipe_strip_html", "STRIP", accent = true))
+                addUnique(PopAction("pipe_strip_html", "Strip HTML", accent = true))
             }
             ctx.wordCount in 1..3 && ctx.trimmed.any { it.isLetter() } && ctx.trimmed.length <= 40 -> {
-                if (isAllowed("define")) addUnique(PopAction("define", "DEF", accent = true))
-                if (isAllowed("translate")) addUnique(PopAction("translate", "TR"))
+                if (isAllowed("define")) addUnique(PopAction("define", "Define", accent = true))
+                if (isAllowed("translate")) addUnique(PopAction("translate", "Translate"))
             }
             else -> {
                 if (ctx.hasExtractableEntities && isAllowed("extract")) {
-                    addUnique(PopAction("extract", "LINKS", accent = true))
+                    addUnique(PopAction("extract", "Links", accent = true))
                 }
-                if (isAllowed("translate")) addUnique(PopAction("translate", "TR", accent = true))
+                if (isAllowed("translate")) addUnique(PopAction("translate", "Translate", accent = true))
                 if (ctx.isMultiLine && isAllowed("sort")) {
-                    addUnique(PopAction("sort", "SORT"))
+                    addUnique(PopAction("sort", "Sort"))
                 } else if (ctx.hasMessyWhitespace && isAllowed("clean_text")) {
-                    addUnique(PopAction("clean_text", "CLEAN"))
+                    addUnique(PopAction("clean_text", "Clean"))
                 }
             }
         }
 
-        // --- 2. Always-Visible Search & YouTube (1-tap direct search; long-press for options!) ---
+        // Always-visible customizable Search + YouTube (tap = instant search, long-press = all options)
         addUnique(PopAction("default_search", searchLabel, accent = actions.isEmpty()))
         addUnique(PopAction("youtube_direct", "YT"))
 
-        // --- 3. Always-Visible User-Pinned Actions ---
+        // Always-visible user-pinned tools
         for (pinned in pinnedTools) {
             if (!isAllowed(pinned.id)) continue
             addUnique(

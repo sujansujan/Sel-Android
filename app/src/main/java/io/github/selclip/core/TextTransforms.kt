@@ -1,4 +1,4 @@
-package io.github.selclip
+package io.github.selclip.core
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,7 +23,7 @@ data class ExtractedEntity(
 
 /**
  * Pure, stateless text analysis and transformation utilities with pre-compiled Regexes
- * so popup rendering and Lens Grab perform zero regex allocations on hot paths.
+ * so hot paths allocate zero regex objects.
  */
 object TextTransforms {
 
@@ -145,10 +145,10 @@ object TextTransforms {
         return null
     }
 
-    private fun urlEncode(value: String): String =
+    fun urlEncode(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 
-    private fun urlDecode(value: String): String =
+    fun urlDecode(value: String): String =
         runCatching { URLDecoder.decode(value, Charsets.UTF_8.name()) }.getOrDefault(value)
 
     fun buildMagnetUri(hash: String): String {
@@ -167,34 +167,30 @@ object TextTransforms {
         }
     }
 
-    fun cleanUrl(input: String): String {
-        return input.replace(trackingRegex, "").replace("?&", "?").trimEnd('?', '&')
-    }
+    fun cleanUrl(input: String): String =
+        input.replace(trackingRegex, "").replace("?&", "?").trimEnd('?', '&')
 
-    fun cleanText(input: String): String {
-        return input
-            .replace(invisibleCharsRegex, "")
-            .replace(singleNewlineRegex, " ")
-            .replace(horizontalSpaceRegex, " ")
-            .trim()
-    }
+    fun cleanText(input: String): String = input
+        .replace(invisibleCharsRegex, "")
+        .replace(singleNewlineRegex, " ")
+        .replace(horizontalSpaceRegex, " ")
+        .trim()
 
-    fun cycleCase(input: String): String {
-        return when {
-            input == input.uppercase() -> input.lowercase()
-            input == input.lowercase() -> input.split(" ").joinToString(" ") { w ->
-                w.replaceFirstChar { it.uppercase() }
-            }
-            else -> input.uppercase()
+    fun cycleCase(input: String): String = when {
+        input == input.uppercase() -> input.lowercase()
+        input == input.lowercase() -> input.split(" ").joinToString(" ") { w ->
+            w.replaceFirstChar { it.uppercase() }
         }
+        else -> input.uppercase()
     }
 
-    fun sha256Hex(input: String): String {
-        return runCatching {
-            val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
-            digest.joinToString("") { "%02x".format(it) }
-        }.getOrDefault(input)
-    }
+    fun sortUniqueLines(input: String): String =
+        input.lines().filter { it.isNotBlank() }.distinct().sorted().joinToString("\n")
+
+    fun sha256Hex(input: String): String = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+        digest.joinToString("") { "%02x".format(it) }
+    }.getOrDefault(input)
 
     fun rot13(input: String): String {
         val sb = StringBuilder(input.length)
@@ -322,56 +318,22 @@ object TextTransforms {
         }
     }
 
-    fun applyPipeTool(toolId: String, selectedText: String): String {
-        return when (toolId) {
-            "pipe_json_pretty" -> runCatching {
-                val t = selectedText.trim()
-                if (t.startsWith("[")) JSONArray(t).toString(2) else JSONObject(t).toString(2)
-            }.getOrElse { selectedText }
-            "pipe_json_min" -> runCatching {
-                val t = selectedText.trim()
-                if (t.startsWith("[")) JSONArray(t).toString() else JSONObject(t).toString()
-            }.getOrElse { selectedText.lines().joinToString("") { it.trim() } }
-            "pipe_url_enc" -> urlEncode(selectedText)
-            "pipe_url_dec" -> urlDecode(selectedText)
-            "pipe_b64_enc" -> Base64.getEncoder().encodeToString(selectedText.toByteArray(Charsets.UTF_8))
-            "pipe_sha256" -> sha256Hex(selectedText)
-            "pipe_rot13" -> rot13(selectedText)
-            "pipe_num_lines" -> selectedText.lines().mapIndexed { i, l -> "${i + 1}. $l" }.joinToString("\n")
-            "pipe_strip_html" -> selectedText.replace(htmlTagRegex, "").trim()
-            else -> selectedText
-        }
-    }
-
-    /**
-     * Resolves a context-aware primary smart action for any grabbed/selected text.
-     * Returns Pair(actionId, buttonLabel).
-     */
-    fun resolveSmartAction(text: String): Pair<String, String> {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return "tools" to "TOOLS >"
-        if (extractTorrentHash(trimmed) != null || trimmed.startsWith("magnet:?", ignoreCase = true)) {
-            return "magnet" to "[0x] MAGNET"
-        }
-        if (!trimmed.contains(' ') && !trimmed.contains('\n') &&
-            (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true))
-        ) {
-            return if (trimmed.contains('?') || trimmed.contains('&')) {
-                "clean_url" to "[?x] CLEAN"
-            } else {
-                "open_url" to "-> OPEN"
-            }
-        }
-        if (extractNepalPhone(trimmed) != null || dialPhoneMatchRegex.matches(trimmed)) {
-            return "dial" to "CALL"
-        }
-        if (evalSimpleMath(trimmed) != null) {
-            return "math" to "= ${evalSimpleMath(trimmed)}"
-        }
-        val wordCount = countWords(trimmed)
-        if (wordCount in 1..3 && trimmed.any { it.isLetter() } && trimmed.length <= 36) {
-            return "define" to "DEFINE"
-        }
-        return "tools" to "TOOLS >"
+    fun applyPipeTool(toolId: String, selectedText: String): String = when (toolId) {
+        "pipe_json_pretty" -> runCatching {
+            val t = selectedText.trim()
+            if (t.startsWith("[")) JSONArray(t).toString(2) else JSONObject(t).toString(2)
+        }.getOrElse { selectedText }
+        "pipe_json_min" -> runCatching {
+            val t = selectedText.trim()
+            if (t.startsWith("[")) JSONArray(t).toString() else JSONObject(t).toString()
+        }.getOrElse { selectedText.lines().joinToString("") { it.trim() } }
+        "pipe_url_enc" -> urlEncode(selectedText)
+        "pipe_url_dec" -> urlDecode(selectedText)
+        "pipe_b64_enc" -> Base64.getEncoder().encodeToString(selectedText.toByteArray(Charsets.UTF_8))
+        "pipe_sha256" -> sha256Hex(selectedText)
+        "pipe_rot13" -> rot13(selectedText)
+        "pipe_num_lines" -> selectedText.lines().mapIndexed { i, l -> "${i + 1}. $l" }.joinToString("\n")
+        "pipe_strip_html" -> selectedText.replace(htmlTagRegex, "").trim()
+        else -> selectedText
     }
 }

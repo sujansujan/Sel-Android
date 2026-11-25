@@ -7,6 +7,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 
+/**
+ * Translucent universal fallback hooked into Android's native Copy/Share selection menu
+ * via ACTION_PROCESS_TEXT.
+ */
 class ProcessTextActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -21,7 +25,7 @@ class ProcessTextActivity : Activity() {
                 cm.setPrimaryClip(ClipData.newPlainText("sel", raw))
                 Toast.makeText(
                     this,
-                    "Copied. Enable [sel] in Accessibility Settings for overlay.",
+                    "Copied. Enable Sel in Accessibility Settings to show the floating bar.",
                     Toast.LENGTH_SHORT
                 ).show()
             }

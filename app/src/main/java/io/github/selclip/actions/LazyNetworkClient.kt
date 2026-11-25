@@ -1,4 +1,4 @@
-package io.github.selclip
+package io.github.selclip.actions
 
 import android.net.Uri
 import android.os.Handler
@@ -13,17 +13,28 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Bounded, cached, cancellable network lookup helper for inline Define Word & Translate.
- * Eliminates raw unbounded Thread creation, leaks, and duplicate network fetches.
+ * Strictly lazy, cached, cancellable network client for on-demand Define Word & Translate.
+ * Allocates ZERO threads at idle until the user actually taps Define or Translate.
  */
-class NetworkTools {
+class LazyNetworkClient {
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val executor: ExecutorService = Executors.newFixedThreadPool(2)
     private val requestSeq = AtomicLong(0L)
-
     private val defineCache = LruCache<String, String>(64)
     private val translateCache = LruCache<String, String>(64)
+
+    @Volatile
+    private var executor: ExecutorService? = null
+
+    private fun getOrCreateExecutor(): ExecutorService {
+        executor?.let { if (!it.isShutdown) return it }
+        synchronized(this) {
+            executor?.let { if (!it.isShutdown) return it }
+            return Executors.newSingleThreadExecutor { r ->
+                Thread(r, "sel-net").apply { isDaemon = true }
+            }.also { executor = it }
+        }
+    }
 
     fun cancelPending() {
         requestSeq.incrementAndGet()
@@ -31,49 +42,42 @@ class NetworkTools {
 
     fun shutdown() {
         cancelPending()
-        runCatching { executor.shutdownNow() }
+        synchronized(this) {
+            runCatching { executor?.shutdownNow() }
+            executor = null
+        }
     }
 
     fun lookupDefinition(word: String, fullSelection: String, onResult: (String) -> Unit) {
         val cacheKey = "${word.lowercase()}|${fullSelection.trim().take(60).lowercase()}"
-        val cached = defineCache.get(cacheKey)
-        if (cached != null) {
-            onResult(cached)
+        defineCache.get(cacheKey)?.let {
+            onResult(it)
             return
         }
         val token = requestSeq.incrementAndGet()
-        executor.execute {
-            val result = fetchDefinition(word, fullSelection)
-            if (result != null) {
-                defineCache.put(cacheKey, result)
-            }
-            val finalText = result ?: "No definition found for \"$word\"."
+        getOrCreateExecutor().execute {
+            val res = fetchDefinition(word, fullSelection)
+            if (res != null) defineCache.put(cacheKey, res)
+            val text = res ?: "No definition found for \"$word\"."
             mainHandler.post {
-                if (requestSeq.get() == token) {
-                    onResult(finalText)
-                }
+                if (requestSeq.get() == token) onResult(text)
             }
         }
     }
 
     fun lookupTranslation(text: String, onResult: (String) -> Unit) {
         val key = text.trim().take(400)
-        val cached = translateCache.get(key)
-        if (cached != null) {
-            onResult(cached)
+        translateCache.get(key)?.let {
+            onResult(it)
             return
         }
         val token = requestSeq.incrementAndGet()
-        executor.execute {
-            val result = fetchTranslation(key)
-            if (result != null) {
-                translateCache.put(key, result)
-            }
-            val finalText = result ?: "Translation unavailable."
+        getOrCreateExecutor().execute {
+            val res = fetchTranslation(key)
+            if (res != null) translateCache.put(key, res)
+            val out = res ?: "Translation unavailable."
             mainHandler.post {
-                if (requestSeq.get() == token) {
-                    onResult(finalText)
-                }
+                if (requestSeq.get() == token) onResult(out)
             }
         }
     }
@@ -95,23 +99,18 @@ class NetworkTools {
                         val phonetic = entry.optString("phonetic", "")
                         val meanings = entry.optJSONArray("meanings")
                         val sb = StringBuilder()
-                        if (phonetic.isNotBlank()) {
-                            sb.append(phonetic).append("\n\n")
-                        }
+                        if (phonetic.isNotBlank()) sb.append(phonetic).append("\n\n")
                         if (meanings != null) {
-                            val maxMeanings = minOf(meanings.length(), 3)
-                            for (i in 0 until maxMeanings) {
+                            for (i in 0 until minOf(meanings.length(), 3)) {
                                 val m = meanings.getJSONObject(i)
                                 val pos = m.optString("partOfSpeech", "")
                                 val defs = m.optJSONArray("definitions")
                                 if (defs != null && defs.length() > 0) {
-                                    val dObj = defs.getJSONObject(0)
-                                    val defStr = dObj.optString("definition", "")
-                                    val exStr = dObj.optString("example", "")
-                                    sb.append("• [").append(pos).append("] ").append(defStr).append("\n")
-                                    if (exStr.isNotBlank()) {
-                                        sb.append("  \"").append(exStr).append("\"\n")
-                                    }
+                                    val d = defs.getJSONObject(0)
+                                    val defStr = d.optString("definition", "")
+                                    val exStr = d.optString("example", "")
+                                    sb.append("• (").append(pos).append(") ").append(defStr).append("\n")
+                                    if (exStr.isNotBlank()) sb.append("  \"").append(exStr).append("\"\n")
                                 }
                             }
                         }
@@ -131,13 +130,12 @@ class NetworkTools {
                 connectTimeout = 4500
                 readTimeout = 4500
                 requestMethod = "GET"
-                setRequestProperty("User-Agent", "sel-android/2.7")
+                setRequestProperty("User-Agent", "sel-android/4.0")
             }
             try {
                 if (conn.responseCode == 200) {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val obj = JSONObject(body)
-                    val extract = obj.optString("extract", "")
+                    val extract = JSONObject(body).optString("extract", "")
                     if (extract.isNotBlank()) return@runCatching extract.take(360)
                 }
                 null
@@ -147,33 +145,29 @@ class NetworkTools {
         }.getOrNull()
     }
 
-    private fun fetchTranslation(text: String): String? {
-        return runCatching {
-            val url = URL(
-                "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${Uri.encode(text)}"
-            )
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 4500
-                readTimeout = 4500
-                requestMethod = "GET"
-            }
-            try {
-                if (conn.responseCode == 200) {
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val outer = JSONArray(body)
-                    val sentences = outer.getJSONArray(0)
-                    val sb = StringBuilder()
-                    for (i in 0 until sentences.length()) {
-                        val seg = sentences.getJSONArray(i)
-                        sb.append(seg.optString(0, ""))
-                    }
-                    val res = sb.toString().trim()
-                    if (res.isNotEmpty()) return@runCatching res
+    private fun fetchTranslation(text: String): String? = runCatching {
+        val url = URL(
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${Uri.encode(text)}"
+        )
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 4500
+            readTimeout = 4500
+            requestMethod = "GET"
+        }
+        try {
+            if (conn.responseCode == 200) {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val sentences = JSONArray(body).getJSONArray(0)
+                val sb = StringBuilder()
+                for (i in 0 until sentences.length()) {
+                    sb.append(sentences.getJSONArray(i).optString(0, ""))
                 }
-                null
-            } finally {
-                conn.disconnect()
+                val res = sb.toString().trim()
+                if (res.isNotEmpty()) return@runCatching res
             }
-        }.getOrNull()
-    }
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrNull()
 }

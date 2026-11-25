@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Needed for in-popup Define Word, Translate & Favicon fetching -->
+    <!-- Used strictly on-demand when user invokes inline Define Word or Translate -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Package visibility for WhatsApp, WhatsApp Business, Web Browsers & Installed App Picker on Android 11+ -->
+    <!-- Package visibility on Android 11+ for WhatsApp, browsers, dialer, SMS, and Mute App picker -->
     <queries>
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
@@ -38,11 +38,6 @@
         android:label="@string/app_name"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
-        <!-- Auto-provision Google Play Services on-device OCR model -->
-        <meta-data
-            android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="ocr" />
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -54,11 +49,11 @@
             </intent-filter>
         </activity>
 
-        <!-- Hooks into Android's native Copy/Share selection menu as a universal fallback -->
+        <!-- Universal OS text selection menu fallback (ACTION_PROCESS_TEXT) -->
         <activity
             android:name=".ProcessTextActivity"
             android:exported="true"
-            android:label="[sel]"
+            android:label="@string/app_name"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
             android:noHistory="true">
@@ -69,45 +64,10 @@
             </intent-filter>
         </activity>
 
-        <!-- 3rd-Party Automation / Gesture Trigger for Universal Screen Text Extraction Mode -->
-        <activity
-            android:name=".ScreenGrabTriggerActivity"
-            android:exported="true"
-            android:label="[sel] Grab Screen Text"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:launchMode="singleInstance">
-            <intent-filter>
-                <action android:name="io.github.selclip.ACTION_GRAB_SCREEN" />
-                <action android:name="io.github.selclip.EXTRACT_SCREEN_TEXT" />
-                <action android:name="android.intent.action.ASSIST" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="sel" android:host="grab" />
-            </intent-filter>
-        </activity>
-
-        <!-- Quick Settings Tile to trigger Screen Text Extraction from Notification Shade -->
-        <service
-            android:name=".SelTileService"
-            android:exported="true"
-            android:icon="@drawable/ic_launcher_foreground"
-            android:label="[sel] Grab Text"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
-            </intent-filter>
-        </service>
-
         <service
             android:name=".SelAccessibilityService"
             android:exported="false"
-            android:label="[sel] Plain-Text Palette"
+            android:label="@string/service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

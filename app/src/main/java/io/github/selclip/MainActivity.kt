@@ -3,21 +3,27 @@ package io.github.selclip
 import android.app.Activity
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import io.github.selclip.data.PrefsStore
+import io.github.selclip.data.RulesRepository
+import io.github.selclip.data.ThemeMode
+import io.github.selclip.ui.ActionsTab
+import io.github.selclip.ui.HomeTab
+import io.github.selclip.ui.SettingsTab
+import io.github.selclip.ui.UiKit
 
 /**
- * Clean 3-tab ASCII shell ([HOME] | [ACTIONS] | [SETTINGS]) — zero clutter, zero duplicates.
+ * Decoupled 3-tab mobile companion UI (Home | Actions | Settings).
+ * Never loaded into RAM by the background AccessibilityService until the user opens the app.
  */
 class MainActivity : Activity() {
 
@@ -27,24 +33,24 @@ class MainActivity : Activity() {
     }
 
     private enum class Tab(val title: String) {
-        HOME("HOME"),
-        ACTIONS("ACTIONS"),
-        SETTINGS("SETTINGS")
+        HOME("Home"),
+        ACTIONS("Actions"),
+        SETTINGS("Settings")
     }
 
     private var activeTab: Tab = Tab.HOME
-    private var lastRenderedIsDark: Boolean? = null
+    private var lastRenderedDark: Boolean? = null
     private val tabButtons = mutableMapOf<Tab, TextView>()
     private val tabPanels = mutableMapOf<Tab, View>()
 
-    private lateinit var serviceStatusBadge: TextView
-    private lateinit var homeTab: HomeTabController
-    private lateinit var actionsTab: ActionsTabController
-    private lateinit var settingsTab: SettingsTabController
+    private lateinit var serviceBadge: TextView
+    private lateinit var homeTab: HomeTab
+    private lateinit var actionsTab: ActionsTab
+    private lateinit var settingsTab: SettingsTab
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ToolPrefs.ensureRulesFile(this)
+        RulesRepository.ensureRulesFile(this)
         rebuildUi()
     }
 
@@ -55,11 +61,11 @@ class MainActivity : Activity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (ToolPrefs.isFollowSystemTheme(this)) {
-            val nowDark = ToolPrefs.resolvePalette(this).isDark
-            if (lastRenderedIsDark != null && lastRenderedIsDark != nowDark) {
+        if (PrefsStore.getThemeMode(this) == ThemeMode.AUTO) {
+            val nowDark = PrefsStore.resolvePalette(this).isDark
+            if (lastRenderedDark != null && lastRenderedDark != nowDark) {
                 rebuildUi()
-                SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                SelAccessibilityService.instance?.refreshThemeIfVisible()
             }
         }
     }
@@ -67,7 +73,7 @@ class MainActivity : Activity() {
     private fun rebuildUi() {
         val p = UiKit.pal(this)
         val dp = { v: Int -> UiKit.dp(this, v) }
-        lastRenderedIsDark = p.isDark
+        lastRenderedDark = p.isDark
 
         runCatching {
             window.statusBarColor = p.bgHeaderInt
@@ -77,13 +83,13 @@ class MainActivity : Activity() {
         tabButtons.clear()
         tabPanels.clear()
 
-        homeTab = HomeTabController(this)
-        actionsTab = ActionsTabController(this)
-        settingsTab = SettingsTabController(
+        homeTab = HomeTab(this)
+        actionsTab = ActionsTab(this)
+        settingsTab = SettingsTab(
             activity = this,
             onRebuildUi = { rebuildUi() },
-            onExportJsonFile = { launchExportJsonFile() },
-            onImportJsonFile = { launchImportJsonFile() }
+            onExportJson = { launchExportJson() },
+            onImportJson = { launchImportJson() }
         )
 
         val root = LinearLayout(this).apply {
@@ -91,77 +97,85 @@ class MainActivity : Activity() {
             setBackgroundColor(p.bgPrimaryInt)
         }
 
-        // 1. Minimal ASCII Header
+        // Top App Bar
         val topHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(p.bgHeaderInt)
-            setPadding(dp(14), dp(12), dp(14), dp(10))
+            setPadding(dp(16), dp(14), dp(16), dp(10))
         }
-
-        topHeader.addView(UiKit.label(this, "[sel_]  v3.0", 14.5f, p.fgPrimaryInt, bold = true).apply {
+        topHeader.addView(UiKit.text(this, "Sel", 20f, p.fgPrimaryInt, bold = true))
+        topHeader.addView(UiKit.text(this, "  v4.0", 12.5f, p.fgMutedInt).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
 
-        serviceStatusBadge = UiKit.label(this, "[○ OFF ↗]", 10.5f, p.dangerRedInt, bold = true).apply {
-            setPadding(dp(8), dp(4), dp(8), dp(4))
+        serviceBadge = UiKit.text(this, "Enable ↗", 12f, p.dangerInt, bold = true).apply {
+            setPadding(dp(10), dp(6), dp(10), dp(6))
             background = GradientDrawable().apply {
                 setColor(p.bgSurfaceInt)
                 setStroke(dp(1), p.borderInt)
-                cornerRadius = dp(2).toFloat()
+                cornerRadius = UiKit.dpF(this@MainActivity, 16f)
             }
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
-        topHeader.addView(serviceStatusBadge)
+        topHeader.addView(serviceBadge)
         root.addView(topHeader)
 
-        // 2. Clean 3-Tab ASCII Bar: [HOME] [ACTIONS] [SETTINGS]
-        val tabRow = LinearLayout(this).apply {
+        // Segmented 3-Tab Pill Bar
+        val tabBarWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(p.bgHeaderInt)
+            setPadding(dp(14), dp(2), dp(14), dp(12))
+        }
+        val segmented = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(p.bgHeaderInt)
-            setPadding(dp(10), dp(2), dp(10), dp(8))
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply {
+                setColor(p.bgSurfaceInt)
+                setStroke(dp(1), p.borderInt)
+                cornerRadius = UiKit.dpF(this@MainActivity, 12f)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }
+
         Tab.values().forEach { tab ->
-            val btn = TextView(this).apply {
-                text = "[${tab.title}]"
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.2f)
+            val btn = UiKit.text(this, tab.title, 13f, p.fgMutedInt, bold = true).apply {
                 gravity = Gravity.CENTER
-                isSingleLine = true
-                setPadding(dp(4), dp(8), dp(4), dp(8))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = dp(3)
-                    marginEnd = dp(3)
-                }
+                minHeight = dp(38)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener { switchTab(tab) }
             }
             tabButtons[tab] = btn
-            tabRow.addView(btn)
+            segmented.addView(btn)
         }
-        root.addView(tabRow)
+        tabBarWrap.addView(segmented)
+        root.addView(tabBarWrap)
 
         root.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
             setBackgroundColor(p.dividerInt)
         })
 
-        // 3. Scrollable Tab Content
-        val bodyScroll = ScrollView(this).apply {
+        // Scrollable Body
+        val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        val bodyHost = LinearLayout(this).apply {
+        val host = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(24))
+            setPadding(dp(16), dp(12), dp(16), dp(28))
         }
 
         tabPanels[Tab.HOME] = homeTab.buildView()
         tabPanels[Tab.ACTIONS] = actionsTab.buildView()
         tabPanels[Tab.SETTINGS] = settingsTab.buildView()
-        Tab.values().forEach { t -> tabPanels[t]?.let { bodyHost.addView(it) } }
+        Tab.values().forEach { t -> tabPanels[t]?.let { host.addView(it) } }
 
-        bodyScroll.addView(bodyHost)
-        root.addView(bodyScroll)
+        scroll.addView(host)
+        root.addView(scroll)
 
         setContentView(root)
         switchTab(activeTab)
@@ -169,17 +183,16 @@ class MainActivity : Activity() {
 
     private fun switchTab(target: Tab) {
         val p = UiKit.pal(this)
-        val dp = { v: Int -> UiKit.dp(this, v) }
         activeTab = target
         Tab.values().forEach { tab ->
-            val active = (tab == target)
-            tabPanels[tab]?.visibility = if (active) View.VISIBLE else View.GONE
+            val selected = tab == target
+            tabPanels[tab]?.visibility = if (selected) View.VISIBLE else View.GONE
             tabButtons[tab]?.apply {
-                if (active) {
+                if (selected) {
                     setTextColor(p.onAccentInt)
                     background = GradientDrawable().apply {
-                        setColor(p.accentPurpleInt)
-                        cornerRadius = dp(2).toFloat()
+                        setColor(p.accentPrimaryInt)
+                        cornerRadius = UiKit.dpF(this@MainActivity, 9f)
                     }
                 } else {
                     setTextColor(p.fgMutedInt)
@@ -193,15 +206,15 @@ class MainActivity : Activity() {
     private fun refreshAllTabs() {
         val p = UiKit.pal(this)
         val active = SelAccessibilityService.instance != null
-        serviceStatusBadge.text = if (active) "[● ON]" else "[○ ENABLE ↗]"
-        serviceStatusBadge.setTextColor(if (active) p.accentGreenInt else p.dangerRedInt)
+        serviceBadge.text = if (active) "● Active" else "Enable ↗"
+        serviceBadge.setTextColor(if (active) p.accentSuccessInt else p.dangerInt)
 
         homeTab.refresh()
         actionsTab.refresh()
         settingsTab.refresh()
     }
 
-    private fun launchExportJsonFile() {
+    private fun launchExportJson() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/json"
@@ -211,7 +224,7 @@ class MainActivity : Activity() {
         runCatching { startActivityForResult(intent, REQ_EXPORT_JSON) }
     }
 
-    private fun launchImportJsonFile() {
+    private fun launchImportJson() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
@@ -230,7 +243,7 @@ class MainActivity : Activity() {
         when (requestCode) {
             REQ_EXPORT_JSON -> {
                 val ok = runCatching {
-                    val json = ToolPrefs.exportBackupJson(this)
+                    val json = PrefsStore.exportBackupJson(this)
                     contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
                     true
                 }.getOrDefault(false)
@@ -238,11 +251,11 @@ class MainActivity : Activity() {
             }
             REQ_IMPORT_JSON -> {
                 val ok = runCatching {
-                    val json = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                    ToolPrefs.importBackupJson(this, json)
+                    val json = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    PrefsStore.importBackupJson(this, json)
                 }.getOrDefault(false)
                 if (ok) {
-                    SelAccessibilityService.instance?.refreshOpenPopupTheme()
+                    SelAccessibilityService.instance?.refreshThemeIfVisible()
                     rebuildUi()
                     Toast.makeText(this, "Settings restored", Toast.LENGTH_SHORT).show()
                 } else {

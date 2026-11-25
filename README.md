@@ -1,16 +1,22 @@
-# `[sel_]` — PopClip-Inspired ASCII Selection Bar for Android
+# Sel — PopClip-Style Selection Bar for Android (`v4.0.0`)
 
-A minimal, context-aware PopClip alternative for Android styled with crisp ASCII / Dracula & Alucard aesthetics, built with pure native views, `TYPE_ACCESSIBILITY_OVERLAY`, and optional on-device Google Play Services ML Kit OCR.
+A fast, lightweight, power-efficient PopClip alternative for Android built from scratch with pure native Android views, `TYPE_ACCESSIBILITY_OVERLAY`, and zero bloated frameworks.
 
-## v3.0.0 Highlights
-- **Zero Native Redundancy + Bigger Thumb-Friendly ASCII PopClip Bar:**
-  - Removed redundant `Copy`, `Cut`, `Paste`, and `Select All` from the main selection bar (since Android's native selection toolbar cannot be suppressed without root).
-  - Larger, effortless **46dp+ touch targets** (`13sp` bold monospace) that wrap cleanly into 1–2 tidy rows with hairline `1dp` borders and `|` separators.
-- **Always-On Customizable Search, YouTube & Pinned Actions:**
-  - **Default Search (`GGL`/`DDG`/`BRV`/custom)**: Always on the bar — tap for instant search, **long-press** to open all search engines (and long-press any engine in the drawer to make it default!).
-  - **YouTube (`YT`)**: Always on the bar — tap for instant YouTube search, **long-press** for time-filtered YouTube searches (`1H`, `24H`, `7D`, `30D`, `1Y`).
-  - **Pin Anything (`[*]`)**: Pin any built-in or custom action in `[ACTIONS]` so it always stays on the bar alongside smart context actions (`CALL/SMS/WA/W4B`, `OPEN/CLEAN`, `MAIL`, `= answer`, `MAGNET`, `DEF/TR`, `LINKS`, `JSON`, `UNDO`).
-- **Rock-Solid Selection Detection Across All Apps:**
-  - Listens to `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_LONG_CLICKED`, `TYPE_VIEW_SELECTED`, and `TYPE_VIEW_TEXT_SELECTION_CHANGED` with two-stage delayed probes (`100ms` + `190ms`), Chromium/WebView `event.text` fallback, automatic toolbar-signature reset on dismissal, and a reliable `360ms` Android 10+ clipboard focus probe.
-- **Overhauled Block-First Screen Text Grab (`LensOverlayView`):**
-  - Built on mobile-first **block-first tapping** (Universal Copy pattern + Fitts's Law thumb-zone dock): generous `+6dp` padded hitboxes with `getLocationOnScreen()` pixel alignment, multi-block tap stacking (`[1]`, `[2]`), double-tap / `[EDIT]` native Android `EditText` for real OS word/substring selection handles, `[LIST]` scrollable full-screen text reader, and `[OCR]` on-device ML Kit OCR for images & videos.
+## Architecture & Engineering Principles
+- **Explicit Lifecycle State Machine (`PopupStateMachine`)**: Deterministic transitions (`Hidden → PendingProbe → Visible(Bar | Drawer) → Hidden`) eliminate stuck windows, flicker, duplicate overlays, and stale toolbar state.
+- **Smart Positioning & Clamping (`PopupPositioner`)**: Anchors near the active selection while reserving clearance for Android teardrop handles and nearby native `Copy/Cut/Paste` toolbars, automatically flipping above the selection when the keyboard (IME) is open and falling back cleanly when apps omit bounds.
+- **Strictly Event-Driven & Near-Zero Idle Drain**:
+  - Zero polling, zero background timers, zero wakelocks, zero foreground services.
+  - Minimal `AccessibilityServiceInfo` (no `flagIncludeNotImportantViews` bloat) with O(1) short-circuits when idle.
+  - Lazily initialized network (`LazyNetworkClient`) and speech (`LazyTtsSpeaker`) handlers allocate zero threads until actually invoked.
+  - Decoupled companion UI (`MainActivity`) stays completely unloaded in the background.
+- **Minimal Permissions & Dependencies**: `INTERNET` (on-demand Define/Translate only), `BIND_ACCESSIBILITY_SERVICE`, and pure-Java `zxing:core` (~15 KB after R8) for offline QR generation.
+
+## Key Features
+- **Zero Native Redundancy**: Omits redundant Copy/Cut/Paste/Select All on the floating bar and gives you spacious `48dp` touch targets in 1–2 tidy rows.
+- **Always-On Search, YouTube & Pins**:
+  - **Customizable Default Search**: Tap for instant lookup; long-press to switch engines (long-press any engine in the drawer to set default).
+  - **YouTube (`YT`)**: Tap for instant YouTube search; long-press for time filters (`1H`, `24H`, `7D`, `30D`, `1Y`).
+  - **Pin Anything (`★`)**: Pin any built-in action or custom search rule to stay permanently on the bar.
+- **Context-Aware Actions**: Nepal & generic phone (`Call`/`SMS`/`WA`/`W4B`), URLs (`Open`/`Clean`/`QR`), Email, Torrent Hash/Magnet, inline Math/Unit/Hex/Timestamp/Base64 evaluator, JSON formatter, HTML stripper, Define Word (Dictionary + Wikipedia fallback), Translate to English, Entity Extractor, Markdown & Regex/Pipe drawers, Clipboard History, Scratchpad Notes, Per-App Mute, and JSON Backup/Restore.
+- **Universal Fallback**: Also registers in Android's native selection menu via `ACTION_PROCESS_TEXT`.

@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.selclip"
         minSdk = 26
         targetSdk = 34
-        versionCode = 23
-        versionName = "3.0.0"
+        versionCode = 24
+        versionName = "4.0.0"
     }
 
     buildTypes {
@@ -23,7 +23,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Signed with debug key so you can install the release APK directly from GitHub Actions
+            // Signed with debug key so release APK installs directly from GitHub Actions
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -42,13 +42,10 @@ android {
 }
 
 dependencies {
-    // Pure Java QR matrix generator (~15KB after R8 minification)
+    // Pure Java QR matrix encoder (~15KB after R8, zero native/Play Services bloat)
     implementation("com.google.zxing:core:3.5.3")
 
-    // Thin Google Play Services ML Kit on-device OCR client (model lives in Play Services, minimal APK impact)
-    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
-
-    // Fast JVM unit testing
+    // Fast JVM unit tests
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
