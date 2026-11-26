@@ -25,15 +25,33 @@ class TextTransformsTest {
     fun cleanUrl_stripsTrackingParameters() {
         val dirty = "https://example.com/p?id=42&utm_source=twitter&fbclid=xyz&si=123"
         assertEquals("https://example.com/p?id=42", TextTransforms.cleanUrl(dirty))
+
+        // First param stripped must preserve '?' before remaining query params
+        val firstDirty = "https://example.com/p?utm_source=ads&id=42&srsltid=abc&igsh=xyz#section"
+        assertEquals("https://example.com/p?id=42#section", TextTransforms.cleanUrl(firstDirty))
+
+        // All params stripped removes '?' cleanly
+        assertEquals("https://example.com/p", TextTransforms.cleanUrl("https://example.com/p?fbclid=1&ref_src=tw"))
     }
 
     @Test
     fun evalSimpleMath_andUnits_andHex() {
         assertEquals("1740", TextTransforms.evalSimpleMath("145 * 12"))
         assertEquals("3.50", TextTransforms.evalSimpleMath("7 / 2"))
+        assertEquals("226", TextTransforms.evalSimpleMath("(120 + 80) * 1.13"))
+        assertEquals("37500", TextTransforms.evalSimpleMath("12,500 × 3"))
+        assertEquals("360", TextTransforms.evalSimpleMath("15% of 2,400"))
+        assertEquals("2712", TextTransforms.evalSimpleMath("2400 + 13%"))
+        assertEquals("2040", TextTransforms.evalSimpleMath("2400 - 15%"))
         assertNull(TextTransforms.evalSimpleMath("10 / 0"))
+        assertNull(TextTransforms.evalSimpleMath("2026-11-26"))
+        assertNull(TextTransforms.evalSimpleMath("-42"))
         assertEquals("= 255 DEC", TextTransforms.evalUnitConversion("0xFF"))
+        assertEquals("= rgb(26, 115, 232)", TextTransforms.evalUnitConversion("#1A73E8"))
+        assertEquals("= rgb(255, 255, 255)", TextTransforms.evalUnitConversion("#FFF"))
         assertEquals("= 22.2 °C", TextTransforms.evalUnitConversion("72 F"))
+        assertEquals("= 62.1 mph", TextTransforms.evalUnitConversion("100 km/h"))
+        assertEquals("= 2048 MB", TextTransforms.evalUnitConversion("2 GB"))
     }
 
     @Test

@@ -1,10 +1,14 @@
 package io.github.selclip
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
@@ -81,6 +85,8 @@ class SelAccessibilityService : AccessibilityService() {
     private var currentNode: AccessibilityNodeInfo? = null
     private var lastSelectionBounds: Box? = null
     private var lastSelectionBoundsMs: Long = 0L
+    private var lastSelectionActivityMs: Long = 0L
+    private var screenOffReceiver: BroadcastReceiver? = null
 
     private var pendingDirectSelection: PendingDirectSelection? = null
     private var pendingDirectFlush: Runnable? = null
@@ -132,7 +138,36 @@ class SelAccessibilityService : AccessibilityService() {
         if (warmUrls.isNotEmpty()) {
             FaviconRepository.warmMemoryCacheAsync(this, warmUrls)
         }
+        registerScreenOffReceiver()
         SelQuickTileService.requestSync(this)
+    }
+
+    private fun registerScreenOffReceiver() {
+        if (screenOffReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_SCREEN_OFF) {
+                    handler.post {
+                        currentNode = null
+                        if (::actionExecutor.isInitialized) actionExecutor.clearUndo()
+                        cancelPendingDirectSelection()
+                        cancelWindowsCheck()
+                        cancelProbes()
+                        dispatch(PopupEvent.BackOrHomePressed)
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(receiver, filter)
+            }
+            screenOffReceiver = receiver
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -160,6 +195,8 @@ class SelAccessibilityService : AccessibilityService() {
 
     private fun teardown() {
         if (instance === this) instance = null
+        screenOffReceiver?.let { r -> runCatching { unregisterReceiver(r) } }
+        screenOffReceiver = null
         scanGeneration.incrementAndGet()
         cancelPendingDirectSelection()
         cancelWindowsCheck()
@@ -277,6 +314,8 @@ class SelAccessibilityService : AccessibilityService() {
                 DiagLog.d { "WIN_STATE pkg=$pkg cls=$cls transient=$isTransient overlay=$isEdgeOrSmallOverlay prev=$activePackage" }
                 if (isEdgeOrSmallOverlay) return
                 if (pkg == "com.android.systemui" && !isTransient) {
+                    currentNode = null
+                    actionExecutor.clearUndo()
                     cancelPendingDirectSelection()
                     dispatch(PopupEvent.BackOrHomePressed)
                     return
@@ -286,11 +325,15 @@ class SelAccessibilityService : AccessibilityService() {
                     activePackage = pkg
                     if (SelectionFilter.isLauncherPackage(pkg)) {
                         if (prev.isNotEmpty() && prev != pkg) {
+                            currentNode = null
+                            actionExecutor.clearUndo()
                             cancelPendingDirectSelection()
                             dispatch(PopupEvent.BackOrHomePressed)
                             return
                         }
                     } else if (!SelectionFilter.isSystemUiOrFramework(pkg) && prev.isNotEmpty() && prev != pkg) {
+                        currentNode = null
+                        actionExecutor.clearUndo()
                         cancelPendingDirectSelection()
                         dispatch(PopupEvent.AppSwitched(pkg, now()))
                     }
@@ -319,12 +362,16 @@ class SelAccessibilityService : AccessibilityService() {
 
         when (type) {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_SELECTED -> handleDirectSelectionEvent(event, pkg)
+            AccessibilityEvent.TYPE_VIEW_SELECTED -> {
+                lastSelectionActivityMs = now()
+                handleDirectSelectionEvent(event, pkg)
+            }
 
             // Long-press fires while user's finger is still down (Magnifier active).
             // Reset memory and remember source node ONLY — never spawn blindly before finger-up!
             AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
                 if (pkg != packageName && !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)) {
+                    lastSelectionActivityMs = now()
                     DiagLog.d { "LONG_CLICK pkg=$pkg cls=$cls active=$activePackage" }
                     stateMachine.resetToolbarMemory()
                     pendingProbeSource = event.source
@@ -354,6 +401,9 @@ class SelAccessibilityService : AccessibilityService() {
                 if (overlayController.isRecentSelfWindowMutation(180L)) return
                 val cur = stateMachine.state
                 if (cur is PopupState.Visible && (cur.isStandalone || cur.mode != PopupMode.Bar)) return
+                // Zero-idle-IPC guard: skip content-changed scans while reading/scrolling when no selection is active!
+                val recentlyInteracted = (now() - lastSelectionActivityMs) < 3500L
+                if (cur is PopupState.Hidden && pendingDirectSelection == null && !recentlyInteracted) return
                 if (pkg.isNotEmpty() &&
                     pkg != packageName &&
                     !SelectionFilter.isSystemUiOrFramework(pkg) &&
@@ -768,6 +818,7 @@ class SelAccessibilityService : AccessibilityService() {
                         override fun onApplyResult(newText: String) = actionExecutor.applyResult(newText, currentNode)
                         override fun onCopyPlain(text: String, toastMsg: String?) = actionExecutor.copyPlain(text, toastMsg)
                         override fun onOpenUrl(url: String) = actionExecutor.openUrl(url)
+                        override fun onShareText(text: String) = actionExecutor.shareText(text)
                         override fun onMutePackage(pkg: String) {
                             PrefsStore.setAppMuted(this@SelAccessibilityService, pkg, true)
                             Toast.makeText(this@SelAccessibilityService, "Muted popup in $pkg", Toast.LENGTH_SHORT).show()

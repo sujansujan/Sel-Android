@@ -43,6 +43,7 @@ object DrawerRenderer {
         fun onApplyResult(newText: String)
         fun onCopyPlain(text: String, toastMsg: String?)
         fun onOpenUrl(url: String)
+        fun onShareText(text: String)
         fun onMutePackage(pkg: String)
         fun isModeStillActive(mode: PopupMode): Boolean
     }
@@ -60,7 +61,7 @@ object DrawerRenderer {
         container.removeAllViews()
         when (mode) {
             PopupMode.Bar -> Unit
-            PopupMode.MoreTools -> renderMoreTools(context, container, activePackage, pal, cb)
+            PopupMode.MoreTools -> renderMoreTools(context, container, selectedText, activePackage, pal, cb)
             PopupMode.WebSearch -> renderWebSearch(context, container, pal, cb)
             PopupMode.YouTube -> renderYouTube(context, container, pal, cb)
             PopupMode.Markdown -> renderMarkdown(context, container, selectedText, pal, cb)
@@ -77,11 +78,15 @@ object DrawerRenderer {
     private fun renderMoreTools(
         context: Context,
         container: LinearLayout,
+        selectedText: String,
         activePackage: String,
         pal: ThemePalette,
         cb: Callbacks
     ) {
-        container.addView(makeBackHeader(context, "More", pal, cb))
+        val trimmed = selectedText.trim()
+        val words = TextTransforms.countWords(trimmed)
+        val chars = trimmed.length
+        container.addView(makeBackHeader(context, "More · ${words}w · ${chars}c", pal, cb))
         val tools = PrefsStore.getVisibleToolsForDrawer(context)
         val iconPx = dp(context, 18)
 
@@ -100,8 +105,13 @@ object DrawerRenderer {
             )
         }
 
+        container.addView(makeDivider(context, pal))
+        val shareIcon = ActionIconFactory.createShareIcon(pal.fgPrimaryInt, iconPx)
+        container.addView(makeCompactIconRow(context, "Share text…", shareIcon, pal) {
+            cb.onShareText(selectedText)
+        })
+
         if (activePackage.isNotBlank() && activePackage != context.packageName) {
-            container.addView(makeDivider(context, pal))
             val shortPkg = activePackage.substringAfterLast('.')
             val muteIcon = ActionIconFactory.createMuteIcon(pal.fgMutedInt, iconPx)
             container.addView(makeCompactIconRow(context, "Mute in $shortPkg", muteIcon, pal, pal.fgMutedInt) {

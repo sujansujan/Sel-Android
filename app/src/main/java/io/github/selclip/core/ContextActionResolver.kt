@@ -75,8 +75,8 @@ object ContextActionResolver {
         val torrentHash = TextTransforms.extractTorrentHash(trimmed)
         val isMagnetUri = trimmed.startsWith("magnet:?", ignoreCase = true)
 
-        val mathAnswer = if (trimmed.length <= 40) TextTransforms.evalSimpleMath(trimmed) else null
-        val unitAnswer = if (trimmed.length <= 24) TextTransforms.evalUnitConversion(trimmed) else null
+        val mathAnswer = if (trimmed.length <= 64) TextTransforms.evalSimpleMath(trimmed) else null
+        val unitAnswer = if (trimmed.length <= 28) TextTransforms.evalUnitConversion(trimmed) else null
         val timestampAnswer = if (trimmed.length <= 16) TextTransforms.evalTimestamp(trimmed) else null
         val base64Answer = if (isSingleToken && torrentHash == null) TextTransforms.evalBase64Decode(trimmed) else null
 

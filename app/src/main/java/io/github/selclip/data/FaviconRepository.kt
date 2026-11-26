@@ -26,7 +26,7 @@ object FaviconRepository {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val memCache = LruCache<String, Bitmap>(48)
-    private val inFlight = Collections.synchronizedSet(HashSet<String>())
+    private val inFlightCallbacks = HashMap<String, MutableList<(Bitmap) -> Unit>>()
 
     @Volatile
     private var executor: ExecutorService? = null
@@ -69,9 +69,25 @@ object FaviconRepository {
         val host = extractHost(urlTemplate) ?: return null
         memCache.get(host)?.takeIf { !it.isRecycled }?.let { return it }
 
-        if (!inFlight.add(host)) return null
+        val shouldStart = synchronized(inFlightCallbacks) {
+            // Re-check memCache inside lock to prevent races with just-finished downloads
+            memCache.get(host)?.takeIf { !it.isRecycled }?.let { return it }
+            val existing = inFlightCallbacks[host]
+            if (existing != null) {
+                if (onLoaded != null) existing.add(onLoaded)
+                false
+            } else {
+                val waiters = mutableListOf<(Bitmap) -> Unit>()
+                if (onLoaded != null) waiters.add(onLoaded)
+                inFlightCallbacks[host] = waiters
+                true
+            }
+        }
+        if (!shouldStart) return null
+
         val appCtx = context.applicationContext
         getOrCreateExecutor().execute {
+            var resolved: Bitmap? = null
             try {
                 // 1. Check disk cache off the main thread first
                 val file = cacheFile(appCtx, host)
@@ -93,12 +109,18 @@ object FaviconRepository {
 
                 if (bmp != null && bmp.width > 0 && bmp.height > 0) {
                     memCache.put(host, bmp)
-                    if (onLoaded != null) {
-                        mainHandler.post { onLoaded(bmp) }
-                    }
+                    resolved = bmp
                 }
             } finally {
-                inFlight.remove(host)
+                val waiters = synchronized(inFlightCallbacks) {
+                    inFlightCallbacks.remove(host)
+                }
+                val finalBmp = resolved
+                if (finalBmp != null && !waiters.isNullOrEmpty()) {
+                    mainHandler.post {
+                        waiters.forEach { cb -> runCatching { cb(finalBmp) } }
+                    }
+                }
             }
         }
         return null

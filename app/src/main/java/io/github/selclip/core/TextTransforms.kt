@@ -27,10 +27,19 @@ data class ExtractedEntity(
  */
 object TextTransforms {
 
+    private val trackingParamNames = setOf(
+        "fbclid", "gclid", "gbraid", "wbraid", "dclid", "msclkid", "yclid",
+        "igshid", "igsh", "mc_cid", "mc_eid", "si", "srsltid",
+        "ref", "ref_src", "ref_url", "feature", "pp", "s"
+    )
+
     val trackingRegex = Regex(
-        "([?&])(utm_[a-z_]+|fbclid|gclid|igshid|mc_cid|mc_eid|si|ref|s)=[^&#]*",
+        "([?&])(utm_[a-z0-9_]+|fbclid|gclid|gbraid|wbraid|dclid|msclkid|yclid|igshid|igsh|mc_cid|mc_eid|si|srsltid|ref|ref_src|ref_url|feature|pp|s)=[^&#]*",
         RegexOption.IGNORE_CASE
     )
+
+    private fun isTrackingParam(keyLower: String): Boolean =
+        keyLower.startsWith("utm_") || keyLower in trackingParamNames
 
     val urlPattern = Regex(
         "^(https?://|www\\.|[a-zA-Z0-9-]+\\.(com|org|net|io|edu|gov|me|co|app|dev|xyz|info)(/|$)).*",
@@ -57,9 +66,16 @@ object TextTransforms {
         "(?:\\+977|00977|977)?[\\s\\-.()]*((?:98|97)[0-9\\s\\-.()]{8,13}|[1-9][0-9\\s\\-.()]{6,10})"
     )
 
-    private val simpleMathRegex = Regex("^\\s*(-?\\d+(?:\\.\\d+)?)\\s*([+\\-*/])\\s*(-?\\d+(?:\\.\\d+)?)\\s*$")
+    private val dateLikeRegex = Regex("^\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}$")
+    private val phoneDashRegex = Regex("^\\d{2,4}-\\d{3,4}-\\d{3,4}$")
+    private val percentOfRegex = Regex("^\\s*(-?[\\d,]+(?:\\.\\d+)?)\\s*%\\s+of\\s+(-?[\\d,]+(?:\\.\\d+)?)\\s*$", RegexOption.IGNORE_CASE)
+    private val addSubPercentRegex = Regex("^\\s*(-?[\\d,]+(?:\\.\\d+)?)\\s*([+\\-−])\\s*([\\d,]+(?:\\.\\d+)?)\\s*%\\s*$")
+    private val mathValidCharsRegex = Regex("^[\\d.,\\s()+\\-*/×÷−]+$")
+    private val mathHasOpRegex = Regex("[+\\-*/×÷−]")
+    private val thousandsCommaRegex = Regex("(?<=\\d),(?=\\d{3}(?:\\D|$))")
+    private val hexColorRegex = Regex("^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
     private val unitConvRegex = Regex(
-        "^(-?\\d+(?:\\.\\d+)?)\\s*°?\\s*(km|mi|kg|lbs?|cm|in|ft|m|c|f)$",
+        "^(-?\\d+(?:\\.\\d+)?)\\s*°?\\s*(km/h|kph|mph|fl\\s*oz|km|mi|kg|lbs?|cm|in|ft|m|c|f|oz|g|gal|l|ml|gb|mb|tb)$",
         RegexOption.IGNORE_CASE
     )
     private val timestampRegex = Regex("^\\d{10}(\\d{3})?$")
@@ -167,8 +183,21 @@ object TextTransforms {
         }
     }
 
-    fun cleanUrl(input: String): String =
-        input.replace(trackingRegex, "").replace("?&", "?").trimEnd('?', '&')
+    fun cleanUrl(input: String): String {
+        val hashIdx = input.indexOf('#')
+        val beforeHash = if (hashIdx >= 0) input.substring(0, hashIdx) else input
+        val fragment = if (hashIdx >= 0) input.substring(hashIdx) else ""
+        val qIdx = beforeHash.indexOf('?')
+        if (qIdx < 0) return input
+        val base = beforeHash.substring(0, qIdx)
+        val query = beforeHash.substring(qIdx + 1)
+        val kept = query.split('&').filter { part ->
+            if (part.isBlank()) return@filter false
+            val key = part.substringBefore('=').lowercase()
+            !isTrackingParam(key)
+        }
+        return if (kept.isEmpty()) base + fragment else "$base?${kept.joinToString("&")}$fragment"
+    }
 
     fun cleanText(input: String): String = input
         .replace(invisibleCharsRegex, "")
@@ -205,19 +234,110 @@ object TextTransforms {
         return sb.toString()
     }
 
-    fun evalSimpleMath(input: String): String? {
-        val match = simpleMathRegex.find(input) ?: return null
-        val a = match.groupValues[1].toDoubleOrNull() ?: return null
-        val op = match.groupValues[2]
-        val b = match.groupValues[3].toDoubleOrNull() ?: return null
-        val res = when (op) {
-            "+" -> a + b
-            "-" -> a - b
-            "*" -> a * b
-            "/" -> if (b != 0.0) a / b else return null
-            else -> return null
+    private fun formatMathResult(res: Double): String? {
+        if (res.isNaN() || res.isInfinite()) return null
+        val rounded = kotlin.math.round(res)
+        return if (kotlin.math.abs(res - rounded) < 1e-9 && kotlin.math.abs(rounded) < 1e15) {
+            rounded.toLong().toString()
+        } else {
+            "%.2f".format(Locale.US, res)
         }
-        return if (res % 1.0 == 0.0) res.toLong().toString() else "%.2f".format(Locale.US, res)
+    }
+
+    fun evalSimpleMath(input: String): String? {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty() || trimmed.length > 64) return null
+        if (dateLikeRegex.matches(trimmed) || phoneDashRegex.matches(trimmed)) return null
+
+        percentOfRegex.matchEntire(trimmed)?.let { m ->
+            val pct = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: return null
+            val base = m.groupValues[2].replace(",", "").toDoubleOrNull() ?: return null
+            return formatMathResult(base * pct / 100.0)
+        }
+        addSubPercentRegex.matchEntire(trimmed)?.let { m ->
+            val base = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: return null
+            val op = m.groupValues[2]
+            val pct = m.groupValues[3].replace(",", "").toDoubleOrNull() ?: return null
+            val delta = base * pct / 100.0
+            return formatMathResult(if (op == "+") base + delta else base - delta)
+        }
+
+        if (!mathValidCharsRegex.matches(trimmed) || !mathHasOpRegex.containsMatchIn(trimmed)) return null
+        val normalized = trimmed
+            .replace(thousandsCommaRegex, "")
+            .replace('×', '*')
+            .replace('÷', '/')
+            .replace('−', '-')
+            .replace(" ", "")
+        if (normalized.contains(',')) return null
+
+        // Require at least one binary operator (ignore plain negative numbers like "-42")
+        val hasBinaryOp = normalized.drop(1).any { it == '+' || it == '-' || it == '*' || it == '/' }
+        if (!hasBinaryOp) return null
+
+        val value = MathParser(normalized).parse() ?: return null
+        return formatMathResult(value)
+    }
+
+    private class MathParser(private val s: String) {
+        private var pos = 0
+
+        fun parse(): Double? {
+            val res = parseExpression() ?: return null
+            return if (pos == s.length) res else null
+        }
+
+        private fun parseExpression(): Double? {
+            var left = parseTerm() ?: return null
+            while (pos < s.length && (s[pos] == '+' || s[pos] == '-')) {
+                val op = s[pos++]
+                val right = parseTerm() ?: return null
+                left = if (op == '+') left + right else left - right
+            }
+            return left
+        }
+
+        private fun parseTerm(): Double? {
+            var left = parseFactor() ?: return null
+            while (pos < s.length && (s[pos] == '*' || s[pos] == '/')) {
+                val op = s[pos++]
+                val right = parseFactor() ?: return null
+                if (op == '/') {
+                    if (right == 0.0) return null
+                    left /= right
+                } else {
+                    left *= right
+                }
+            }
+            return left
+        }
+
+        private fun parseFactor(): Double? {
+            if (pos >= s.length) return null
+            if (s[pos] == '+') {
+                pos++
+                return parseFactor()
+            }
+            if (s[pos] == '-') {
+                pos++
+                return parseFactor()?.let { -it }
+            }
+            if (s[pos] == '(') {
+                pos++
+                val v = parseExpression() ?: return null
+                if (pos >= s.length || s[pos] != ')') return null
+                pos++
+                return v
+            }
+            val start = pos
+            var sawDot = false
+            while (pos < s.length && (s[pos].isDigit() || (!sawDot && s[pos] == '.'))) {
+                if (s[pos] == '.') sawDot = true
+                pos++
+            }
+            if (pos == start) return null
+            return s.substring(start, pos).toDoubleOrNull()
+        }
     }
 
     fun evalUnitConversion(input: String): String? {
@@ -226,17 +346,37 @@ object TextTransforms {
             val dec = trimmed.substring(2).toLongOrNull(16) ?: return null
             return "= $dec DEC"
         }
+        hexColorRegex.matchEntire(trimmed)?.let { m ->
+            val hex = m.groupValues[1]
+            val full = if (hex.length == 3) "${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}" else hex
+            val r = full.substring(0, 2).toInt(16)
+            val g = full.substring(2, 4).toInt(16)
+            val b = full.substring(4, 6).toInt(16)
+            return "= rgb($r, $g, $b)"
+        }
         val m = unitConvRegex.find(trimmed) ?: return null
         val v = m.groupValues[1].toDoubleOrNull() ?: return null
-        return when (m.groupValues[2].lowercase()) {
+        val unit = m.groupValues[2].lowercase().replace(whitespaceRegex, " ")
+        return when (unit) {
             "km" -> "= %.2f mi".format(Locale.US, v * 0.621371)
             "mi" -> "= %.2f km".format(Locale.US, v * 1.60934)
             "kg" -> "= %.2f lb".format(Locale.US, v * 2.20462)
             "lb", "lbs" -> "= %.2f kg".format(Locale.US, v * 0.453592)
+            "oz" -> "= %.2f g".format(Locale.US, v * 28.3495)
+            "g" -> "= %.2f oz".format(Locale.US, v * 0.035274)
             "cm" -> "= %.2f in".format(Locale.US, v * 0.393701)
             "in" -> "= %.2f cm".format(Locale.US, v * 2.54)
             "ft" -> "= %.2f m".format(Locale.US, v * 0.3048)
             "m" -> "= %.2f ft".format(Locale.US, v * 3.28084)
+            "gal" -> "= %.2f L".format(Locale.US, v * 3.78541)
+            "l" -> "= %.2f gal".format(Locale.US, v * 0.264172)
+            "ml" -> "= %.2f fl oz".format(Locale.US, v * 0.033814)
+            "fl oz" -> "= %.1f mL".format(Locale.US, v * 29.5735)
+            "km/h", "kph" -> "= %.1f mph".format(Locale.US, v * 0.621371)
+            "mph" -> "= %.1f km/h".format(Locale.US, v * 1.60934)
+            "mb" -> "= %.2f GB".format(Locale.US, v / 1024.0)
+            "gb" -> "= %.0f MB".format(Locale.US, v * 1024.0)
+            "tb" -> "= %.0f GB".format(Locale.US, v * 1024.0)
             "f" -> "= %.1f °C".format(Locale.US, (v - 32.0) * 5.0 / 9.0)
             "c" -> "= %.1f °F".format(Locale.US, v * 9.0 / 5.0 + 32.0)
             else -> null

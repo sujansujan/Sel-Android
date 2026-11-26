@@ -35,11 +35,16 @@ class ActionExecutor(
     fun hasValidUndo(nowMs: Long): Boolean =
         undoOriginalText != null && undoNode != null && (nowMs - undoTimestampMs) < 45_000L
 
+    fun clearUndo() {
+        undoOriginalText = null
+        undoNode = null
+        undoTimestampMs = 0L
+    }
+
     fun shutdown() {
         networkClient.shutdown()
         ttsSpeaker.shutdown()
-        undoOriginalText = null
-        undoNode = null
+        clearUndo()
     }
 
     fun executePopAction(act: PopAction, selectedText: String, editableNode: AccessibilityNodeInfo?) {
@@ -66,13 +71,16 @@ class ActionExecutor(
             }
             "phone_call" -> {
                 val num = act.payload ?: trimmed
-                launchIntent(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(num)}")))
+                if (!launchIntent(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(num)}")))) {
+                    Toast.makeText(context, "No dialer app available", Toast.LENGTH_SHORT).show()
+                }
                 onDismiss()
             }
             "phone_sms" -> {
                 val num = act.payload ?: trimmed
-                val ok = launchIntent(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(num)}")))
-                if (!ok) launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse("sms:${Uri.encode(num)}")))
+                val ok = launchIntent(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(num)}"))) ||
+                    launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse("sms:${Uri.encode(num)}")))
+                if (!ok) Toast.makeText(context, "No SMS app available", Toast.LENGTH_SHORT).show()
                 onDismiss()
             }
             "phone_wa" -> openWhatsApp(act.payload ?: "", isBusiness = false)
@@ -84,7 +92,9 @@ class ActionExecutor(
             }
             "email_send" -> {
                 val mail = act.payload ?: trimmed
-                launchIntent(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${Uri.encode(mail)}")))
+                if (!launchIntent(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${Uri.encode(mail)}")))) {
+                    Toast.makeText(context, "No email app available", Toast.LENGTH_SHORT).show()
+                }
                 onDismiss()
             }
             "open_magnet" -> {
@@ -237,7 +247,26 @@ class ActionExecutor(
     }
 
     fun openUrl(url: String) {
-        launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        if (!launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)))) {
+            Toast.makeText(context, "No app found to open link", Toast.LENGTH_SHORT).show()
+        }
+        onDismiss()
+    }
+
+    fun shareText(text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) {
+            onDismiss()
+            return
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, clean)
+        }
+        val chooser = Intent.createChooser(send, null)
+        if (!launchIntent(chooser)) {
+            Toast.makeText(context, "No share target available", Toast.LENGTH_SHORT).show()
+        }
         onDismiss()
     }
 

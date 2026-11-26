@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.selclip"
         minSdk = 26
         targetSdk = 34
-        versionCode = 37
-        versionName = "4.8.2"
+        versionCode = 38
+        versionName = "4.9.0"
     }
 
     signingConfigs {

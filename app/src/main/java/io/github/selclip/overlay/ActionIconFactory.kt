@@ -91,6 +91,9 @@ object ActionIconFactory {
     fun createMuteIcon(tintColor: Int, sizePx: Int): Drawable =
         VectorGlyphDrawable("mute_app", "×", tintColor, sizePx)
 
+    fun createShareIcon(tintColor: Int, sizePx: Int): Drawable =
+        VectorGlyphDrawable("share_text", "↗", tintColor, sizePx)
+
     private class RoundedBitmapDrawable(
         private val bitmap: Bitmap,
         private val sizePx: Int
@@ -446,6 +449,13 @@ object ActionIconFactory {
                     canvas.drawRoundRect(resetRect(px(4f), py(5f), px(20f), py(19f)), 2f * u, 2f * u, strokePaint)
                     canvas.drawLine(px(4f), py(10.5f), px(20f), py(10.5f), strokePaint)
                     canvas.drawLine(cx, py(5f), cx, py(19f), strokePaint)
+                }
+                "share_text" -> {
+                    canvas.drawCircle(px(17.5f), py(6f), 2.2f * u, strokePaint)
+                    canvas.drawCircle(px(6.5f), py(12f), 2.2f * u, strokePaint)
+                    canvas.drawCircle(px(17.5f), py(18f), 2.2f * u, strokePaint)
+                    canvas.drawLine(px(8.5f), py(10.9f), px(15.5f), py(7.1f), strokePaint)
+                    canvas.drawLine(px(8.5f), py(13.1f), px(15.5f), py(16.9f), strokePaint)
                 }
                 else -> {
                     val mono = label.trim().take(2).uppercase().ifEmpty { "•" }

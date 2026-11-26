@@ -21,9 +21,11 @@ class ProcessTextActivity : Activity() {
             overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
             overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
         }
-        val raw = intent?.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
+        val raw = (intent?.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
             ?: intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
             ?: intent?.getStringExtra(Intent.EXTRA_TEXT)
+            ?: intent?.getStringExtra(Intent.EXTRA_SUBJECT))
+            ?.take(8000)
         if (!raw.isNullOrBlank()) {
             val service = SelAccessibilityService.instance
             if (service != null) {

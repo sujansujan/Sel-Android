@@ -229,9 +229,11 @@ class OverlayWindowController(
             }
         } else {
             val posChanged = currentCardX != placement.x || currentCardY != placement.y
+            val backdropResized = useBackdropMode &&
+                (params.width != viewport.screenWidth || params.height != viewport.screenHeight)
             applyCardPosition(card, params, placement.x, placement.y, viewport)
             card.requestLayout()
-            if (!useBackdropMode && (posChanged || isDrawerOpen)) {
+            if (backdropResized || (!useBackdropMode && (posChanged || isDrawerOpen))) {
                 markSelfWindowMutation()
                 runCatching { windowManager.updateViewLayout(winRoot, params) }
             }
@@ -287,9 +289,11 @@ class OverlayWindowController(
                 density = density,
                 isDrawerOpen = currentMode != PopupMode.Bar
             )
+            val backdropResized = useBackdropMode &&
+                (p.width != lastViewport.screenWidth || p.height != lastViewport.screenHeight)
             applyCardPosition(card, p, placement.x, placement.y, lastViewport)
             card.requestLayout()
-            if (!useBackdropMode) {
+            if (backdropResized || !useBackdropMode) {
                 markSelfWindowMutation()
                 runCatching { windowManager.updateViewLayout(winRoot, p) }
             }

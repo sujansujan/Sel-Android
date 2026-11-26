@@ -86,6 +86,14 @@ class ContextActionResolverTest {
         assertEquals("= 1740", mathActions.first().label)
         assertEquals("1740", mathActions.first().payload)
 
+        val pctActions = ContextActionResolver.resolveBarActions(ContextActionResolver.analyze("15% of 2400"))
+        assertEquals("apply_computed", pctActions.first().id)
+        assertEquals("= 360", pctActions.first().label)
+
+        val hexActions = ContextActionResolver.resolveBarActions(ContextActionResolver.analyze("#1A73E8"))
+        assertEquals("apply_computed", hexActions.first().id)
+        assertEquals("= rgb(26, 115, 232)", hexActions.first().label)
+
         val jsonIds = ContextActionResolver.resolveBarActions(ContextActionResolver.analyze("{\"a\":1}")).map { it.id }
         assertTrue("pipe_json_pretty" in jsonIds)
 

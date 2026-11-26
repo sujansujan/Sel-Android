@@ -53,6 +53,9 @@ object RulesRepository {
     fun sanitizeFolderName(raw: String): String =
         raw.uppercase().replace("/", "").replace("|", "").replace(">", "").trim().take(14)
 
+    fun stableSlug(raw: String): String =
+        raw.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').ifEmpty { "item" }
+
     fun inferShortCode(rawGlyph: String, rawLabel: String, target: String? = null): String {
         val cleanLabel = rawLabel.substringAfter("/").trim().uppercase()
         val lowerTarget = target?.lowercase().orEmpty()
@@ -92,6 +95,13 @@ object RulesRepository {
         val regexPipe = mutableListOf<ToolSpec>()
         val folderTools = mutableMapOf<String, MutableList<ToolSpec>>()
         val ruleFolders = linkedSetOf<String>()
+        val usedIds = HashSet<String>()
+        fun uniqueId(base: String): String {
+            if (usedIds.add(base)) return base
+            var n = 2
+            while (!usedIds.add("${base}_$n")) n++
+            return "${base}_$n"
+        }
 
         runCatching {
             file.readLines().forEachIndexed { idx, rawLine ->
@@ -112,24 +122,24 @@ object RulesRepository {
                     rawLabel.startsWith("SEARCH/") || rawLabel.startsWith("WEB/") -> {
                         val name = rawLabel.removePrefix("SEARCH/").removePrefix("WEB/").trim()
                         if (name.isNotEmpty()) {
-                            webSearch.add(ToolSpec("custom_web_${idx}_$name", glyph, name, customTarget = target))
+                            webSearch.add(ToolSpec(uniqueId("custom_web_${stableSlug(name)}"), glyph, name, customTarget = target))
                         }
                     }
                     rawLabel.startsWith("YT/") || rawLabel.startsWith("YOUTUBE/") -> {
                         val name = rawLabel.removePrefix("YT/").removePrefix("YOUTUBE/").trim()
                         if (name.isNotEmpty()) {
-                            youtube.add(ToolSpec("custom_yt_${idx}_$name", glyph, name, customTarget = target))
+                            youtube.add(ToolSpec(uniqueId("custom_yt_${stableSlug(name)}"), glyph, name, customTarget = target))
                         }
                     }
                     rawLabel.startsWith("MD/") || rawLabel.startsWith("MARKDOWN/") -> {
                         val name = rawLabel.removePrefix("MD/").removePrefix("MARKDOWN/").trim()
                         if (name.isNotEmpty()) {
-                            markdown.add(ToolSpec("custom_md_${idx}_$name", glyph, name, customTarget = target))
+                            markdown.add(ToolSpec(uniqueId("custom_md_${stableSlug(name)}"), glyph, name, customTarget = target))
                         }
                     }
                     rawLabel.startsWith("PIPE/") || rawLabel.startsWith("REGEX/") || target.startsWith("s/") -> {
                         val name = rawLabel.removePrefix("PIPE/").removePrefix("REGEX/").trim()
-                        regexPipe.add(ToolSpec("custom_pipe_${idx}_$name", glyph, name, customTarget = target))
+                        regexPipe.add(ToolSpec(uniqueId("custom_pipe_${stableSlug(name)}"), glyph, name, customTarget = target))
                     }
                     rawLabel.contains("/") -> {
                         val folder = sanitizeFolderName(rawLabel.substringBefore("/"))
@@ -138,13 +148,19 @@ object RulesRepository {
                             ruleFolders.add(folder)
                             if (subLabel.isNotEmpty()) {
                                 folderTools.getOrPut(folder) { mutableListOf() }.add(
-                                    ToolSpec("folder_item_${idx}_$subLabel", glyph, subLabel, customTarget = target, folderName = folder)
+                                    ToolSpec(
+                                        uniqueId("folder_item_${stableSlug(folder)}_${stableSlug(subLabel)}"),
+                                        glyph,
+                                        subLabel,
+                                        customTarget = target,
+                                        folderName = folder
+                                    )
                                 )
                             }
                         }
                     }
                     else -> {
-                        topLevel.add(ToolSpec("custom_${idx}_$rawLabel", glyph, rawLabel, customTarget = target))
+                        topLevel.add(ToolSpec(uniqueId("custom_${stableSlug(rawLabel)}"), glyph, rawLabel, customTarget = target))
                     }
                 }
             }

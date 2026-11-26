@@ -196,7 +196,6 @@ class SelectionResolver(
                     SelectionFilter.isImePackage(pkg) ||
                     pkg.contains("systemui", ignoreCase = true)
                 ) continue
-                nonSystemFloatingCount++
                 scannedWindowIds.add(w.id)
 
                 val hit = detectToolbarInFloatingWindow(root, w.id, wr, realW, realH, topInset, visBottom)
@@ -204,6 +203,9 @@ class SelectionResolver(
                     detectedToolbar = hit
                     break
                 } else {
+                    if (!isSelectionHandleWindow(root, wr)) {
+                        nonSystemFloatingCount++
+                    }
                     DiagLog.d { "FLOAT_NO_TB pkg=$pkg winId=${w.id} rect=$wr nodes=${summarizeShortNodes(root)}" }
                 }
             }
@@ -537,6 +539,23 @@ class SelectionResolver(
             "SCAN_NONE roots=[$rootDesc] tb=$toolbarBounds"
         }
         return null
+    }
+
+    private fun isSelectionHandleWindow(root: AccessibilityNodeInfo, wr: Rect): Boolean {
+        if (wr.width() <= dp(56) && wr.height() <= dp(56)) return true
+        val rootId = root.viewIdResourceName.orEmpty()
+        if (rootId.contains("selection_", ignoreCase = true) || rootId.contains("handle", ignoreCase = true)) {
+            return true
+        }
+        if (root.childCount in 1..2) {
+            for (i in 0 until root.childCount) {
+                val cid = runCatching { root.getChild(i)?.viewIdResourceName.orEmpty() }.getOrDefault("")
+                if (cid.contains("selection_", ignoreCase = true) || cid.contains("handle", ignoreCase = true)) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private fun summarizeShortNodes(root: AccessibilityNodeInfo): String {
