@@ -722,6 +722,8 @@ class SelectionResolver(
         }
 
         if (bestStartIdx < 0 || bestEndIdx < 0) return null
+        val maxDist = dp(140).toFloat()
+        if (bestStartDist > maxDist || bestEndDist > maxDist) return null
         val s = minOf(bestStartIdx, bestEndIdx).coerceIn(0, raw.length - 1)
         val e = (maxOf(bestStartIdx, bestEndIdx) + 1).coerceIn(s + 1, raw.length)
         // Expand partial edge characters to full word boundaries if handles clipped mid-word slightly

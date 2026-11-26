@@ -87,6 +87,9 @@ class SelAccessibilityService : AccessibilityService() {
     private var lastSelectionBounds: Box? = null
     private var lastSelectionBoundsMs: Long = 0L
     private var lastSelectionActivityMs: Long = 0L
+    private var lastLiveSelectionText: String? = null
+    private var lastLiveSelectionPkg: String = ""
+    private var lastLiveSelectionAtMs: Long = 0L
     private var screenOffReceiver: BroadcastReceiver? = null
 
     private var pendingDirectSelection: PendingDirectSelection? = null
@@ -234,20 +237,34 @@ class SelAccessibilityService : AccessibilityService() {
 
     /**
      * Explicit shortcut trigger (UbikiTouch, Tasker, Launcher shortcut):
-     * 1. Scans the foreground app's accessibility tree for any active text selection first.
-     * 2. If none is accessible (e.g. custom-canvas PDFs, Chrome/Hermit WebView on Android 16.0),
-     *    falls back to the READ-ONLY clipboard snapshot passed by TriggerPopupActivity.
-     * Works even when automatic popups are paused via Quick Settings.
+     * Invoked from windowless `TriggerPopupActivity` (`Theme.NoDisplay`) so the foreground app
+     * NEVER loses focus or drops its selection handles!
+     *
+     * Priority:
+     * 1. Explicit text extra (e.g. from Tasker)
+     * 2. Live on-screen accessibility selection (`findSelectionAcrossAppWindows`)
+     * 3. Live Jetpack Compose selection handles (`findSelectionFromHandles`)
+     * 4. Recently captured live selection in the same app (<= 5s)
+     * 5. Only if ALL of the above are absent -> launch internal `ClipboardFallbackActivity`
+     *    (strictly READ-ONLY) so copying in custom-canvas apps + swiping shortcut still works!
      */
-    fun triggerFromShortcut(clipboardFallback: String?) {
-        handler.postDelayed({
+    fun triggerFromShortcut(explicitText: String?) {
+        handler.post {
             cancelPendingDirectSelection()
             cancelWindowsCheck()
+            cancelHandleProbe()
             cancelProbes()
             stateMachine.resetToolbarMemory()
 
+            val explicitClean = SelectionFilter.sanitizeCandidate(explicitText)
+            if (explicitClean != null) {
+                showFromExternalText(explicitClean, isStandalone = true)
+                return@post
+            }
+
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = true)
             val gen = scanGeneration.incrementAndGet()
+            val curActivePkg = activePackage
 
             getOrCreateScanExecutor().execute {
                 val treeHit = runCatching {
@@ -263,13 +280,15 @@ class SelAccessibilityService : AccessibilityService() {
                 handler.post {
                     if (gen != scanGeneration.get()) return@post
                     if (treeHit != null) {
+                        DiagLog.d { "SHORTCUT_LIVE_HIT text='${treeHit.text.take(40)}' bounds=${treeHit.bounds}" }
                         currentNode = treeHit.node
                         lastSelectionBounds = treeHit.bounds
                         lastSelectionBoundsMs = now()
+                        rememberLiveSelection(treeHit.text, curActivePkg)
                         dispatch(
                             event = PopupEvent.SelectionDetected(
                                 text = treeHit.text,
-                                sourcePackage = activePackage,
+                                sourcePackage = curActivePkg,
                                 isEditable = treeHit.node?.isEditable == true,
                                 toolbarSig = snap.toolbar?.signature.orEmpty(),
                                 isStandalone = true,
@@ -280,13 +299,15 @@ class SelAccessibilityService : AccessibilityService() {
                         return@post
                     }
 
-                    val fallbackClean = SelectionFilter.sanitizeCandidate(clipboardFallback)
-                    if (fallbackClean != null) {
-                        currentNode = selectionResolver.findFocusedNode()
+                    val recentLive = lastLiveSelectionText?.takeIf {
+                        lastLiveSelectionPkg == curActivePkg && (now() - lastLiveSelectionAtMs) < 5000L
+                    }
+                    if (recentLive != null) {
+                        DiagLog.d { "SHORTCUT_RECENT_HIT text='${recentLive.take(40)}'" }
                         dispatch(
                             event = PopupEvent.SelectionDetected(
-                                text = fallbackClean,
-                                sourcePackage = activePackage,
+                                text = recentLive,
+                                sourcePackage = curActivePkg,
                                 isEditable = currentNode?.isEditable == true,
                                 toolbarSig = snap.toolbar?.signature.orEmpty(),
                                 isStandalone = true,
@@ -294,16 +315,28 @@ class SelAccessibilityService : AccessibilityService() {
                             ),
                             preCapturedSnap = snap
                         )
-                    } else {
-                        Toast.makeText(
-                            this@SelAccessibilityService,
-                            "No selected or copied text found",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        return@post
                     }
+
+                    // No accessible on-screen selection -> fall back to read-only clipboard via 1x1 helper
+                    DiagLog.d { "SHORTCUT_CLIP_FALLBACK pkg=$curActivePkg handles=${snap.selectionHandles.size}" }
+                    val intent = Intent(this@SelAccessibilityService, ClipboardFallbackActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                        )
+                    }
+                    runCatching { startActivity(intent) }
                 }
             }
-        }, 45L)
+        }
+    }
+
+    private fun rememberLiveSelection(text: String, pkg: String) {
+        lastLiveSelectionText = text
+        lastLiveSelectionPkg = pkg
+        lastLiveSelectionAtMs = now()
     }
 
     /**
@@ -708,6 +741,7 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             val effPkg = activePackage.ifEmpty { pkg }
+            rememberLiveSelection(resolved.text, effPkg)
             val isEditable = resolved.node?.isEditable == true
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
 

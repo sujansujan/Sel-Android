@@ -59,8 +59,7 @@
             android:exported="true"
             android:label="@string/shortcut_popup_short"
             android:icon="@mipmap/ic_launcher"
-            android:theme="@style/Theme.Sel.TransparentNoAnim"
-            android:launchMode="singleInstance"
+            android:theme="@android:style/Theme.NoDisplay"
             android:excludeFromRecents="true"
             android:noHistory="true">
             <intent-filter>
@@ -72,6 +71,14 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- Internal 1x1 clipboard-read fallback used ONLY when shortcut finds no live selection -->
+        <activity
+            android:name=".ClipboardFallbackActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Sel.TransparentNoAnim"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
 
         <!-- Universal OS text selection menu (ACTION_PROCESS_TEXT) & Share sheet (ACTION_SEND) entry point -->
         <activity
