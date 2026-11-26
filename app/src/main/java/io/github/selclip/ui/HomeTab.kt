@@ -76,14 +76,15 @@ class HomeTab(
 
             listOf(
                 "Phone" to "9841234567",
-                "Word" to "serendipity",
-                "Math" to "145 * 12"
+                "Price" to "$49.99",
+                "OTP" to "Your verification code is 482910"
             ).forEach { (title, sample) ->
                 chipRow1.addView(UiKit.equalPill(activity, title, p.accentInfoInt) { triggerSample(sample) })
             }
             listOf(
+                "Math" to "15% of 2,400",
                 "Dirty URL" to "https://example.com/item?utm_source=ads&fbclid=99",
-                "Torrent Hash" to "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+                "Word" to "serendipity"
             ).forEach { (title, sample) ->
                 chipRow2.addView(UiKit.equalPill(activity, title, p.accentPrimaryInt) { triggerSample(sample) })
             }
@@ -93,10 +94,10 @@ class HomeTab(
 
             sandboxInput = UiKit.inputField(activity, "Select any text here…", singleLine = false, mono = false).apply {
                 setText(
-                    "Phone: 9841234567   Word: serendipity\n" +
-                        "Math: 145 * 12      Unit: 72 F\n" +
-                        "URL: https://example.com/item?utm_source=ads&fbclid=99\n" +
-                        "Hash: dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+                    "Phone: 9841234567   Price: $49.99\n" +
+                        "Your verification code is 482910\n" +
+                        "Math: 15% of 2,400   Word: serendipity\n" +
+                        "URL: https://example.com/item?utm_source=ads&fbclid=99"
                 )
                 setLineSpacing(0f, 1.25f)
             }
@@ -111,7 +112,10 @@ class HomeTab(
                 addView(UiKit.text(activity, "• Add the Sel Quick Settings tile in your notification shade to pause or resume in 1 tap.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
-                addView(UiKit.text(activity, "• Switch to Icons Only in Settings for crisp icons and auto-fetched site favicons.", 12.5f, p.fgPrimaryInt).apply {
+                addView(UiKit.text(activity, "• Bind the \"Sel Popup\" shortcut in UbikiTouch, Tasker, or launchers to summon Sel anytime from selected or copied text.", 12.5f, p.fgPrimaryInt).apply {
+                    setPadding(0, dp(6), 0, 0)
+                })
+                addView(UiKit.text(activity, "• In Icons Only mode, long-press any tool icon to preview its name safely without running it.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
             }

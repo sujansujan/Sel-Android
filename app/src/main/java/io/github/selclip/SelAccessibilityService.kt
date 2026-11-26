@@ -26,6 +26,7 @@ import io.github.selclip.core.PopupPositioner
 import io.github.selclip.core.PopupState
 import io.github.selclip.core.PopupStateMachine
 import io.github.selclip.core.SelectionFilter
+import io.github.selclip.data.CurrencyRepository
 import io.github.selclip.data.FaviconRepository
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ToolSpec
@@ -227,6 +228,78 @@ class SelAccessibilityService : AccessibilityService() {
         if (cur is PopupState.Visible) {
             handler.post { renderVisibleState(cur, isNewSession = false, preCapturedSnap = null) }
         }
+    }
+
+    /**
+     * Explicit shortcut trigger (UbikiTouch, Tasker, Launcher shortcut):
+     * 1. Scans the foreground app's accessibility tree for any active text selection first.
+     * 2. If none is accessible (e.g. custom-canvas PDFs, Chrome/Hermit WebView on Android 16.0),
+     *    falls back to the READ-ONLY clipboard snapshot passed by TriggerPopupActivity.
+     * Works even when automatic popups are paused via Quick Settings.
+     */
+    fun triggerFromShortcut(clipboardFallback: String?) {
+        handler.postDelayed({
+            cancelPendingDirectSelection()
+            cancelWindowsCheck()
+            cancelProbes()
+            stateMachine.resetToolbarMemory()
+
+            val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = true)
+            val gen = scanGeneration.incrementAndGet()
+
+            getOrCreateScanExecutor().execute {
+                val treeHit = runCatching {
+                    selectionResolver.findSelectionAcrossAppWindows(
+                        preferredRoot = null,
+                        toolbarBounds = snap.toolbar?.bounds,
+                        toolbarWindowId = snap.toolbar?.windowId ?: -1
+                    )
+                }.getOrNull()
+
+                handler.post {
+                    if (gen != scanGeneration.get()) return@post
+                    if (treeHit != null) {
+                        currentNode = treeHit.node
+                        lastSelectionBounds = treeHit.bounds
+                        lastSelectionBoundsMs = now()
+                        dispatch(
+                            event = PopupEvent.SelectionDetected(
+                                text = treeHit.text,
+                                sourcePackage = activePackage,
+                                isEditable = treeHit.node?.isEditable == true,
+                                toolbarSig = snap.toolbar?.signature.orEmpty(),
+                                isStandalone = true,
+                                nowMs = now()
+                            ),
+                            preCapturedSnap = snap
+                        )
+                        return@post
+                    }
+
+                    val fallbackClean = SelectionFilter.sanitizeCandidate(clipboardFallback)
+                    if (fallbackClean != null) {
+                        currentNode = selectionResolver.findFocusedNode()
+                        dispatch(
+                            event = PopupEvent.SelectionDetected(
+                                text = fallbackClean,
+                                sourcePackage = activePackage,
+                                isEditable = currentNode?.isEditable == true,
+                                toolbarSig = snap.toolbar?.signature.orEmpty(),
+                                isStandalone = true,
+                                nowMs = now()
+                            ),
+                            preCapturedSnap = snap
+                        )
+                    } else {
+                        Toast.makeText(
+                            this@SelAccessibilityService,
+                            "No selected or copied text found",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        }, 45L)
     }
 
     /**
@@ -770,10 +843,27 @@ class SelAccessibilityService : AccessibilityService() {
         val searchLabel = defaultEngine.glyph.take(7).ifEmpty { "Search" }
         val iconsOnly = PrefsStore.isIconsOnlyMode(this)
 
+        val homeCurrency = PrefsStore.getHomeCurrency(this)
+        val trimmedSel = visible.text.trim()
+        val fxRates = if (trimmedSel.length <= 32 && trimmedSel.any { it.isDigit() }) {
+            CurrencyRepository.getRatesOrTriggerRefresh(this) {
+                handler.post {
+                    val cur = stateMachine.state
+                    if (cur is PopupState.Visible && cur.mode == PopupMode.Bar) {
+                        renderVisibleState(cur, isNewSession = false, preCapturedSnap = null)
+                    }
+                }
+            }
+        } else {
+            CurrencyRepository.defaultRatesPerUsd
+        }
+
         val ctx = ContextActionResolver.analyze(
             rawText = visible.text,
             isEditable = visible.isEditable,
-            hasUndo = actionExecutor.hasValidUndo(now())
+            hasUndo = actionExecutor.hasValidUndo(now()),
+            homeCurrency = homeCurrency,
+            fxRatesPerUsd = fxRates
         )
         val barActions = ContextActionResolver.resolveBarActions(
             ctx = ctx,

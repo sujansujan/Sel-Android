@@ -28,6 +28,7 @@ object PrefsStore {
     private const val KEY_BAR_ORDER = "popup_bar_slot_order"
     private const val KEY_SERVICE_PAUSED = "service_paused"
     private const val KEY_TRANSLATE_LANG = "translate_target_lang"
+    private const val KEY_HOME_CURRENCY = "home_currency_code"
     private const val PREFIX_COUNT = "use_count_"
     private const val PREFIX_HIDDEN = "hidden_"
 
@@ -61,6 +62,9 @@ object PrefsStore {
     @Volatile
     private var cachedTranslateLang: String? = null
 
+    @Volatile
+    private var cachedHomeCurrency: String? = null
+
     fun invalidatePaletteCache() {
         cachedPaletteKey = Long.MIN_VALUE
         cachedPalette = null
@@ -83,6 +87,7 @@ object PrefsStore {
         cachedHiddenIds = null
         cachedServicePaused = null
         cachedTranslateLang = null
+        cachedHomeCurrency = null
     }
 
     private fun prefs(context: Context): SharedPreferences =
@@ -167,6 +172,18 @@ object PrefsStore {
         val code = getTranslateTargetLang(context)
         return BuiltInRegistry.translateLanguages.firstOrNull { it.code.equals(code, ignoreCase = true) }
             ?: TranslateLanguage(code, code.uppercase().take(4), code.uppercase())
+    }
+
+    // --- Home Currency for Instant FX Conversion ---
+
+    fun getHomeCurrency(context: Context): String =
+        cachedHomeCurrency ?: (prefs(context).getString(KEY_HOME_CURRENCY, "NPR")
+            ?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "NPR").also { cachedHomeCurrency = it }
+
+    fun setHomeCurrency(context: Context, currencyCode: String) {
+        val clean = currencyCode.trim().uppercase().ifEmpty { "NPR" }
+        cachedHomeCurrency = clean
+        prefs(context).edit().putString(KEY_HOME_CURRENCY, clean).apply()
     }
 
     // --- Default Search Engine ---
@@ -369,11 +386,12 @@ object PrefsStore {
     fun exportBackupJson(context: Context): String {
         val p = prefs(context)
         val root = JSONObject().apply {
-            put("version", 6)
+            put("version", 7)
             put("follow_system_theme", p.getBoolean(KEY_FOLLOW_SYSTEM_THEME, true))
             put("dark_theme_manual", p.getBoolean(KEY_DARK_THEME_MANUAL, true))
             put("icons_only_mode", isIconsOnlyMode(context))
             put("translate_target_lang", getTranslateTargetLang(context))
+            put("home_currency_code", getHomeCurrency(context))
             put("default_search_engine_id", getDefaultSearchEngineId(context))
             put("pinned_bar_tool_ids", getPinnedToolIds(context).joinToString(","))
             put("popup_bar_slot_order", getBarSlotOrder(context).joinToString(","))
@@ -401,6 +419,9 @@ object PrefsStore {
         }
         if (root.has("translate_target_lang")) {
             editor.putString(KEY_TRANSLATE_LANG, root.optString("translate_target_lang", "en"))
+        }
+        if (root.has("home_currency_code")) {
+            editor.putString(KEY_HOME_CURRENCY, root.optString("home_currency_code", "NPR"))
         }
         if (root.has("default_search_engine_id")) {
             editor.putString(KEY_DEFAULT_SEARCH_ID, root.optString("default_search_engine_id", "web_google"))

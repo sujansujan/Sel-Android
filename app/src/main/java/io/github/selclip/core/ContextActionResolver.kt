@@ -1,5 +1,6 @@
 package io.github.selclip.core
 
+import io.github.selclip.data.CurrencyRepository
 import io.github.selclip.data.PopAction
 import io.github.selclip.data.ToolSpec
 
@@ -20,7 +21,9 @@ data class SelectionContext(
     val torrentHash: String?,
     val isMagnetUri: Boolean,
     val mathAnswer: String?,
+    val currencyAnswer: Pair<String, String>?,
     val unitAnswer: String?,
+    val otpCode: String?,
     val timestampAnswer: String?,
     val base64Answer: String?,
     val isJson: Boolean,
@@ -50,7 +53,9 @@ object ContextActionResolver {
     fun analyze(
         rawText: String,
         isEditable: Boolean = false,
-        hasUndo: Boolean = false
+        hasUndo: Boolean = false,
+        homeCurrency: String = "NPR",
+        fxRatesPerUsd: Map<String, Double> = CurrencyRepository.defaultRatesPerUsd
     ): SelectionContext {
         val trimmed = rawText.trim()
         val wordCount = TextTransforms.countWords(trimmed)
@@ -76,7 +81,9 @@ object ContextActionResolver {
         val isMagnetUri = trimmed.startsWith("magnet:?", ignoreCase = true)
 
         val mathAnswer = if (trimmed.length <= 64) TextTransforms.evalSimpleMath(trimmed) else null
+        val currencyAnswer = if (trimmed.length <= 32) TextTransforms.evalCurrencyConversion(trimmed, homeCurrency, fxRatesPerUsd) else null
         val unitAnswer = if (trimmed.length <= 28) TextTransforms.evalUnitConversion(trimmed) else null
+        val otpCode = if (trimmed.length in 8..240) TextTransforms.extractOtpCode(trimmed) else null
         val timestampAnswer = if (trimmed.length <= 16) TextTransforms.evalTimestamp(trimmed) else null
         val base64Answer = if (isSingleToken && torrentHash == null) TextTransforms.evalBase64Decode(trimmed) else null
 
@@ -108,7 +115,9 @@ object ContextActionResolver {
             torrentHash = torrentHash,
             isMagnetUri = isMagnetUri,
             mathAnswer = mathAnswer,
+            currencyAnswer = currencyAnswer,
             unitAnswer = unitAnswer,
+            otpCode = otpCode,
             timestampAnswer = timestampAnswer,
             base64Answer = base64Answer,
             isJson = isJson,
@@ -227,8 +236,14 @@ object ContextActionResolver {
             ctx.mathAnswer != null -> {
                 list.add(PopAction("apply_computed", "= ${ctx.mathAnswer}", accent = true, payload = ctx.mathAnswer))
             }
+            ctx.currencyAnswer != null -> {
+                list.add(PopAction("apply_computed", ctx.currencyAnswer.first, accent = true, payload = ctx.currencyAnswer.second))
+            }
             ctx.unitAnswer != null -> {
                 list.add(PopAction("apply_computed", ctx.unitAnswer, accent = true, payload = ctx.unitAnswer.removePrefix("= ").trim()))
+            }
+            ctx.otpCode != null -> {
+                list.add(PopAction("apply_computed", "OTP ${ctx.otpCode}", accent = true, payload = ctx.otpCode))
             }
             ctx.timestampAnswer != null -> {
                 list.add(PopAction("apply_computed", ctx.timestampAnswer.take(16), accent = true, payload = ctx.timestampAnswer))

@@ -78,6 +78,19 @@ object TextTransforms {
         "^(-?\\d+(?:\\.\\d+)?)\\s*°?\\s*(km/h|kph|mph|fl\\s*oz|km|mi|kg|lbs?|cm|in|ft|m|c|f|oz|g|gal|l|ml|gb|mb|tb)$",
         RegexOption.IGNORE_CASE
     )
+    private val currencyPrefixRegex = Regex(
+        "^(US\\$|AU\\$|CA\\$|A\\$|C\\$|S\\$|NRs\\.?|\\$|€|£|₹|¥|₩|USD|EUR|GBP|INR|NPR|AUD|CAD|JPY|AED|SGD|CNY|KRW|CHF|QAR|SAR|MYR)\\s*([\\d,]+(?:\\.\\d+)?)\\s*([kKmM])?$",
+        RegexOption.IGNORE_CASE
+    )
+    private val currencySuffixRegex = Regex(
+        "^([\\d,]+(?:\\.\\d+)?)\\s*([kKmM])?\\s*(USD|EUR|GBP|INR|NPR|NRs\\.?|AUD|CAD|JPY|AED|DHS|SGD|CNY|RMB|KRW|CHF|QAR|SAR|MYR|\\$|€|£|₹|¥|₩)$",
+        RegexOption.IGNORE_CASE
+    )
+    private val otpKeywordRegex = Regex(
+        "\\b(otp|code|verification|verify|passcode|pin|mpin|tpin|login|sign[\\-\\s]?in|2fa|auth|one[\\-\\s]?time|confirm|security|token)\\b",
+        RegexOption.IGNORE_CASE
+    )
+    private val otpCandidateRegex = Regex("(?<!\\d)(\\d{3}[-\\s]\\d{3}|\\d{4,8})(?!\\d)")
     private val timestampRegex = Regex("^\\d{10}(\\d{3})?$")
     private val base64CharsRegex = Regex("^[A-Za-z0-9+/]+={0,2}$")
 
@@ -390,6 +403,113 @@ object TextTransforms {
         val ms = if (trimmed.length == 10) raw * 1000L else raw
         if (ms < 946684800000L || ms > 4102444800000L) return null
         return SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(ms))
+    }
+
+    /**
+     * Converts a selected currency amount (e.g. `$49.99`, `₹1,500`, `50 EUR`, `2.5k USD`) into
+     * [homeCurrency] (or into `USD` when the selected currency already equals [homeCurrency]).
+     */
+    fun evalCurrencyConversion(
+        input: String,
+        homeCurrency: String = "NPR",
+        ratesPerUsd: Map<String, Double>
+    ): Pair<String, String>? {
+        val trimmed = input.trim()
+        if (trimmed.isEmpty() || trimmed.length > 32) return null
+
+        var token: String? = null
+        var rawNum: String? = null
+        var suffixMag: String? = null
+
+        currencyPrefixRegex.matchEntire(trimmed)?.let { m ->
+            token = m.groupValues[1]
+            rawNum = m.groupValues[2]
+            suffixMag = m.groupValues[3]
+        } ?: currencySuffixRegex.matchEntire(trimmed)?.let { m ->
+            rawNum = m.groupValues[1]
+            suffixMag = m.groupValues[2]
+            token = m.groupValues[3]
+        }
+
+        val srcCode = mapCurrencyToken(token ?: return null) ?: return null
+        val baseNum = rawNum?.replace(",", "")?.toDoubleOrNull() ?: return null
+        if (baseNum <= 0.0 || baseNum.isNaN() || baseNum.isInfinite()) return null
+
+        val multiplier = when (suffixMag?.lowercase()) {
+            "k" -> 1_000.0
+            "m" -> 1_000_000.0
+            else -> 1.0
+        }
+        val amount = baseNum * multiplier
+
+        val normHome = homeCurrency.trim().uppercase().ifEmpty { "NPR" }
+        val targetCode = if (srcCode == normHome) {
+            if (normHome == "USD") "NPR" else "USD"
+        } else {
+            normHome
+        }
+
+        val srcRate = ratesPerUsd[srcCode] ?: return null
+        val dstRate = ratesPerUsd[targetCode] ?: return null
+        if (srcRate <= 0.0 || dstRate <= 0.0) return null
+
+        val converted = (amount / srcRate) * dstRate
+        if (converted.isNaN() || converted.isInfinite()) return null
+
+        val formattedNum = when {
+            converted >= 1000.0 -> "%,.0f".format(Locale.US, converted)
+            converted >= 10.0 -> "%,.2f".format(Locale.US, converted).removeSuffix(".00")
+            else -> "%.2f".format(Locale.US, converted)
+        }
+        val label = "= $targetCode $formattedNum"
+        val payload = "$targetCode $formattedNum"
+        return label to payload
+    }
+
+    private fun mapCurrencyToken(raw: String): String? = when (raw.trim().uppercase()) {
+        "$", "US$", "USD" -> "USD"
+        "€", "EUR" -> "EUR"
+        "£", "GBP" -> "GBP"
+        "₹", "INR" -> "INR"
+        "NPR", "NRS", "NRS." -> "NPR"
+        "A$", "AU$", "AUD" -> "AUD"
+        "C$", "CA$", "CAD" -> "CAD"
+        "¥", "JPY" -> "JPY"
+        "AED", "DHS" -> "AED"
+        "S$", "SGD" -> "SGD"
+        "CNY", "RMB" -> "CNY"
+        "₩", "KRW" -> "KRW"
+        "CHF" -> "CHF"
+        "QAR" -> "QAR"
+        "SAR" -> "SAR"
+        "MYR" -> "MYR"
+        else -> null
+    }
+
+    /**
+     * Extracts a 4–8 digit OTP / verification code from a selected SMS or message snippet
+     * (e.g. "Your verification code is 482910" or "G-582 914 is your login code").
+     */
+    fun extractOtpCode(input: String): String? {
+        val trimmed = input.trim()
+        if (trimmed.length !in 8..240) return null
+        if (!otpKeywordRegex.containsMatchIn(trimmed)) return null
+
+        var best: String? = null
+        for (m in otpCandidateRegex.findAll(trimmed)) {
+            val digits = m.groupValues[1].filter { it.isDigit() }
+            if (digits.length !in 4..8) continue
+            // Skip common calendar years like 2024..2035
+            if (digits.length == 4) {
+                val yr = digits.toIntOrNull() ?: 0
+                if (yr in 1990..2039) continue
+            }
+            // Prefer 6-digit OTPs (most common) if multiple numbers exist in the SMS
+            if (best == null || (digits.length == 6 && best.length != 6)) {
+                best = digits
+            }
+        }
+        return best
     }
 
     fun evalBase64Decode(input: String): String? {

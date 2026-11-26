@@ -13,6 +13,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import io.github.selclip.data.PopAction
 import io.github.selclip.data.ThemePalette
 
@@ -23,6 +24,12 @@ import io.github.selclip.data.ThemePalette
  * triggering WindowManager.updateViewLayout — completely eliminating post-appear stutter!
  */
 object PopupBarRenderer {
+
+    private var activeTooltipToast: Toast? = null
+
+    private val longPressDrawerIds = setOf(
+        "default_search", "web_search_folder", "youtube_direct", "youtube_folder"
+    )
 
     private val mediumTypeface: Typeface by lazy {
         Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -151,8 +158,10 @@ object PopupBarRenderer {
         onLongClick: () -> Unit,
         onClick: () -> Unit
     ): ImageView = ImageView(context).apply {
+        val displayTitle = action.customTool?.label?.substringBefore(">")?.trim()?.ifEmpty { action.label } ?: action.label
         scaleType = ImageView.ScaleType.CENTER
-        contentDescription = action.label
+        contentDescription = displayTitle
+        tooltipText = displayTitle
         layoutParams = LinearLayout.LayoutParams(dp(context, 46), dp(context, 48))
         background = pillItemBackground(context, pal)
         // Update image drawable directly in place when favicon arrives — zero window relayout!
@@ -169,7 +178,13 @@ object PopupBarRenderer {
         }
         setOnLongClickListener {
             runCatching { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-            onLongClick()
+            if (action.id in longPressDrawerIds) {
+                onLongClick()
+            } else {
+                // Icons-Only safe preview tooltip: peek at what an icon does without triggering it!
+                runCatching { activeTooltipToast?.cancel() }
+                activeTooltipToast = Toast.makeText(context, displayTitle, Toast.LENGTH_SHORT).also { it.show() }
+            }
             true
         }
     }

@@ -94,6 +94,19 @@ class ContextActionResolverTest {
         assertEquals("apply_computed", hexActions.first().id)
         assertEquals("= rgb(26, 115, 232)", hexActions.first().label)
 
+        val fxActions = ContextActionResolver.resolveBarActions(
+            ContextActionResolver.analyze("$10", homeCurrency = "NPR", fxRatesPerUsd = mapOf("USD" to 1.0, "NPR" to 135.0))
+        )
+        assertEquals("apply_computed", fxActions.first().id)
+        assertEquals("= NPR 1,350", fxActions.first().label)
+
+        val otpActions = ContextActionResolver.resolveBarActions(
+            ContextActionResolver.analyze("Your verification code is 482910")
+        )
+        assertEquals("apply_computed", otpActions.first().id)
+        assertEquals("OTP 482910", otpActions.first().label)
+        assertEquals("482910", otpActions.first().payload)
+
         val jsonIds = ContextActionResolver.resolveBarActions(ContextActionResolver.analyze("{\"a\":1}")).map { it.id }
         assertTrue("pipe_json_pretty" in jsonIds)
 

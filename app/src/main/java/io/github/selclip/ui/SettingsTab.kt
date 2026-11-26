@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import io.github.selclip.SelAccessibilityService
 import io.github.selclip.data.BuiltInRegistry
+import io.github.selclip.data.CurrencyRepository
 import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ThemeMode
 
@@ -102,6 +103,36 @@ class SettingsTab(
             }
             addView(langRow1)
             addView(langRow2)
+
+            // 2.6 Home Currency for Instant FX Conversion
+            addView(UiKit.sectionTitle(activity, "Home Currency (FX Converter)"))
+            addView(
+                UiKit.text(
+                    activity,
+                    "Selecting prices like $49.99, €80, or ₹1,500 converts inline using daily cached rates.",
+                    12.5f,
+                    p.fgMutedInt
+                ).apply { setPadding(dp(2), 0, dp(2), dp(6)) }
+            )
+            val currentHomeCur = PrefsStore.getHomeCurrency(activity)
+            val curRow1 = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            val curRow2 = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+            CurrencyRepository.supportedHomeCurrencies.forEachIndexed { idx, code ->
+                val targetRow = if (idx < 5) curRow1 else curRow2
+                targetRow.addView(
+                    UiKit.equalPill(
+                        activity,
+                        code,
+                        p.accentPrimaryInt,
+                        selected = currentHomeCur.equals(code, ignoreCase = true)
+                    ) {
+                        PrefsStore.setHomeCurrency(activity, code)
+                        onRebuildUi()
+                    }
+                )
+            }
+            addView(curRow1)
+            addView(curRow2)
 
             // 3. Muted Apps
             addView(UiKit.sectionTitle(activity, "Muted Apps"))

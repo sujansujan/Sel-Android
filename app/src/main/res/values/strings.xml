@@ -3,5 +3,7 @@
     <string name="app_name">Sel</string>
     <string name="service_label">Sel Selection Bar</string>
     <string name="qs_tile_label">Sel</string>
+    <string name="shortcut_popup_short">Sel Popup</string>
+    <string name="shortcut_popup_long">Open Sel Floating Bar</string>
     <string name="accessibility_desc">Shows a fast, context-aware floating action bar whenever you select text in any app.</string>
 </resources>

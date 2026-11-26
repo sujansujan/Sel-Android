@@ -84,4 +84,34 @@ class TextTransformsTest {
         assertEquals("hello", TextTransforms.cycleCase("HELLO"))
         assertEquals("Hello World", TextTransforms.cycleCase("hello world"))
     }
+
+    @Test
+    fun evalCurrencyConversion_handlesSymbolsCodesAndBidirectionalHome() {
+        val rates = mapOf("USD" to 1.0, "NPR" to 135.0, "INR" to 85.0, "EUR" to 0.90)
+
+        val usdToNpr = TextTransforms.evalCurrencyConversion("$10", homeCurrency = "NPR", ratesPerUsd = rates)
+        assertEquals("= NPR 1,350", usdToNpr?.first)
+        assertEquals("NPR 1,350", usdToNpr?.second)
+
+        val inrToNpr = TextTransforms.evalCurrencyConversion("₹850", homeCurrency = "NPR", ratesPerUsd = rates)
+        assertEquals("= NPR 1,350", inrToNpr?.first)
+
+        val eurSuffix = TextTransforms.evalCurrencyConversion("90 EUR", homeCurrency = "USD", ratesPerUsd = rates)
+        assertEquals("= USD 100", eurSuffix?.first)
+
+        // Same as home currency flips automatically to USD
+        val nprToUsd = TextTransforms.evalCurrencyConversion("NPR 1,350", homeCurrency = "NPR", ratesPerUsd = rates)
+        assertEquals("= USD 10", nprToUsd?.first)
+
+        assertNull(TextTransforms.evalCurrencyConversion("hello world", homeCurrency = "NPR", ratesPerUsd = rates))
+    }
+
+    @Test
+    fun extractOtpCode_extractsCodesAndRejectsYearsOrNonOtp() {
+        assertEquals("482910", TextTransforms.extractOtpCode("Your verification code is 482910"))
+        assertEquals("582914", TextTransforms.extractOtpCode("G-582 914 is your login code"))
+        assertEquals("7392", TextTransforms.extractOtpCode("Use OTP 7392 to confirm your sign-in"))
+        assertNull(TextTransforms.extractOtpCode("Please confirm your 2026 meeting"))
+        assertNull(TextTransforms.extractOtpCode("Call me at 482910 later"))
+    }
 }
