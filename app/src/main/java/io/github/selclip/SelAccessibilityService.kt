@@ -72,7 +72,6 @@ class SelAccessibilityService : AccessibilityService() {
     private val stateMachine = PopupStateMachine()
     private val contentDebouncer = EventDebouncer(350L)
     private val scanGeneration = AtomicLong(0L)
-    private val shortcutGeneration = AtomicLong(0L)
 
     @Volatile
     private var scanExecutor: ExecutorService? = null
@@ -88,9 +87,6 @@ class SelAccessibilityService : AccessibilityService() {
     private var lastSelectionBounds: Box? = null
     private var lastSelectionBoundsMs: Long = 0L
     private var lastSelectionActivityMs: Long = 0L
-    private var lastLiveSelectionText: String? = null
-    private var lastLiveSelectionPkg: String = ""
-    private var lastLiveSelectionAtMs: Long = 0L
     private var screenOffReceiver: BroadcastReceiver? = null
 
     private var pendingDirectSelection: PendingDirectSelection? = null
@@ -234,200 +230,6 @@ class SelAccessibilityService : AccessibilityService() {
         if (cur is PopupState.Visible) {
             handler.post { renderVisibleState(cur, isNewSession = false, preCapturedSnap = null) }
         }
-    }
-
-    /**
-     * Fast (~2ms) check called synchronously from windowless `TriggerPopupActivity.onCreate()`
-     * to decide whether a live selection, Compose handle pair, or native selection toolbar
-     * (e.g. Chrome/Hermit) is currently visible on screen.
-     */
-    fun hasLiveSelectionSignalForShortcut(): Boolean {
-        val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-        if (snap.toolbar != null || snap.selectionHandles.size >= 2) return true
-        val focused = selectionResolver.findFocusedNode()
-        if (focused != null && selectionResolver.extractFromNode(focused, resolveCharBounds = false) != null) {
-            return true
-        }
-        val recentLive = lastLiveSelectionText?.takeIf {
-            lastLiveSelectionPkg == activePackage && (now() - lastLiveSelectionAtMs) < 5000L
-        }
-        return recentLive != null
-    }
-
-    /**
-     * Explicit shortcut trigger (UbikiTouch, Tasker, Launcher shortcut):
-     * Invoked from windowless `TriggerPopupActivity` (`Theme.NoDisplay`) so the foreground app
-     * NEVER loses focus or drops its selection handles!
-     *
-     * Priority:
-     * 1. Explicit text extra (e.g. from Tasker)
-     * 2. Live on-screen accessibility selection (`findSelectionAcrossAppWindows`)
-     * 3. Live Jetpack Compose selection handles (`findSelectionFromHandles`)
-     * 4. Chrome / Hermit / WebView native toolbar `"Sel"` (`ACTION_PROCESS_TEXT`) button
-     *    (directly or via `⋮` overflow — 0% clipboard pollution!)
-     * 5. Recently captured live selection in the same app (<= 5s)
-     */
-    fun triggerFromShortcut(explicitText: String?) {
-        handler.post {
-            cancelPendingDirectSelection()
-            cancelWindowsCheck()
-            cancelHandleProbe()
-            cancelProbes()
-            stateMachine.resetToolbarMemory()
-
-            val explicitClean = SelectionFilter.sanitizeCandidate(explicitText)
-            if (explicitClean != null) {
-                showFromExternalText(explicitClean, isStandalone = true)
-                return@post
-            }
-
-            val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
-            val curActivePkg = activePackage
-            val sGen = shortcutGeneration.incrementAndGet()
-
-            // Fast-Path 1 (0ms): focused editable/selected input node (address bar, notes, chat box)
-            val focusedHit = selectionResolver.findFocusedNode()?.let {
-                selectionResolver.extractFromNode(it, resolveCharBounds = snap.toolbar == null)
-            }
-            if (focusedHit != null) {
-                DiagLog.d { "SHORTCUT_FOCUSED_HIT text='${focusedHit.text.take(40)}'" }
-                currentNode = focusedHit.node
-                lastSelectionBounds = focusedHit.bounds
-                lastSelectionBoundsMs = now()
-                rememberLiveSelection(focusedHit.text, curActivePkg)
-                dispatch(
-                    event = PopupEvent.SelectionDetected(
-                        text = focusedHit.text,
-                        sourcePackage = curActivePkg,
-                        isEditable = focusedHit.node?.isEditable == true,
-                        toolbarSig = snap.toolbar?.signature.orEmpty(),
-                        isStandalone = true,
-                        nowMs = now()
-                    ),
-                    preCapturedSnap = snap
-                )
-                return@post
-            }
-
-            // Fast-Path 2 (0ms): Native floating toolbar is visibly open (e.g. Chrome, Hermit, Brave, WebView)!
-            // Clicking "Sel" (ACTION_PROCESS_TEXT) directly or via overflow avoids a 350ms DOM scan and
-            // grabs the EXACT highlighted webpage text with 0% clipboard pollution before the toolbar closes!
-            val tb = snap.toolbar
-            if (tb != null) {
-                val directSel = tb.selButtonNode ?: selectionResolver.findSelButtonInFloatingWindows()
-                if (directSel != null) {
-                    DiagLog.d { "SHORTCUT_TOOLBAR_SEL_DIRECT pkg=$curActivePkg" }
-                    val clicked = runCatching {
-                        directSel.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    }.getOrDefault(false)
-                    if (clicked) return@post
-                }
-                if (tb.overflowButtonNode != null) {
-                    DiagLog.d { "SHORTCUT_TOOLBAR_OVERFLOW_OPEN pkg=$curActivePkg" }
-                    val openedOverflow = runCatching {
-                        tb.overflowButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    }.getOrDefault(false)
-                    if (openedOverflow) {
-                        clickSelInOverflowMenuWithRetry(sGen, attempt = 1)
-                        return@post
-                    }
-                }
-            }
-
-            // Async path for apps without a standard floating toolbar (e.g. ClearSMS Compose handles, custom views)
-            getOrCreateScanExecutor().execute {
-                val treeHit = runCatching {
-                    selectionResolver.findSelectionAcrossAppWindows(
-                        preferredRoot = null,
-                        toolbarBounds = snap.toolbar?.bounds,
-                        toolbarWindowId = snap.toolbar?.windowId ?: -1
-                    ) ?: if (snap.selectionHandles.size >= 2) {
-                        selectionResolver.findSelectionFromHandles(snap.selectionHandles, snap.selectionHandlesPkg)
-                    } else null
-                }.getOrNull()
-
-                handler.post {
-                    // Use dedicated shortcutGeneration so background SYNC events NEVER cancel a shortcut!
-                    if (sGen != shortcutGeneration.get()) return@post
-                    if (treeHit != null) {
-                        DiagLog.d { "SHORTCUT_LIVE_HIT text='${treeHit.text.take(40)}' bounds=${treeHit.bounds}" }
-                        currentNode = treeHit.node
-                        lastSelectionBounds = treeHit.bounds
-                        lastSelectionBoundsMs = now()
-                        rememberLiveSelection(treeHit.text, curActivePkg)
-                        dispatch(
-                            event = PopupEvent.SelectionDetected(
-                                text = treeHit.text,
-                                sourcePackage = curActivePkg,
-                                isEditable = treeHit.node?.isEditable == true,
-                                toolbarSig = snap.toolbar?.signature.orEmpty(),
-                                isStandalone = true,
-                                nowMs = now()
-                            ),
-                            preCapturedSnap = snap
-                        )
-                        return@post
-                    }
-
-                    val recentLive = lastLiveSelectionText?.takeIf {
-                        lastLiveSelectionPkg == curActivePkg && (now() - lastLiveSelectionAtMs) < 5000L
-                    }
-                    if (recentLive != null) {
-                        DiagLog.d { "SHORTCUT_RECENT_HIT text='${recentLive.take(40)}'" }
-                        dispatch(
-                            event = PopupEvent.SelectionDetected(
-                                text = recentLive,
-                                sourcePackage = curActivePkg,
-                                isEditable = currentNode?.isEditable == true,
-                                toolbarSig = snap.toolbar?.signature.orEmpty(),
-                                isStandalone = true,
-                                nowMs = now()
-                            ),
-                            preCapturedSnap = snap
-                        )
-                        return@post
-                    }
-
-                    // Last resort fallback (read-only clipboard)
-                    DiagLog.d { "SHORTCUT_CLIP_FALLBACK pkg=$curActivePkg handles=${snap.selectionHandles.size}" }
-                    val intent = Intent(this@SelAccessibilityService, ClipboardFallbackActivity::class.java).apply {
-                        addFlags(
-                            Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_NO_ANIMATION or
-                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                        )
-                    }
-                    runCatching { startActivity(intent) }
-                }
-            }
-        }
-    }
-
-    private fun clickSelInOverflowMenuWithRetry(sGen: Long, attempt: Int) {
-        val delayMs = when (attempt) {
-            1 -> 120L
-            2 -> 140L
-            else -> 160L
-        }
-        handler.postDelayed({
-            if (sGen != shortcutGeneration.get()) return@postDelayed
-            val shouldScroll = attempt == 2
-            val selNode = selectionResolver.findSelButtonInFloatingWindows(scrollOverflowIfMissing = shouldScroll)
-            if (selNode != null) {
-                DiagLog.d { "SHORTCUT_TOOLBAR_OVERFLOW_SEL_CLICK attempt=$attempt" }
-                runCatching { selNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
-            } else if (attempt < 3) {
-                clickSelInOverflowMenuWithRetry(sGen, attempt + 1)
-            } else {
-                DiagLog.d { "SHORTCUT_TOOLBAR_OVERFLOW_SEL_MISS" }
-            }
-        }, delayMs)
-    }
-
-    private fun rememberLiveSelection(text: String, pkg: String) {
-        lastLiveSelectionText = text
-        lastLiveSelectionPkg = pkg
-        lastLiveSelectionAtMs = now()
     }
 
     /**
@@ -832,7 +634,6 @@ class SelAccessibilityService : AccessibilityService() {
             }
 
             val effPkg = activePackage.ifEmpty { pkg }
-            rememberLiveSelection(resolved.text, effPkg)
             val isEditable = resolved.node?.isEditable == true
             val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
 

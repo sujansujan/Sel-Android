@@ -29,9 +29,7 @@ data class ToolbarHit(
     val bounds: Box,
     val windowId: Int,
     val signature: String,
-    val copyButtonNode: AccessibilityNodeInfo? = null,
-    val selButtonNode: AccessibilityNodeInfo? = null,
-    val overflowButtonNode: AccessibilityNodeInfo? = null
+    val copyButtonNode: AccessibilityNodeInfo? = null
 )
 
 data class ScreenSnapshot(
@@ -303,14 +301,12 @@ class SelectionResolver(
     ): ToolbarHit? {
         val matchedButtons = mutableListOf<Rect>()
         var copyBtn: AccessibilityNodeInfo? = null
-        var selBtn: AccessibilityNodeInfo? = null
-        var overflowBtn: AccessibilityNodeInfo? = null
 
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         queue.add(root to 0)
         var visited = 0
 
-        while (queue.isNotEmpty() && visited < 48) {
+        while (queue.isNotEmpty() && visited < 40) {
             val (node, depth) = queue.removeFirst()
             visited++
             if (node.isVisibleToUser) {
@@ -318,13 +314,6 @@ class SelectionResolver(
                 val rawLabel = node.text?.toString()?.trim().orEmpty()
                     .ifEmpty { node.contentDescription?.toString()?.trim().orEmpty() }
                 val labelLower = rawLabel.lowercase()
-
-                val isOverflow = idRes.contains("overflow", ignoreCase = true) ||
-                    labelLower == "more options" ||
-                    labelLower == "more"
-                if (isOverflow && overflowBtn == null) {
-                    overflowBtn = clickableAncestor(node) ?: node
-                }
 
                 val isIdHit = idRes.isNotEmpty() && toolbarIdHints.any { hint ->
                     idRes == hint || idRes.endsWith("/$hint") || idRes.contains("floating_toolbar")
@@ -339,9 +328,6 @@ class SelectionResolver(
                         matchedButtons.add(r)
                         if (copyBtn == null && (idRes.endsWith("/copy") || labelLower == "copy")) {
                             copyBtn = target
-                        }
-                        if (selBtn == null && labelLower == "sel") {
-                            selBtn = target
                         }
                     }
                 }
@@ -370,59 +356,7 @@ class SelectionResolver(
 
         val q = dp(18).coerceAtLeast(24)
         val sig = "${finalBounds.left / q}_${finalBounds.top / q}_${finalBounds.right / q}_${finalBounds.bottom / q}"
-        DiagLog.d { "TB_HIT winId=$windowId sel=${selBtn != null} ovf=${overflowBtn != null} copy=${copyBtn != null} rect=$finalBounds" }
-        return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn, selBtn, overflowBtn)
-    }
-
-    /**
-     * Finds the visible `"Sel"` (`ACTION_PROCESS_TEXT`) menu item inside any currently open
-     * floating selection toolbar or its expanded overflow popup (used strictly on explicit user
-     * shortcut trigger in Chrome / Hermit / WebView — ZERO clipboard pollution!).
-     */
-    fun findSelButtonInFloatingWindows(scrollOverflowIfMissing: Boolean = false): AccessibilityNodeInfo? {
-        val (realW, realH) = readRealScreenSize()
-        val windows = runCatching { service.windows }.getOrNull() ?: return null
-        val candidates = windows
-            .filter { it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD }
-            .sortedByDescending { it.layer }
-
-        var scrollableOverflow: AccessibilityNodeInfo? = null
-        for (w in candidates) {
-            val wr = Rect()
-            w.getBoundsInScreen(wr)
-            // Floating toolbar or its expanded vertical overflow popup (never full-screen app root)
-            if (wr.width() >= (realW * 0.97f).toInt() && wr.height() >= (realH * 0.75f).toInt()) continue
-            val root = runCatching { w.root }.getOrNull() ?: continue
-            val pkg = root.packageName?.toString().orEmpty()
-            if (pkg == service.packageName || SelectionFilter.isImePackage(pkg) || pkg.contains("systemui", ignoreCase = true)) continue
-
-            val q = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
-            q.add(root to 0)
-            var visited = 0
-            while (q.isNotEmpty() && visited < 96) {
-                val (node, depth) = q.removeFirst()
-                visited++
-                if (node.isScrollable && scrollableOverflow == null) {
-                    scrollableOverflow = node
-                }
-                if (node.isVisibleToUser) {
-                    val t = node.text?.toString()?.trim().orEmpty()
-                    val d = node.contentDescription?.toString()?.trim().orEmpty()
-                    if (t.equals("Sel", ignoreCase = true) || d.equals("Sel", ignoreCase = true)) {
-                        return clickableAncestor(node) ?: node
-                    }
-                }
-                if (depth < 8) {
-                    for (i in 0 until minOf(node.childCount, 32)) {
-                        runCatching { node.getChild(i) }.getOrNull()?.let { q.add(it to depth + 1) }
-                    }
-                }
-            }
-        }
-        if (scrollOverflowIfMissing && scrollableOverflow != null) {
-            runCatching { scrollableOverflow.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
-        }
-        return null
+        return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn)
     }
 
     /**

@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Zero-blink floating transparent theme for ProcessTextActivity & TriggerPopupActivity.
-         windowIsFloating=true + windowAnimationStyle=@null prevents HyperOS/MIUI from playing
-         a full-screen task open/close flash when triggered via UbikiTouch or selection menus. -->
+    <!-- Zero-blink floating transparent theme for ProcessTextActivity (ACTION_PROCESS_TEXT / ACTION_SEND). -->
     <style name="Theme.Sel.TransparentNoAnim" parent="@android:style/Theme.Translucent.NoTitleBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowIsFloating">true</item>

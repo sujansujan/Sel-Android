@@ -48,37 +48,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
         </activity>
-
-        <!-- Third-party gesture / shortcut trigger (UbikiTouch, Tasker, Launcher shortcuts) -->
-        <activity
-            android:name=".TriggerPopupActivity"
-            android:exported="true"
-            android:label="@string/shortcut_popup_short"
-            android:icon="@mipmap/ic_launcher"
-            android:theme="@android:style/Theme.NoDisplay"
-            android:excludeFromRecents="true"
-            android:noHistory="true">
-            <intent-filter>
-                <action android:name="android.intent.action.CREATE_SHORTCUT" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="io.github.selclip.ACTION_TRIGGER_POPUP" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
-
-        <!-- Internal 1x1 clipboard-read fallback used ONLY when shortcut finds no live selection -->
-        <activity
-            android:name=".ClipboardFallbackActivity"
-            android:exported="false"
-            android:theme="@style/Theme.Sel.TransparentNoAnim"
-            android:excludeFromRecents="true"
-            android:noHistory="true" />
 
         <!-- Universal OS text selection menu (ACTION_PROCESS_TEXT) & Share sheet (ACTION_SEND) entry point -->
         <activity

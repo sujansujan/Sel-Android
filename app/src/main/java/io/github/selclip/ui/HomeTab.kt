@@ -112,9 +112,6 @@ class HomeTab(
                 addView(UiKit.text(activity, "• Add the Sel Quick Settings tile in your notification shade to pause or resume in 1 tap.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
-                addView(UiKit.text(activity, "• Bind the \"Sel Popup\" shortcut in UbikiTouch, Tasker, or launchers to summon Sel anytime from selected or copied text.", 12.5f, p.fgPrimaryInt).apply {
-                    setPadding(0, dp(6), 0, 0)
-                })
                 addView(UiKit.text(activity, "• In Icons Only mode, long-press any tool icon to preview its name safely without running it.", 12.5f, p.fgPrimaryInt).apply {
                     setPadding(0, dp(6), 0, 0)
                 })
