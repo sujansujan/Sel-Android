@@ -370,6 +370,7 @@ class SelectionResolver(
 
         val q = dp(18).coerceAtLeast(24)
         val sig = "${finalBounds.left / q}_${finalBounds.top / q}_${finalBounds.right / q}_${finalBounds.bottom / q}"
+        DiagLog.d { "TB_HIT winId=$windowId sel=${selBtn != null} ovf=${overflowBtn != null} copy=${copyBtn != null} rect=$finalBounds" }
         return ToolbarHit(finalBounds.toBox(), windowId, sig, copyBtn, selBtn, overflowBtn)
     }
 
@@ -378,13 +379,14 @@ class SelectionResolver(
      * floating selection toolbar or its expanded overflow popup (used strictly on explicit user
      * shortcut trigger in Chrome / Hermit / WebView — ZERO clipboard pollution!).
      */
-    fun findSelButtonInFloatingWindows(): AccessibilityNodeInfo? {
+    fun findSelButtonInFloatingWindows(scrollOverflowIfMissing: Boolean = false): AccessibilityNodeInfo? {
         val (realW, realH) = readRealScreenSize()
         val windows = runCatching { service.windows }.getOrNull() ?: return null
         val candidates = windows
             .filter { it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             .sortedByDescending { it.layer }
 
+        var scrollableOverflow: AccessibilityNodeInfo? = null
         for (w in candidates) {
             val wr = Rect()
             w.getBoundsInScreen(wr)
@@ -397,9 +399,12 @@ class SelectionResolver(
             val q = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
             q.add(root to 0)
             var visited = 0
-            while (q.isNotEmpty() && visited < 80) {
+            while (q.isNotEmpty() && visited < 96) {
                 val (node, depth) = q.removeFirst()
                 visited++
+                if (node.isScrollable && scrollableOverflow == null) {
+                    scrollableOverflow = node
+                }
                 if (node.isVisibleToUser) {
                     val t = node.text?.toString()?.trim().orEmpty()
                     val d = node.contentDescription?.toString()?.trim().orEmpty()
@@ -408,11 +413,14 @@ class SelectionResolver(
                     }
                 }
                 if (depth < 8) {
-                    for (i in 0 until minOf(node.childCount, 24)) {
+                    for (i in 0 until minOf(node.childCount, 32)) {
                         runCatching { node.getChild(i) }.getOrNull()?.let { q.add(it to depth + 1) }
                     }
                 }
             }
+        }
+        if (scrollOverflowIfMissing && scrollableOverflow != null) {
+            runCatching { scrollableOverflow.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) }
         }
         return null
     }
@@ -468,12 +476,15 @@ class SelectionResolver(
         return t.equals("Copy", ignoreCase = true) || d.equals("Copy", ignoreCase = true)
     }
 
+    private fun hasClickAction(node: AccessibilityNodeInfo): Boolean =
+        node.isClickable || node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+
     private fun clickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isClickable) return node
+        if (hasClickAction(node)) return node
         val p1 = node.parent ?: return null
-        if (p1.isClickable) return p1
+        if (hasClickAction(p1)) return p1
         val p2 = p1.parent ?: return null
-        return if (p2.isClickable) p2 else null
+        return if (hasClickAction(p2)) p2 else null
     }
 
     private fun isPlausibleButton(r: Rect, realH: Int, visBottom: Int): Boolean =
