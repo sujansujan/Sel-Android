@@ -27,6 +27,7 @@ import io.github.selclip.data.PrefsStore
 import io.github.selclip.data.ToolSpec
 import io.github.selclip.overlay.DrawerRenderer
 import io.github.selclip.overlay.OverlayWindowController
+import io.github.selclip.service.DiagLog
 import io.github.selclip.service.ScreenSnapshot
 import io.github.selclip.service.SelectionResolver
 import java.util.concurrent.ExecutorService
@@ -271,6 +272,7 @@ class SelAccessibilityService : AccessibilityService() {
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
                 val isTransient = SelectionFilter.isTransientPopupClass(cls)
+                DiagLog.d { "WIN_STATE pkg=$pkg cls=$cls transient=$isTransient prev=$activePackage" }
                 if (pkg == "com.android.systemui" && !isTransient) {
                     cancelPendingDirectSelection()
                     dispatch(PopupEvent.BackOrHomePressed)
@@ -307,7 +309,10 @@ class SelAccessibilityService : AccessibilityService() {
             activePackage = pkg
         }
 
-        if (pkg.isNotEmpty() && PrefsStore.isAppMuted(this, pkg)) return
+        if (pkg.isNotEmpty() && PrefsStore.isAppMuted(this, pkg)) {
+            DiagLog.d { "MUTED skip type=$type pkg=$pkg" }
+            return
+        }
 
         when (type) {
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED,
@@ -317,6 +322,7 @@ class SelAccessibilityService : AccessibilityService() {
             // Reset memory and remember source node ONLY — never spawn blindly before finger-up!
             AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> {
                 if (pkg != packageName && !SelectionFilter.isSystemUiOrFramework(pkg) && !SelectionFilter.isImePackage(pkg)) {
+                    DiagLog.d { "LONG_CLICK pkg=$pkg cls=$cls active=$activePackage" }
                     stateMachine.resetToolbarMemory()
                     pendingProbeSource = event.source
                     pendingProbePkg = activePackage.ifEmpty { pkg }
@@ -370,6 +376,9 @@ class SelAccessibilityService : AccessibilityService() {
 
         val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
         val toolbar = snap.toolbar
+        DiagLog.d {
+            "SYNC active=$activePackage cur=${cur.javaClass.simpleName} tb=${toolbar?.bounds} mag=${snap.hasMagnifierOrTransientFloating} pending=${pendingDirectSelection?.text?.take(24)}"
+        }
 
         if (toolbar == null) {
             if (cur is PopupState.Visible || cur is PopupState.PendingProbe) {
@@ -484,6 +493,12 @@ class SelAccessibilityService : AccessibilityService() {
 
     private fun handleDirectSelectionEvent(event: AccessibilityEvent, pkg: String) {
         val resolved = selectionResolver.extractSelectionFromEvent(event)
+        DiagLog.d {
+            val s = event.source
+            val evT = event.text.joinToString("").replace("\n", "\\n").take(40)
+            val srcT = s?.text?.toString().orEmpty().replace("\n", "\\n").take(40)
+            "EV_SEL type=${event.eventType} pkg=$pkg cls=${event.className} from=${event.fromIndex} to=${event.toIndex} srcSel=${s?.textSelectionStart}..${s?.textSelectionEnd} evT='$evT' srcT='$srcT' resolved='${resolved?.text?.take(30)}'"
+        }
         if (resolved != null) {
             currentNode = resolved.node
             lastSelectionBounds = resolved.bounds
@@ -594,6 +609,7 @@ class SelAccessibilityService : AccessibilityService() {
                 if (activePackage.isNotEmpty() && PrefsStore.isAppMuted(this, activePackage)) return@post
 
                 if (treeHit != null) {
+                    DiagLog.d { "PROBE_HIT pkg=$pkgSnapshot text='${treeHit.text.take(40)}' bounds=${treeHit.bounds}" }
                     currentNode = treeHit.node
                     lastSelectionBounds = treeHit.bounds
                     lastSelectionBoundsMs = now()
@@ -611,6 +627,7 @@ class SelAccessibilityService : AccessibilityService() {
                     return@post
                 }
 
+                DiagLog.d { "PROBE_MISS pkg=$pkgSnapshot tb=${toolbar?.bounds} retry=$allowRetryScheduleOnMiss" }
                 if (allowRetryScheduleOnMiss) {
                     requestProbe(preferredRoot, pkgSnapshot, sigSnapshot)
                 }
@@ -619,7 +636,11 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     private fun dispatch(event: PopupEvent, preCapturedSnap: ScreenSnapshot? = null) {
+        val prevState = stateMachine.state
         val result = stateMachine.onEvent(event)
+        DiagLog.d {
+            "SM ${event.javaClass.simpleName}: ${prevState.javaClass.simpleName} -> ${stateMachine.state.javaClass.simpleName} effects=${result.effects.map { it.javaClass.simpleName }}"
+        }
         for (effect in result.effects) {
             when (effect) {
                 is PopupEffect.ShowOrUpdate -> renderVisibleState(effect.state, effect.isNewSession, preCapturedSnap)

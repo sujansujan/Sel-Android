@@ -203,6 +203,8 @@ class SelectionResolver(
                 if (hit != null) {
                     detectedToolbar = hit
                     break
+                } else {
+                    DiagLog.d { "FLOAT_NO_TB pkg=$pkg winId=${w.id} rect=$wr nodes=${summarizeShortNodes(root)}" }
                 }
             }
 
@@ -530,7 +532,35 @@ class SelectionResolver(
         for (scanRoot in roots) {
             findSelectionSpatial(scanRoot, toolbarBounds, maxNodes = 550, maxDepth = 28)?.let { return it }
         }
+        DiagLog.d {
+            val rootDesc = roots.joinToString { r -> "${r.packageName}:${r.className?.toString()?.substringAfterLast('.')}(ch=${r.childCount})" }
+            "SCAN_NONE roots=[$rootDesc] tb=$toolbarBounds"
+        }
         return null
+    }
+
+    private fun summarizeShortNodes(root: AccessibilityNodeInfo): String {
+        val sb = StringBuilder()
+        val q = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        q.add(root to 0)
+        var n = 0
+        while (q.isNotEmpty() && n < 20) {
+            val (node, d) = q.removeFirst()
+            n++
+            val t = node.text?.toString()?.trim().orEmpty().take(18)
+            val desc = node.contentDescription?.toString()?.trim().orEmpty().take(18)
+            val id = node.viewIdResourceName?.substringAfterLast('/').orEmpty().take(18)
+            if (t.isNotEmpty() || desc.isNotEmpty() || id.isNotEmpty()) {
+                if (sb.isNotEmpty()) sb.append(", ")
+                sb.append("$id:'$t'/'$desc'")
+            }
+            if (d < 5) {
+                for (i in 0 until minOf(node.childCount, 8)) {
+                    runCatching { node.getChild(i) }.getOrNull()?.let { q.add(it to d + 1) }
+                }
+            }
+        }
+        return sb.toString()
     }
 
     private data class QueuedNode(
