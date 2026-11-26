@@ -194,6 +194,14 @@ class PopupStateMachine {
             return TransitionResult(updated, effects)
         }
 
+        if (cur !is PopupState.Visible &&
+            !ev.isStandalone &&
+            ev.toolbarSig.isNotEmpty() &&
+            ev.toolbarSig == lastDismissedToolbarSig
+        ) {
+            return TransitionResult(cur, emptyList())
+        }
+
         val next = PopupState.Visible(
             sessionId = nextSessionId++,
             text = cleanText,
@@ -224,6 +232,10 @@ class PopupStateMachine {
         ev: PopupEvent.ProbeRequested
     ): TransitionResult {
         if (cur is PopupState.Visible) return TransitionResult(cur, emptyList())
+
+        if (ev.toolbarSig.isNotEmpty() && ev.toolbarSig == lastDismissedToolbarSig) {
+            return TransitionResult(cur, emptyList())
+        }
 
         if (ev.toolbarSig.isNotEmpty() &&
             ev.toolbarSig == lastProbeToolbarSig &&
@@ -293,7 +305,7 @@ class PopupStateMachine {
         if (ev.nowMs - cur.shownAtMs < OUTSIDE_TOUCH_GRACE_MS) {
             return TransitionResult(cur, emptyList())
         }
-        return dismissIfActive(cur)
+        return dismissIfActive(cur, rememberDismissedToolbar = true)
     }
 
     private fun handleExternalClick(
@@ -304,7 +316,7 @@ class PopupStateMachine {
         if (ev.nowMs - cur.shownAtMs < EXTERNAL_CLICK_GRACE_MS) {
             return TransitionResult(cur, emptyList())
         }
-        return dismissIfActive(cur)
+        return dismissIfActive(cur, rememberDismissedToolbar = true)
     }
 
     private fun handleScrolled(
@@ -375,11 +387,13 @@ class PopupStateMachine {
         return TransitionResult(cur.copy(manuallyDragged = true), emptyList())
     }
 
-    private fun dismissIfActive(cur: PopupState): TransitionResult {
-        if (cur is PopupState.Visible) {
-            lastDismissedToolbarSig = cur.toolbarSig
-        }
+    private fun dismissIfActive(
+        cur: PopupState,
+        rememberDismissedToolbar: Boolean = false
+    ): TransitionResult {
+        val dismissedSig = if (rememberDismissedToolbar && cur is PopupState.Visible) cur.toolbarSig else ""
         resetToolbarMemory()
+        lastDismissedToolbarSig = dismissedSig
         return when (cur) {
             PopupState.Hidden -> TransitionResult(PopupState.Hidden, emptyList())
             is PopupState.PendingProbe -> TransitionResult(PopupState.Hidden, listOf(PopupEffect.CancelProbes))

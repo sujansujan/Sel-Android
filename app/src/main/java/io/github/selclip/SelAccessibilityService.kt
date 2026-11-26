@@ -268,11 +268,14 @@ class SelAccessibilityService : AccessibilityService() {
         val cls = event.className?.toString().orEmpty()
 
         // Immediate dismissal on Home/Launcher switch, SystemUI (Recents/Shade/Lockscreen), or App Switch.
-        // Never treat a transient PopupWindow (Cut/Copy/Share) inside a launcher search bar as Home!
+        // Never treat a transient PopupWindow (Cut/Copy/Share) or tiny edge-gesture overlay (e.g. ubktouch)
+        // as a foreground app switch!
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             if (pkg.isNotEmpty() && pkg != packageName && !SelectionFilter.isImePackage(pkg)) {
                 val isTransient = SelectionFilter.isTransientPopupClass(cls)
-                DiagLog.d { "WIN_STATE pkg=$pkg cls=$cls transient=$isTransient prev=$activePackage" }
+                val isEdgeOrSmallOverlay = !isTransient && isNonFullscreenOverlayEvent(event, cls)
+                DiagLog.d { "WIN_STATE pkg=$pkg cls=$cls transient=$isTransient overlay=$isEdgeOrSmallOverlay prev=$activePackage" }
+                if (isEdgeOrSmallOverlay) return
                 if (pkg == "com.android.systemui" && !isTransient) {
                     cancelPendingDirectSelection()
                     dispatch(PopupEvent.BackOrHomePressed)
@@ -424,6 +427,11 @@ class SelAccessibilityService : AccessibilityService() {
                 )
                 overlayController.syncPositionToAnchor(anchor, snap.viewport)
             }
+            return
+        }
+
+        // Do not re-probe or re-spawn for the exact toolbar the user just dismissed via outside touch
+        if (toolbar.signature.isNotEmpty() && toolbar.signature == stateMachine.lastDismissedToolbarSig) {
             return
         }
 
@@ -773,6 +781,17 @@ class SelAccessibilityService : AccessibilityService() {
                 )
             }
         )
+    }
+
+    private fun isNonFullscreenOverlayEvent(event: AccessibilityEvent, cls: String): Boolean {
+        if (cls == "android.view.View") return true
+        val win = runCatching { event.source?.window }.getOrNull() ?: return false
+        if (win.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) return true
+        val r = Rect()
+        win.getBoundsInScreen(r)
+        if (r.isEmpty) return false
+        val (realW, realH) = selectionResolver.readRealScreenSize()
+        return r.width() < (realW * 0.45f).toInt() || r.height() < (realH * 0.35f).toInt()
     }
 
     private fun now(): Long = System.currentTimeMillis()

@@ -143,4 +143,29 @@ class PopupStateMachineTest {
         assertEquals(PopupState.Hidden, dismissed.state)
         assertTrue(dismissed.effects.contains(PopupEffect.HideOverlay))
     }
+
+    @Test
+    fun outsideTouch_suppressesImmediateRespawnForSameToolbarUntilToolbarGone() {
+        val sm = PopupStateMachine()
+        sm.onEvent(PopupEvent.SelectionDetected("hello", "com.twitter.android", false, toolbarSig = "tb_same", nowMs = 1000L))
+
+        val dismissed = sm.onEvent(PopupEvent.OutsideTouch(nowMs = 1200L))
+        assertEquals(PopupState.Hidden, dismissed.state)
+        assertEquals("tb_same", sm.lastDismissedToolbarSig)
+
+        // Trailing windows-changed probe or duplicate selection for the SAME dismissed toolbar must NOT re-spawn!
+        val suppressedProbe = sm.onEvent(PopupEvent.ProbeRequested("com.twitter.android", toolbarSig = "tb_same", nowMs = 1260L))
+        assertEquals(PopupState.Hidden, suppressedProbe.state)
+        assertTrue(suppressedProbe.effects.isEmpty())
+
+        val suppressedSel = sm.onEvent(PopupEvent.SelectionDetected("hello", "com.twitter.android", false, toolbarSig = "tb_same", nowMs = 1280L))
+        assertEquals(PopupState.Hidden, suppressedSel.state)
+        assertTrue(suppressedSel.effects.isEmpty())
+
+        // Once the native toolbar disappears (or user selects elsewhere), the next selection spawns normally
+        sm.onEvent(PopupEvent.ToolbarGone(nowMs = 1500L))
+        assertEquals("", sm.lastDismissedToolbarSig)
+        val respawned = sm.onEvent(PopupEvent.SelectionDetected("hello", "com.twitter.android", false, toolbarSig = "tb_same", nowMs = 1600L))
+        assertTrue(respawned.state is PopupState.Visible)
+    }
 }

@@ -50,7 +50,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Universal OS text selection menu fallback (ACTION_PROCESS_TEXT) -->
+        <!-- Universal OS text selection menu (ACTION_PROCESS_TEXT) & Share sheet (ACTION_SEND) entry point -->
         <activity
             android:name=".ProcessTextActivity"
             android:exported="true"
@@ -60,6 +60,11 @@
             android:noHistory="true">
             <intent-filter>
                 <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>

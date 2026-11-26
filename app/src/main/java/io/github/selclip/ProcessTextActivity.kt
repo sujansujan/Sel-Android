@@ -10,7 +10,8 @@ import android.widget.Toast
 
 /**
  * Translucent zero-flash universal entry point hooked into Android's native selection menu
- * via ACTION_PROCESS_TEXT (e.g. Chrome/Firefox static webpages with ZERO clipboard pollution).
+ * (`ACTION_PROCESS_TEXT`, e.g. Chrome/Hermit/WebView) and Share sheet (`ACTION_SEND`, e.g.
+ * custom-canvas PDF readers like Artefact / PDFCraft) with ZERO clipboard pollution.
  */
 class ProcessTextActivity : Activity() {
 
@@ -21,6 +22,8 @@ class ProcessTextActivity : Activity() {
             overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
         }
         val raw = intent?.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
+            ?: intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            ?: intent?.getStringExtra(Intent.EXTRA_TEXT)
         if (!raw.isNullOrBlank()) {
             val service = SelAccessibilityService.instance
             if (service != null) {
