@@ -236,6 +236,24 @@ class SelAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Fast (~2ms) check called synchronously from windowless `TriggerPopupActivity.onCreate()`
+     * to decide whether a live selection, Compose handle pair, or native selection toolbar
+     * (e.g. Chrome/Hermit) is currently visible on screen.
+     */
+    fun hasLiveSelectionSignalForShortcut(): Boolean {
+        val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
+        if (snap.toolbar != null || snap.selectionHandles.size >= 2) return true
+        val focused = selectionResolver.findFocusedNode()
+        if (focused != null && selectionResolver.extractFromNode(focused, resolveCharBounds = false) != null) {
+            return true
+        }
+        val recentLive = lastLiveSelectionText?.takeIf {
+            lastLiveSelectionPkg == activePackage && (now() - lastLiveSelectionAtMs) < 5000L
+        }
+        return recentLive != null
+    }
+
+    /**
      * Explicit shortcut trigger (UbikiTouch, Tasker, Launcher shortcut):
      * Invoked from windowless `TriggerPopupActivity` (`Theme.NoDisplay`) so the foreground app
      * NEVER loses focus or drops its selection handles!
@@ -244,9 +262,9 @@ class SelAccessibilityService : AccessibilityService() {
      * 1. Explicit text extra (e.g. from Tasker)
      * 2. Live on-screen accessibility selection (`findSelectionAcrossAppWindows`)
      * 3. Live Jetpack Compose selection handles (`findSelectionFromHandles`)
-     * 4. Recently captured live selection in the same app (<= 5s)
-     * 5. Only if ALL of the above are absent -> launch internal `ClipboardFallbackActivity`
-     *    (strictly READ-ONLY) so copying in custom-canvas apps + swiping shortcut still works!
+     * 4. Chrome / Hermit / WebView native toolbar `"Sel"` (`ACTION_PROCESS_TEXT`) button
+     *    (directly or via `⋮` overflow — 0% clipboard pollution!)
+     * 5. Recently captured live selection in the same app (<= 5s)
      */
     fun triggerFromShortcut(explicitText: String?) {
         handler.post {
@@ -299,6 +317,29 @@ class SelAccessibilityService : AccessibilityService() {
                         return@post
                     }
 
+                    // Priority 4: Click Chrome / Hermit / WebView's own "Sel" (ACTION_PROCESS_TEXT)
+                    // button inside the active floating toolbar — ZERO clipboard pollution!
+                    val tb = snap.toolbar
+                    if (tb != null) {
+                        val directSel = tb.selButtonNode ?: selectionResolver.findSelButtonInFloatingWindows()
+                        if (directSel != null) {
+                            DiagLog.d { "SHORTCUT_TOOLBAR_SEL_DIRECT pkg=$curActivePkg" }
+                            val clicked = runCatching {
+                                directSel.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            }.getOrDefault(false)
+                            if (clicked) return@post
+                        } else if (tb.overflowButtonNode != null) {
+                            DiagLog.d { "SHORTCUT_TOOLBAR_OVERFLOW_OPEN pkg=$curActivePkg" }
+                            val openedOverflow = runCatching {
+                                tb.overflowButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            }.getOrDefault(false)
+                            if (openedOverflow) {
+                                clickSelInOverflowMenuWithRetry(attempt = 1)
+                                return@post
+                            }
+                        }
+                    }
+
                     val recentLive = lastLiveSelectionText?.takeIf {
                         lastLiveSelectionPkg == curActivePkg && (now() - lastLiveSelectionAtMs) < 5000L
                     }
@@ -318,7 +359,7 @@ class SelAccessibilityService : AccessibilityService() {
                         return@post
                     }
 
-                    // No accessible on-screen selection -> fall back to read-only clipboard via 1x1 helper
+                    // Last resort fallback (read-only clipboard)
                     DiagLog.d { "SHORTCUT_CLIP_FALLBACK pkg=$curActivePkg handles=${snap.selectionHandles.size}" }
                     val intent = Intent(this@SelAccessibilityService, ClipboardFallbackActivity::class.java).apply {
                         addFlags(
@@ -331,6 +372,21 @@ class SelAccessibilityService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    private fun clickSelInOverflowMenuWithRetry(attempt: Int) {
+        val delayMs = if (attempt == 1) 140L else 130L
+        handler.postDelayed({
+            val selNode = selectionResolver.findSelButtonInFloatingWindows()
+            if (selNode != null) {
+                DiagLog.d { "SHORTCUT_TOOLBAR_OVERFLOW_SEL_CLICK attempt=$attempt" }
+                runCatching { selNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+            } else if (attempt < 2) {
+                clickSelInOverflowMenuWithRetry(attempt + 1)
+            } else {
+                DiagLog.d { "SHORTCUT_TOOLBAR_OVERFLOW_SEL_MISS" }
+            }
+        }, delayMs)
     }
 
     private fun rememberLiveSelection(text: String, pkg: String) {

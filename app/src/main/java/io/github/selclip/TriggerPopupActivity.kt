@@ -53,7 +53,18 @@ class TriggerPopupActivity : Activity() {
             ).show()
         } else {
             val explicit = intent?.getStringExtra(Intent.EXTRA_TEXT)?.take(8000)?.takeIf { it.isNotBlank() }
-            service.triggerFromShortcut(explicit)
+            if (explicit != null || service.hasLiveSelectionSignalForShortcut()) {
+                // Live selection, Compose handles, or Chrome/WebView toolbar is on screen ->
+                // stay windowless so we NEVER steal focus or blink the screen!
+                service.triggerFromShortcut(explicit)
+            } else {
+                // No live highlight/toolbar on screen (e.g. user copied in PDFCraft / Google Messages) ->
+                // foreground-to-foreground handoff to 1x1 ClipboardFallbackActivity (never blocked by HyperOS!)
+                val fallback = Intent(this, ClipboardFallbackActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                }
+                runCatching { startActivity(fallback) }
+            }
         }
         finish()
     }
