@@ -93,6 +93,7 @@ class SelAccessibilityService : AccessibilityService() {
     private var pendingDirectFlush: Runnable? = null
 
     private var pendingWindowsCheck: Runnable? = null
+    private var pendingHandleProbe: Runnable? = null
     private var pendingProbe1: Runnable? = null
     private var pendingProbe2: Runnable? = null
     private var pendingProbeSource: AccessibilityNodeInfo? = null
@@ -201,6 +202,7 @@ class SelAccessibilityService : AccessibilityService() {
         scanGeneration.incrementAndGet()
         cancelPendingDirectSelection()
         cancelWindowsCheck()
+        cancelHandleProbe()
         cancelProbes()
         scanExecutor?.shutdownNow()
         scanExecutor = null
@@ -253,7 +255,9 @@ class SelAccessibilityService : AccessibilityService() {
                         preferredRoot = null,
                         toolbarBounds = snap.toolbar?.bounds,
                         toolbarWindowId = snap.toolbar?.windowId ?: -1
-                    )
+                    ) ?: if (snap.selectionHandles.size >= 2) {
+                        selectionResolver.findSelectionFromHandles(snap.selectionHandles, snap.selectionHandlesPkg)
+                    } else null
                 }.getOrNull()
 
                 handler.post {
@@ -503,10 +507,24 @@ class SelAccessibilityService : AccessibilityService() {
         val snap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
         val toolbar = snap.toolbar
         DiagLog.d {
-            "SYNC active=$activePackage cur=${cur.javaClass.simpleName} tb=${toolbar?.bounds} mag=${snap.hasMagnifierOrTransientFloating} pending=${pendingDirectSelection?.text?.take(24)}"
+            "SYNC active=$activePackage cur=${cur.javaClass.simpleName} tb=${toolbar?.bounds} handles=${snap.selectionHandles.size} mag=${snap.hasMagnifierOrTransientFloating} pending=${pendingDirectSelection?.text?.take(24)}"
         }
 
         if (toolbar == null) {
+            // Jetpack Compose SelectionContainer / custom-toolbar fallback (e.g. ClearSMS):
+            // 2 teardrop selection handles visible in the same app -> resolve text directly from handles!
+            if (snap.selectionHandles.size >= 2 &&
+                snap.selectionHandlesPkg.isNotEmpty() &&
+                !PrefsStore.isAppMuted(this, snap.selectionHandlesPkg)
+            ) {
+                val hSig = snap.selectionHandlesSig
+                if (hSig.isNotEmpty() && hSig == stateMachine.lastDismissedToolbarSig) return
+                if (cur is PopupState.Visible && cur.toolbarSig == hSig) return
+                scheduleHandleSelectionProbe(snap)
+                return
+            }
+
+            cancelHandleProbe()
             if (cur is PopupState.Visible || cur is PopupState.PendingProbe) {
                 scanGeneration.incrementAndGet()
                 dispatch(PopupEvent.ToolbarGone(now()))
@@ -517,6 +535,7 @@ class SelAccessibilityService : AccessibilityService() {
             return
         }
 
+        cancelHandleProbe()
         cancelWindowsCheck()
 
         // Lockstep Fast-Path: consume buffered direct selection in 0ms on the exact frame toolbar opens!
@@ -580,6 +599,56 @@ class SelAccessibilityService : AccessibilityService() {
     private fun cancelWindowsCheck() {
         pendingWindowsCheck?.let { handler.removeCallbacks(it) }
         pendingWindowsCheck = null
+    }
+
+    private fun cancelHandleProbe() {
+        pendingHandleProbe?.let { handler.removeCallbacks(it) }
+        pendingHandleProbe = null
+    }
+
+    private fun scheduleHandleSelectionProbe(initialSnap: ScreenSnapshot) {
+        cancelHandleProbe()
+        val expectedSig = initialSnap.selectionHandlesSig
+        val r = Runnable {
+            pendingHandleProbe = null
+            if (PrefsStore.isServicePaused(this)) return@Runnable
+            val freshSnap = selectionResolver.captureScreenSnapshot(force = true, allowStaleToolbar = false)
+            if (freshSnap.toolbar != null || freshSnap.selectionHandles.size < 2) return@Runnable
+            val liveSig = freshSnap.selectionHandlesSig
+            if (liveSig != expectedSig || liveSig == stateMachine.lastDismissedToolbarSig) return@Runnable
+            val cur = stateMachine.state
+            if (cur is PopupState.Visible && cur.toolbarSig == liveSig) return@Runnable
+
+            val gen = scanGeneration.incrementAndGet()
+            val handles = freshSnap.selectionHandles
+            val hPkg = freshSnap.selectionHandlesPkg
+            getOrCreateScanExecutor().execute {
+                val hit = runCatching {
+                    selectionResolver.findSelectionFromHandles(handles, hPkg)
+                }.getOrNull()
+                handler.post {
+                    if (gen != scanGeneration.get()) return@post
+                    if (hit == null) return@post
+                    if (hPkg.isNotEmpty() && PrefsStore.isAppMuted(this, hPkg)) return@post
+                    currentNode = hit.node
+                    lastSelectionBounds = hit.bounds
+                    lastSelectionBoundsMs = now()
+                    dispatch(
+                        event = PopupEvent.SelectionDetected(
+                            text = hit.text,
+                            sourcePackage = hPkg.ifEmpty { activePackage },
+                            isEditable = hit.node?.isEditable == true,
+                            toolbarSig = liveSig,
+                            isStandalone = false,
+                            nowMs = now()
+                        ),
+                        preCapturedSnap = freshSnap
+                    )
+                }
+            }
+        }
+        pendingHandleProbe = r
+        handler.postDelayed(r, 260L)
     }
 
     private fun cancelPendingDirectSelection() {

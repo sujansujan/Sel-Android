@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
+import android.view.WindowManager
 import android.widget.Toast
 
 /**
@@ -36,7 +38,11 @@ class TriggerPopupActivity : Activity() {
         if (intent?.action == Intent.ACTION_CREATE_SHORTCUT) {
             val launchIntent = Intent(this, TriggerPopupActivity::class.java).apply {
                 action = ACTION_TRIGGER_POPUP
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
             }
             @Suppress("DEPRECATION")
             val result = Intent().apply {
@@ -53,8 +59,24 @@ class TriggerPopupActivity : Activity() {
             return
         }
 
+        // Tiny 1x1 invisible floating window at (0,0) so HyperOS never flashes/dims the screen!
+        window?.apply {
+            setLayout(1, 1)
+            setGravity(Gravity.TOP or Gravity.START)
+            setDimAmount(0f)
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
+            attributes = attributes.apply {
+                width = 1
+                height = 1
+                x = 0
+                y = 0
+                windowAnimations = 0
+            }
+        }
+
         // Brief failsafe in case window focus doesn't arrive on a locked/constrained surface
-        handler.postDelayed(failsafeRunnable, 220L)
+        handler.postDelayed(failsafeRunnable, 180L)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

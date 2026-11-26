@@ -35,7 +35,10 @@ data class ToolbarHit(
 data class ScreenSnapshot(
     val viewport: Viewport,
     val toolbar: ToolbarHit?,
-    val hasMagnifierOrTransientFloating: Boolean = false
+    val hasMagnifierOrTransientFloating: Boolean = false,
+    val selectionHandles: List<Box> = emptyList(),
+    val selectionHandlesPkg: String = "",
+    val selectionHandlesSig: String = ""
 )
 
 /**
@@ -189,6 +192,7 @@ class SelectionResolver(
             // Pass 1: Floating PopupWindows first (highest layer first) — single fast BFS (~1ms)!
             floatingCandidates.sortByDescending { it.first.layer }
             var nonSystemFloatingCount = 0
+            val handlesByPkg = LinkedHashMap<String, MutableList<Box>>()
             for ((w, wr) in floatingCandidates) {
                 val root = runCatching { w.root }.getOrNull() ?: continue
                 val pkg = root.packageName?.toString().orEmpty()
@@ -203,7 +207,11 @@ class SelectionResolver(
                     detectedToolbar = hit
                     break
                 } else {
-                    if (!isSelectionHandleWindow(root, wr)) {
+                    if (isSelectionHandleWindow(root, wr)) {
+                        if (pkg.isNotEmpty() && wr.width() >= dp(14) && wr.height() >= dp(14)) {
+                            handlesByPkg.getOrPut(pkg) { mutableListOf() }.add(wr.toBox())
+                        }
+                    } else {
                         nonSystemFloatingCount++
                     }
                     DiagLog.d { "FLOAT_NO_TB pkg=$pkg winId=${w.id} rect=$wr nodes=${summarizeShortNodes(root)}" }
@@ -239,7 +247,28 @@ class SelectionResolver(
             // A small non-toolbar, non-SystemUI floating window (e.g., Android Text Magnifier loupe)
             // signals the user's finger is still held down selecting text — wait for finger-up!
             val hasMagnifier = detectedToolbar == null && nonSystemFloatingCount > 0
-            return ScreenSnapshot(viewport, effectiveToolbar, hasMagnifier).also { cachedSnapshot = it }
+
+            // Detect Jetpack Compose SelectionContainer / custom-toolbar teardrop handle pairs (>= 2 handles in same app)
+            val handleEntry = handlesByPkg.entries.firstOrNull { it.value.size >= 2 }
+            val handles = handleEntry?.value?.sortedWith(compareBy<Box> { it.top / dp(16).coerceAtLeast(1) }.thenBy { it.left })
+                ?: emptyList()
+            val handlePkg = handleEntry?.key.orEmpty()
+            val handleSig = if (handles.size >= 2) {
+                val q = dp(12).coerceAtLeast(16)
+                val first = handles.first()
+                val last = handles.last()
+                "h_${handlePkg}_${first.left / q}_${first.top / q}_${last.left / q}_${last.top / q}"
+            } else {
+                ""
+            }
+            return ScreenSnapshot(
+                viewport = viewport,
+                toolbar = effectiveToolbar,
+                hasMagnifierOrTransientFloating = hasMagnifier,
+                selectionHandles = handles,
+                selectionHandlesPkg = handlePkg,
+                selectionHandlesSig = handleSig
+            ).also { cachedSnapshot = it }
         }
 
         val viewport = Viewport(realW, realH, topInset, bottomInset, null)
@@ -539,6 +568,227 @@ class SelectionResolver(
             "SCAN_NONE roots=[$rootDesc] tb=$toolbarBounds"
         }
         return null
+    }
+
+    /**
+     * Resolves highlighted text inside Jetpack Compose `SelectionContainer` apps (e.g. ClearSMS)
+     * that draw two teardrop handle `Popup` windows directly beneath a read-only Text node without
+     * populating `AccessibilityNodeInfo.textSelectionStart..End`!
+     *
+     * Maps the two handle tip coordinates onto the overlapping leaf text node(s), uses Android's
+     * `EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY` to slice the exact highlighted range when available,
+     * and falls back cleanly to the matched message text (which lets Smart OTP / Currency / Links work!).
+     */
+    fun findSelectionFromHandles(
+        handles: List<Box>,
+        expectedPackage: String = ""
+    ): ResolvedSelection? {
+        if (handles.size < 2) return null
+        val startHandle = handles.first()
+        val endHandle = handles.last()
+        // Require the two handles to be visually distinct
+        if (abs(startHandle.centerX - endHandle.centerX) < dp(6) &&
+            abs(startHandle.centerY - endHandle.centerY) < dp(6)
+        ) return null
+
+        // Teardrop tips sit at the TOP of each handle window:
+        // start handle leans left (tip near right edge), end handle leans right (tip near left edge)
+        val startTipX = startHandle.right
+        val startTipY = startHandle.top - dp(6)
+        val endTipX = endHandle.left
+        val endTipY = endHandle.top - dp(6)
+
+        val minHandleX = minOf(startTipX, endTipX, startHandle.left, endHandle.left)
+        val maxHandleX = maxOf(startTipX, endTipX, startHandle.right, endHandle.right)
+        val minTipY = minOf(startTipY, endTipY)
+        val maxTipY = maxOf(startTipY, endTipY)
+
+        val (_, realH) = readRealScreenSize()
+        val roots = collectAppScanRoots(preferredRoot = null, toolbarWindowId = -1, realH = realH)
+            .sortedByDescending { r ->
+                if (expectedPackage.isNotEmpty() && r.packageName?.toString() == expectedPackage) 1 else 0
+            }
+
+        val tolY = dp(42)
+        val tolX = dp(32)
+        val matched = mutableListOf<Pair<AccessibilityNodeInfo, Rect>>()
+        val tmpRect = Rect()
+
+        for (root in roots) {
+            if (expectedPackage.isNotEmpty() && root.packageName?.toString() != expectedPackage) continue
+            val q = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+            q.add(root to 0)
+            var visited = 0
+            while (q.isNotEmpty() && visited < 420) {
+                val (node, depth) = q.removeFirst()
+                visited++
+                node.getBoundsInScreen(tmpRect)
+                val hasBounds = tmpRect.width() > 0 && tmpRect.height() > 0
+                if (hasBounds && (tmpRect.bottom < minTipY - dp(260) || tmpRect.top > maxTipY + tolY)) {
+                    continue
+                }
+
+                val txt = node.text?.toString()?.trim().orEmpty()
+                if (txt.isNotEmpty() && !node.isPassword && node.isVisibleToUser && hasBounds) {
+                    val verticalHit = tmpRect.bottom >= (minTipY - tolY) && tmpRect.top <= (maxTipY + tolY)
+                    val horizontalHit = tmpRect.right >= (minHandleX - tolX) && tmpRect.left <= (maxHandleX + tolX)
+                    // Exclude tiny 1-line UI chrome headers far above the handles
+                    val closeToHandle = (minTipY in (tmpRect.top - dp(12))..(tmpRect.bottom + tolY)) ||
+                        (maxTipY in (tmpRect.top - dp(12))..(tmpRect.bottom + tolY)) ||
+                        (tmpRect.top in minTipY..maxTipY)
+                    if (verticalHit && horizontalHit && closeToHandle && tmpRect.height() <= (realH * 0.55f).toInt()) {
+                        matched.add(node to Rect(tmpRect))
+                    }
+                }
+
+                if (depth < 24) {
+                    val c = minOf(node.childCount, 80)
+                    for (i in 0 until c) {
+                        runCatching { node.getChild(i) }.getOrNull()?.let { q.add(it to depth + 1) }
+                    }
+                }
+            }
+            if (matched.isNotEmpty()) break
+        }
+
+        if (matched.isEmpty()) return null
+
+        // Pick the closest / most specific leaf text node(s) touching the handles
+        val sorted = matched.sortedWith(
+            compareBy<Pair<AccessibilityNodeInfo, Rect>> { (_, r) ->
+                val dyStart = when {
+                    startTipY in r.top..r.bottom -> 0
+                    else -> minOf(abs(r.top - startTipY), abs(r.bottom - startTipY))
+                }
+                val dyEnd = when {
+                    endTipY in r.top..r.bottom -> 0
+                    else -> minOf(abs(r.top - endTipY), abs(r.bottom - endTipY))
+                }
+                dyStart + dyEnd
+            }.thenBy { (_, r) -> r.width() * r.height() }
+        )
+
+        val primary = sorted.first()
+        val node = primary.first
+        val nodeRect = primary.second
+        val fullText = node.text?.toString().orEmpty()
+        if (fullText.isBlank()) return null
+
+        // Try exact character-index extraction using Android's character-location accessibility API
+        val sliced = sliceTextByHandleTips(node, fullText, startTipX, startTipY, endTipX, endTipY)
+        val clean = SelectionFilter.sanitizeCandidate(sliced ?: fullText, isPassword = false, hintText = node.hintText?.toString())
+            ?: return null
+
+        DiagLog.d { "HANDLE_HIT pkg=$expectedPackage exactSlice=${sliced != null} text='${clean.take(48)}' rect=$nodeRect" }
+        return ResolvedSelection(clean, node, nodeRect.toBox())
+    }
+
+    private fun sliceTextByHandleTips(
+        node: AccessibilityNodeInfo,
+        raw: String,
+        startTipX: Int,
+        startTipY: Int,
+        endTipX: Int,
+        endTipY: Int
+    ): String? {
+        val len = minOf(raw.length, 400)
+        if (len < 2) return null
+        val rects = queryAllCharacterRects(node, 0, len) ?: return null
+        if (rects.isEmpty()) return null
+
+        var bestStartIdx = -1
+        var bestStartDist = Float.MAX_VALUE
+        var bestEndIdx = -1
+        var bestEndDist = Float.MAX_VALUE
+
+        for (i in rects.indices) {
+            val r = rects[i] ?: continue
+            if (r.isEmpty) continue
+            val dyS = abs(r.bottom - startTipY) * 2.2f
+            val dxS = abs(r.left - startTipX)
+            val dS = dxS + dyS
+            if (dS < bestStartDist) {
+                bestStartDist = dS
+                bestStartIdx = i
+            }
+
+            val dyE = abs(r.bottom - endTipY) * 2.2f
+            val dxE = abs(r.right - endTipX)
+            val dE = dxE + dyE
+            if (dE < bestEndDist) {
+                bestEndDist = dE
+                bestEndIdx = i
+            }
+        }
+
+        if (bestStartIdx < 0 || bestEndIdx < 0) return null
+        val s = minOf(bestStartIdx, bestEndIdx).coerceIn(0, raw.length - 1)
+        val e = (maxOf(bestStartIdx, bestEndIdx) + 1).coerceIn(s + 1, raw.length)
+        // Expand partial edge characters to full word boundaries if handles clipped mid-word slightly
+        return raw.substring(s, e).trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun queryAllCharacterRects(node: AccessibilityNodeInfo, startIndex: Int, length: Int): Array<RectF?>? {
+        if (length <= 0) return null
+        return runCatching {
+            val args = Bundle().apply {
+                putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_START_INDEX, startIndex)
+                putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_LENGTH, length)
+            }
+            if (!node.refreshWithExtraData(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, args)) {
+                return null
+            }
+            val arr = if (Build.VERSION.SDK_INT >= 33) {
+                node.extras.getParcelableArray(
+                    AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY,
+                    RectF::class.java
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                node.extras.getParcelableArray(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY)
+                    ?.map { it as? RectF }
+                    ?.toTypedArray()
+            }
+            if (arr.isNullOrEmpty()) null else arr
+        }.getOrNull()
+    }
+
+    private fun collectAppScanRoots(
+        preferredRoot: AccessibilityNodeInfo?,
+        toolbarWindowId: Int,
+        realH: Int
+    ): MutableList<AccessibilityNodeInfo> {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        if (preferredRoot != null && preferredRoot.packageName?.toString() != service.packageName) {
+            roots.add(preferredRoot)
+        }
+        val appWindows = runCatching { service.windows }.getOrNull().orEmpty()
+            .filter { w ->
+                w.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                    w.id != toolbarWindowId
+            }
+            .sortedByDescending { w ->
+                val r = Rect()
+                w.getBoundsInScreen(r)
+                r.width() * r.height()
+            }
+        for (w in appWindows) {
+            val wr = Rect()
+            w.getBoundsInScreen(wr)
+            if (wr.height() < dp(190) && wr.height() < realH / 4) continue
+            val rNode = runCatching { w.root }.getOrNull() ?: continue
+            val pkg = rNode.packageName?.toString().orEmpty()
+            if (pkg == service.packageName || SelectionFilter.isImePackage(pkg) || pkg == "com.android.systemui") continue
+            if (roots.none { it == rNode }) roots.add(rNode)
+        }
+        val activeRoot = runCatching { service.rootInActiveWindow }.getOrNull()
+        if (activeRoot != null &&
+            activeRoot.packageName?.toString() != service.packageName &&
+            roots.none { it == activeRoot }
+        ) {
+            roots.add(activeRoot)
+        }
+        return roots
     }
 
     private fun isSelectionHandleWindow(root: AccessibilityNodeInfo, wr: Rect): Boolean {
